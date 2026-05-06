@@ -3,7 +3,12 @@
     "allow": [
       "PowerShell(git status 2>&1 | Out-String; \"EXIT: $LASTEXITCODE\")",
       "PowerShell(Test-Path *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(npm install *)",
+      "Bash(npx tsc *)",
+      "Bash(npx next *)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(npx eslint *)"
     ]
   }
 }
