@@ -1,0 +1,14 @@
+# env files — never commit secrets
+.env
+.env.*
+.env.local
+.env*.local
+!.env.example
+
+# dependencies
+node_modules/
+app/node_modules/
+
+# next.js build output
+.next/
+app/.next/

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(git status 2>&1 | Out-String; \"EXIT: $LASTEXITCODE\")",
+      "PowerShell(Test-Path *)",
+      "Bash(git *)"
+    ]
+  }
+}
