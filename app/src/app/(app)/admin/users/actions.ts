@@ -47,127 +47,145 @@ export const initialCreateUserState: CreateUserState = { status: 'idle' };
 /**
  * Crea un usuario en Supabase Auth y su profile correspondiente.
  *
+ * **Política de errores:** TODO error (incluyendo throws síncronos en
+ * `supabaseAdmin()` por env vars faltantes) se convierte en `CreateUserState`
+ * con mensaje legible. Nunca dejamos escapar una excepción al cliente porque
+ * en producción Next.js sanitiza el mensaje a "An error occurred…" y el
+ * usuario no ve nada útil. También logueamos a `console.error` con prefijo
+ * `[createUserAction]` para que aparezca en Vercel Function Logs.
+ *
  * Flujo:
- *  1. Validamos con Zod (defensa en profundidad — el cliente también valida).
- *  2. `auth.admin.createUser` con email_confirm:true y password temporal
- *     aleatorio. El usuario nunca verá ese password.
- *  3. Hacemos `upsert` sobre profiles con los valores autoritativos. El
- *     trigger `handle_new_user` ya pudo haber creado la fila — el upsert
- *     garantiza que el `role`, `full_name`, `phone` y `is_active` queden
- *     como queremos sin depender de qué metadata leyó el trigger.
- *  4. Disparamos `resetPasswordForEmail` para que el usuario reciba un
- *     correo y elija su propia contraseña.
- *  5. Si el upsert falla, hacemos rollback borrando el usuario de auth.
+ *  1. Validar con Zod (defensa en profundidad).
+ *  2. `auth.admin.createUser` con email_confirm:true y password temporal.
+ *  3. Upsert profile con valores autoritativos (no dependemos del trigger).
+ *  4. Disparar email de reset para que el usuario elija contraseña.
+ *  5. Rollback (delete auth user) si el upsert falla.
  */
 export async function createUserAction(
   _prev: CreateUserState,
   formData: FormData,
 ): Promise<CreateUserState> {
-  const parsed = CreateUserSchema.safeParse({
-    full_name: formData.get('full_name'),
-    email: formData.get('email'),
-    phone: formData.get('phone'),
-    role: formData.get('role'),
-  });
+  try {
+    const parsed = CreateUserSchema.safeParse({
+      full_name: formData.get('full_name'),
+      email: formData.get('email'),
+      phone: formData.get('phone'),
+      role: formData.get('role'),
+    });
 
-  if (!parsed.success) {
-    return {
-      status: 'error',
-      message: 'Datos inválidos',
-      fieldErrors: parsed.error.flatten().fieldErrors,
-    };
-  }
+    if (!parsed.success) {
+      console.error('[createUserAction] validación falló:', parsed.error.flatten());
+      return {
+        status: 'error',
+        message: 'Datos inválidos',
+        fieldErrors: parsed.error.flatten().fieldErrors,
+      };
+    }
 
-  const { full_name, email, phone, role } = parsed.data;
-  const normalizedPhone = phone && phone.length > 0 ? phone : null;
+    const { full_name, email, phone, role } = parsed.data;
+    const normalizedPhone = phone && phone.length > 0 ? phone : null;
 
-  const admin = supabaseAdmin();
+    // Si las env vars faltan, esto lanza — el catch de abajo lo convierte en
+    // un CreateUserState con mensaje legible.
+    const admin = supabaseAdmin();
 
-  // Password temporal — el usuario nunca lo conoce, queda invalidado al
-  // completar el flujo de recuperación.
-  const tempPassword = generateTempPassword();
+    const tempPassword = generateTempPassword();
 
-  const { data: created, error: createErr } = await admin.auth.admin.createUser({
-    email,
-    password: tempPassword,
-    email_confirm: true,
-    user_metadata: {
-      full_name,
-      role,
-      phone: normalizedPhone,
-    },
-  });
-
-  if (createErr || !created.user) {
-    return {
-      status: 'error',
-      message: createErr?.message ?? 'No se pudo crear el usuario en Auth',
-    };
-  }
-
-  const userId = created.user.id;
-
-  const { error: profileErr } = await admin
-    .from('profiles')
-    .upsert(
-      {
-        id: userId,
+    const { data: created, error: createErr } = await admin.auth.admin.createUser({
+      email,
+      password: tempPassword,
+      email_confirm: true,
+      user_metadata: {
         full_name,
         role,
         phone: normalizedPhone,
-        is_active: true,
       },
-      { onConflict: 'id' },
-    );
+    });
 
-  if (profileErr) {
-    // Rollback — si no podemos persistir el profile, eliminamos el auth user
-    // para no dejar cuentas huérfanas que luego choquen con email duplicado.
-    await admin.auth.admin.deleteUser(userId);
+    if (createErr || !created?.user) {
+      console.error('[createUserAction] auth.admin.createUser falló:', createErr);
+      return {
+        status: 'error',
+        message: createErr?.message ?? 'No se pudo crear el usuario en Auth',
+      };
+    }
+
+    const userId = created.user.id;
+
+    const { error: profileErr } = await admin
+      .from('profiles')
+      .upsert(
+        {
+          id: userId,
+          full_name,
+          role,
+          phone: normalizedPhone,
+          is_active: true,
+        },
+        { onConflict: 'id' },
+      );
+
+    if (profileErr) {
+      console.error('[createUserAction] profiles.upsert falló:', profileErr);
+      // Rollback — evita cuentas huérfanas en auth.users.
+      await admin.auth.admin.deleteUser(userId).catch((rollbackErr) => {
+        console.error('[createUserAction] rollback deleteUser falló:', rollbackErr);
+      });
+      return {
+        status: 'error',
+        message: `No se pudo crear el perfil: ${profileErr.message}`,
+      };
+    }
+
+    const { error: resetErr } = await admin.auth.resetPasswordForEmail(email);
+    if (resetErr) {
+      // No fallamos toda la operación: el admin puede re-enviar después.
+      console.error('[createUserAction] resetPasswordForEmail falló:', resetErr.message);
+    }
+
+    revalidatePath('/admin/users');
     return {
-      status: 'error',
-      message: `No se pudo crear el perfil: ${profileErr.message}`,
+      status: 'success',
+      message: 'Usuario creado. Se envió correo para configurar contraseña.',
     };
+  } catch (err) {
+    // Cualquier throw inesperado (env vars faltantes, network, etc.)
+    const message = err instanceof Error ? err.message : 'Error desconocido al crear usuario';
+    console.error('[createUserAction] excepción no controlada:', err);
+    return { status: 'error', message };
   }
-
-  // Email para que el usuario configure su propia contraseña. No fallamos
-  // toda la operación si esto falla — el admin puede reenviarlo después.
-  const { error: resetErr } = await admin.auth.resetPasswordForEmail(email);
-  if (resetErr) {
-    console.error('[createUserAction] resetPasswordForEmail falló:', resetErr.message);
-  }
-
-  revalidatePath('/admin/users');
-  return {
-    status: 'success',
-    message: 'Usuario creado. Se envió correo para configurar contraseña.',
-  };
 }
 
 /**
- * Activa o desactiva una cuenta. Conservamos el registro y el historial,
- * solo flipeamos `is_active` — la cuenta de auth.users sigue existiendo.
+ * Activa o desactiva una cuenta. Misma política de errores que createUser.
  */
 export async function toggleUserActiveAction(
   userId: string,
   nextActive: boolean,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  if (typeof userId !== 'string' || userId.length === 0) {
-    return { ok: false, message: 'userId inválido' };
+  try {
+    if (typeof userId !== 'string' || userId.length === 0) {
+      return { ok: false, message: 'userId inválido' };
+    }
+
+    const admin = supabaseAdmin();
+    const { error } = await admin
+      .from('profiles')
+      .update({ is_active: nextActive })
+      .eq('id', userId);
+
+    if (error) {
+      console.error('[toggleUserActiveAction] update falló:', error);
+      return { ok: false, message: error.message };
+    }
+
+    revalidatePath('/admin/users');
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Error desconocido';
+    console.error('[toggleUserActiveAction] excepción no controlada:', err);
+    return { ok: false, message };
   }
-
-  const admin = supabaseAdmin();
-  const { error } = await admin
-    .from('profiles')
-    .update({ is_active: nextActive })
-    .eq('id', userId);
-
-  if (error) {
-    return { ok: false, message: error.message };
-  }
-
-  revalidatePath('/admin/users');
-  return { ok: true };
 }
 
 /**

@@ -8,7 +8,9 @@
       "Bash(npx tsc *)",
       "Bash(npx next *)",
       "Bash(echo \"EXIT=$?\")",
-      "Bash(npx eslint *)"
+      "Bash(npx eslint *)",
+      "Bash(rm -rf .next)",
+      "Bash(echo \"TSC_EXIT=$?\")"
     ]
   }
 }
