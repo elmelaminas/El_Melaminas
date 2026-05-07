@@ -5,7 +5,7 @@ import {
   Plus,
   Package,
   Lock,
-  AlertTriangle,
+  TriangleAlert,
   X,
   Calendar,
   ArrowDown,
@@ -76,7 +76,7 @@ export default function WarehousePage() {
         <Metric
           label="Alertas de stock"
           value={lowStock.toString()}
-          icon={<AlertTriangle size={20} />}
+          icon={<TriangleAlert size={20} />}
           bg="#FEE2E2"
           color="#B91C1C"
           unit="materiales por debajo del mínimo"

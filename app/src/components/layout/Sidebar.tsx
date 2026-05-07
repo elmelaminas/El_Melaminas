@@ -9,7 +9,7 @@ import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard,
   ClipboardList,
-  PlusCircle,
+  CirclePlus,
   CreditCard,
   Truck,
   Package,
@@ -17,7 +17,7 @@ import {
   ArrowLeftRight,
   Users as UsersIcon,
   BookOpen,
-  BarChart3,
+  ChartBarBig,
   History,
   LogOut,
   Layers,
@@ -34,10 +34,10 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { href: '/dashboard',       label: 'Dashboard',         icon: <LayoutDashboard size={18} />, roles: ['admin', 'supervisor'] },
-  { href: '/leads/new',       label: 'Nuevo Lead',        icon: <PlusCircle size={18} />,      roles: ['admin', 'seller'] },
+  { href: '/leads/new',       label: 'Nuevo Lead',        icon: <CirclePlus size={18} />,      roles: ['admin', 'seller'] },
   { href: '/leads',           label: 'Leads',             icon: <ClipboardList size={18} />,   roles: ['admin', 'seller'] },
   { href: '/payments',        label: 'Pagos',             icon: <CreditCard size={18} />,      roles: ['admin'] },
-  { href: '/payments/new',    label: 'Registrar Pago',    icon: <PlusCircle size={18} />,      roles: ['admin'] },
+  { href: '/payments/new',    label: 'Registrar Pago',    icon: <CirclePlus size={18} />,      roles: ['admin'] },
   { href: '/driver',          label: 'Mis Entregas',      icon: <Truck size={18} />,           roles: ['admin', 'driver'] },
   { href: '/driver?tab=hist', label: 'Historial',         icon: <History size={18} />,         roles: ['driver'] },
   { href: '/warehouse',       label: 'Stock',             icon: <Package size={18} />,         roles: ['admin', 'warehouse'] },
@@ -45,7 +45,7 @@ const NAV: NavItem[] = [
   { href: '/warehouse?tab=mov', label: 'Movimientos',     icon: <ArrowLeftRight size={18} />,  roles: ['warehouse'] },
   { href: '/admin/users',     label: 'Usuarios',          icon: <UsersIcon size={18} />,       roles: ['admin'] },
   { href: '/admin/catalogs',  label: 'Catálogos',         icon: <BookOpen size={18} />,        roles: ['admin'] },
-  { href: '/dashboard',       label: 'Reportes',          icon: <BarChart3 size={18} />,       roles: ['supervisor'] },
+  { href: '/dashboard',       label: 'Reportes',          icon: <ChartBarBig size={18} />,       roles: ['supervisor'] },
 ];
 
 export default function Sidebar() {

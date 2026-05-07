@@ -5,7 +5,7 @@ import {
   ClipboardList,
   DollarSign,
   Truck,
-  AlertTriangle,
+  TriangleAlert,
   TrendingUp,
   Eye,
   Pencil,
@@ -82,7 +82,7 @@ export default function DashboardPage() {
           delta="1 en tránsito"
         />
         <MetricCard
-          icon={<AlertTriangle size={20} />}
+          icon={<TriangleAlert size={20} />}
           iconBg="#FEE2E2"
           iconColor="#B91C1C"
           label="Stock bajo"

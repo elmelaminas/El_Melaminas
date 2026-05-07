@@ -3,7 +3,7 @@
 import { useEffect, useTransition } from 'react';
 import { useForm, type FieldErrors } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { X, Mail, Phone, Loader2 } from 'lucide-react';
+import { X, Mail, Phone, Loader } from 'lucide-react';
 import {
   CreateUserSchema,
   createUserAction,
@@ -235,7 +235,7 @@ export function NewUserModal({
                 borderRadius: 6,
               }}
             >
-              <Loader2 size={16} className="animate-spin" />
+              <Loader size={16} className="animate-spin" />
               <span>Creando usuario en Supabase…</span>
             </div>
           )}
@@ -277,7 +277,7 @@ export function NewUserModal({
             >
               {pending ? (
                 <>
-                  <Loader2 size={16} className="animate-spin" />
+                  <Loader size={16} className="animate-spin" />
                   <span style={{ marginLeft: 6 }}>Creando…</span>
                 </>
               ) : (

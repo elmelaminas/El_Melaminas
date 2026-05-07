@@ -4,7 +4,7 @@ import { useState } from 'react';
 import {
   MapPin,
   Box,
-  CheckCircle2,
+  CircleCheckBig,
   Camera,
   ChevronDown,
   ChevronUp,
@@ -224,7 +224,7 @@ function DeliveryCard({
               className="font-bold flex items-center gap-1"
               style={{ color: 'var(--success)' }}
             >
-              <CheckCircle2 size={18} /> Pagado
+              <CircleCheckBig size={18} /> Pagado
             </div>
           )}
         </div>
@@ -266,7 +266,7 @@ function DeliveryCard({
           className="btn btn-primary w-full"
           style={{ height: 56, fontSize: '1rem', fontWeight: 600 }}
         >
-          <CheckCircle2 size={20} /> Entregado a {admin.split(' ')[0]}
+          <CircleCheckBig size={20} /> Entregado a {admin.split(' ')[0]}
         </button>
       </div>
     </div>
