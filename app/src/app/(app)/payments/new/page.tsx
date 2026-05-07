@@ -1,387 +1,112 @@
-'use client';
-
-import Link from 'next/link';
-import { useState, useMemo } from 'react';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import {
-  ArrowLeft,
-  Search,
-  Plus,
-  X,
-  Camera,
-  Upload,
-} from 'lucide-react';
-import {
-  formatMXN,
-  mockLeads,
-  mockPayments,
-  mockUsers,
-  PAYMENT_METHODS,
-  PAYMENT_TYPES,
-} from '@/data/mock';
-import { MethodBadge, TypeBadge } from '@/components/ui/Badges';
+  NewPaymentForm,
+  type LeadOption,
+  type DriverOption,
+} from './new-payment-form';
 
-interface DedRow {
-  id: number;
-  concept: string;
-  amount: number;
-}
+/**
+ * Página /payments/new.
+ *
+ * Server Component: carga (a) leads no totalmente pagados con su adeudo
+ * calculado a partir de la suma de pagos exitosos previos, y
+ * (b) profiles activos con role∈{driver,admin} para el dropdown de
+ * "chofer asignado". Pasa todo a `<NewPaymentForm>`.
+ *
+ * Adeudo se calcula en memoria porque Supabase JS no soporta agregaciones
+ * GROUP BY directamente desde la API. Hacemos dos SELECTs en paralelo:
+ *  - leads no pagados (con total_amount).
+ *  - todos los payments exitosos (lead_id, amount).
+ * Y mergeamos por lead_id. Para muchos miles de pagos esto puede ser
+ * costoso — cuando lo sea, refactor a una RPC o vista materializada.
+ */
+export const dynamic = 'force-dynamic';
 
-export default function NewPaymentPage() {
-  const [query, setQuery] = useState('');
-  const [selectedLeadId, setSelectedLeadId] = useState('L001');
-  const [amount, setAmount] = useState<number>(4875);
-  const [deductibles, setDeductibles] = useState<DedRow[]>([
-    { id: 1, concept: 'Gasolina', amount: 180 },
-  ]);
+export default async function NewPaymentPage() {
+  try {
+    const admin = supabaseAdmin();
 
-  const lead = mockLeads.find((l) => l.id === selectedLeadId) ?? mockLeads[0];
-
-  const totalDed = useMemo(
-    () => deductibles.reduce((s, d) => s + (Number(d.amount) || 0), 0),
-    [deductibles],
-  );
-  const net = Math.max(amount - totalDed, 0);
-
-  const previousPayments = mockPayments.filter((p) => p.lead_id === lead.id);
-
-  const drivers = mockUsers
-    .filter((u) => u.role === 'driver' || u.role === 'admin')
-    .map((u) => u.name);
-
-  const filteredLeads = query
-    ? mockLeads.filter(
-        (l) =>
-          l.client_name.toLowerCase().includes(query.toLowerCase()) ||
-          l.id.toLowerCase().includes(query.toLowerCase()) ||
-          l.phone.includes(query),
-      )
-    : mockLeads.slice(0, 5);
-
-  const addDed = () =>
-    setDeductibles((prev) => [
-      ...prev,
-      { id: Date.now(), concept: '', amount: 0 },
+    const [leadsResult, driversResult, paymentsResult] = await Promise.all([
+      admin
+        .from('leads')
+        .select(
+          'id, client_name, phone, total_amount, payment_status, sale_date, created_at',
+        )
+        .neq('payment_status', 'pagado')
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false })
+        .limit(200),
+      admin
+        .from('profiles')
+        .select('id, full_name, role')
+        .in('role', ['driver', 'admin'])
+        .eq('is_active', true)
+        .order('full_name'),
+      admin
+        .from('payments')
+        .select('lead_id, amount')
+        .eq('status', 'exitoso'),
     ]);
-  const removeDed = (id: number) =>
-    setDeductibles((prev) => prev.filter((d) => d.id !== id));
-  const updateDed = (id: number, patch: Partial<DedRow>) =>
-    setDeductibles((prev) =>
-      prev.map((d) => (d.id === id ? { ...d, ...patch } : d)),
-    );
 
-  return (
-    <div className="flex flex-col gap-6 max-w-6xl">
-      <div className="flex items-center gap-3">
-        <Link href="/payments" className="btn btn-ghost" style={{ padding: '8px' }}>
-          <ArrowLeft size={18} />
-        </Link>
-        <div>
-          <h1 className="text-2xl font-bold">Registrar Pago</h1>
-          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-            Captura cobros, deducibles y entrega de efectivo al admin.
-          </p>
-        </div>
-      </div>
+    if (leadsResult.error) {
+      return <ErrorState message={`Error leyendo leads: ${leadsResult.error.message}`} />;
+    }
+    if (driversResult.error) {
+      return <ErrorState message={`Error leyendo profiles: ${driversResult.error.message}`} />;
+    }
+    if (paymentsResult.error) {
+      return <ErrorState message={`Error leyendo pagos previos: ${paymentsResult.error.message}`} />;
+    }
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Left col */}
-        <div className="xl:col-span-2 flex flex-col gap-6">
-          {/* Lead search */}
-          <div className="card p-6">
-            <h3 className="font-semibold mb-4">Lead asociado</h3>
-            <div className="relative">
-              <Search
-                size={16}
-                className="absolute left-3 top-1/2 -translate-y-1/2"
-                style={{ color: 'var(--text-tertiary)' }}
-              />
-              <input
-                placeholder="Busca por cliente, teléfono o ID…"
-                className="input"
-                style={{ paddingLeft: 36 }}
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            </div>
-            {/* results */}
-            <div
-              className="mt-3 rounded-lg border max-h-56 overflow-y-auto"
-              style={{ borderColor: 'var(--border)' }}
-            >
-              {filteredLeads.length === 0 && (
-                <div
-                  className="p-4 text-sm"
-                  style={{ color: 'var(--text-tertiary)' }}
-                >
-                  Sin resultados.
-                </div>
-              )}
-              {filteredLeads.map((l) => (
-                <button
-                  key={l.id}
-                  type="button"
-                  onClick={() => setSelectedLeadId(l.id)}
-                  className="w-full text-left px-4 py-3 flex items-center justify-between border-b last:border-b-0 hover:bg-[var(--bg-muted)]"
-                  style={{
-                    borderColor: 'var(--border)',
-                    background:
-                      l.id === lead.id ? '#EFF6FF' : 'transparent',
-                  }}
-                >
-                  <div>
-                    <div className="text-sm font-medium">{l.client_name}</div>
-                    <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-                      {l.id} · {l.phone}
-                    </div>
-                  </div>
-                  <div className="text-sm font-semibold">
-                    {formatMXN(l.total_amount)}
-                  </div>
-                </button>
-              ))}
-            </div>
+    // Suma de pagos exitosos por lead_id.
+    const paidByLead = new Map<string, number>();
+    for (const p of paymentsResult.data ?? []) {
+      if (!p.lead_id) continue;
+      paidByLead.set(p.lead_id, (paidByLead.get(p.lead_id) ?? 0) + Number(p.amount ?? 0));
+    }
 
-            {/* Selected lead readonly */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5">
-              <div>
-                <label className="label">Cliente</label>
-                <input className="input" value={lead.client_name} readOnly />
-              </div>
-              <div>
-                <label className="label">Total compra</label>
-                <input className="input" value={formatMXN(lead.total_amount)} readOnly />
-              </div>
-              <div>
-                <label className="label">Adeudo pendiente</label>
-                <input
-                  className="input"
-                  value={formatMXN(lead.adeudo)}
-                  readOnly
-                  style={
-                    lead.adeudo > 0
-                      ? { background: '#FEE2E2', color: '#B91C1C', fontWeight: 600 }
-                      : { background: 'var(--bg-muted)' }
-                  }
-                />
-              </div>
-            </div>
-          </div>
+    // Filtramos leads cuyo adeudo siga siendo > 0 (puede haber leads con
+    // payment_status='parcial' pero con suma de pagos = total — el flag
+    // está stale). Si está pagado de hecho, lo escondemos del selector.
+    const leads: LeadOption[] = ((leadsResult.data ?? [])
+      .map((l) => {
+        const total = Number(l.total_amount ?? 0);
+        const paid = paidByLead.get(l.id) ?? 0;
+        const adeudo = Math.max(0, total - paid);
+        return {
+          id: l.id,
+          client_name: l.client_name ?? '(sin nombre)',
+          phone: l.phone ?? '',
+          total_amount: total,
+          paid_so_far: paid,
+          adeudo,
+          sale_date: l.sale_date ?? null,
+        };
+      })
+      .filter((l) => l.adeudo > 0));
 
-          {/* Cobro */}
-          <div className="card p-6">
-            <h3 className="font-semibold mb-4">Datos del cobro</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="label">Monto que paga</label>
-                <input
-                  type="number"
-                  className="input"
-                  value={amount}
-                  onChange={(e) => setAmount(Number(e.target.value))}
-                />
-              </div>
-              <div>
-                <label className="label">Método de pago</label>
-                <select className="select" defaultValue="Transferencia">
-                  {PAYMENT_METHODS.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="label">Tipo de pago</label>
-                <select className="select" defaultValue="Anticipo">
-                  {PAYMENT_TYPES.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="label">Chofer asignado</label>
-                <select className="select" defaultValue="Carlos Ramírez">
-                  {drivers.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
+    const drivers: DriverOption[] = (driversResult.data ?? []).map((d) => ({
+      id: d.id,
+      name: d.full_name ?? '(sin nombre)',
+      role: d.role as 'driver' | 'admin',
+    }));
 
-            {/* Deducibles */}
-            <div className="mt-6">
-              <div className="flex items-center justify-between mb-2">
-                <label className="label" style={{ marginBottom: 0 }}>
-                  Deducibles
-                </label>
-                <button
-                  type="button"
-                  onClick={addDed}
-                  className="btn btn-outline"
-                  style={{ padding: '4px 10px', fontSize: '0.75rem' }}
-                >
-                  <Plus size={12} /> Agregar deducible
-                </button>
-              </div>
-              {deductibles.length === 0 && (
-                <div
-                  className="rounded-lg border-dashed border p-4 text-center text-sm"
-                  style={{
-                    borderColor: 'var(--border-strong)',
-                    color: 'var(--text-tertiary)',
-                  }}
-                >
-                  Sin deducibles registrados.
-                </div>
-              )}
-              <div className="flex flex-col gap-2">
-                {deductibles.map((d) => (
-                  <div
-                    key={d.id}
-                    className="grid grid-cols-12 gap-2 items-center"
-                  >
-                    <input
-                      className="input col-span-7"
-                      placeholder="Concepto (ej. Gasolina, Comisión Clip)"
-                      value={d.concept}
-                      onChange={(e) =>
-                        updateDed(d.id, { concept: e.target.value })
-                      }
-                    />
-                    <input
-                      type="number"
-                      className="input col-span-3"
-                      placeholder="0"
-                      value={d.amount}
-                      onChange={(e) =>
-                        updateDed(d.id, { amount: Number(e.target.value) })
-                      }
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeDed(d.id)}
-                      className="btn btn-danger-outline col-span-2"
-                      style={{ padding: '6px' }}
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Evidencia */}
-            <div className="mt-6">
-              <label className="label">Evidencia del pago</label>
-              <div className="dropzone flex flex-col items-center gap-2">
-                <Camera size={28} style={{ color: 'var(--text-tertiary)' }} />
-                <div className="font-medium" style={{ color: 'var(--text-primary)' }}>
-                  Arrastra una foto o haz clic para subir
-                </div>
-                <div className="text-xs">PNG, JPG hasta 5 MB</div>
-                <button
-                  type="button"
-                  className="btn btn-outline mt-1"
-                  style={{ padding: '6px 12px' }}
-                >
-                  <Upload size={14} /> Seleccionar archivo
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right col — sticky summary */}
-        <div className="xl:sticky xl:top-24 self-start">
-          <div className="card p-6">
-            <h3 className="font-semibold mb-4">Resumen del cobro</h3>
-            <div className="space-y-3 text-sm">
-              <Row label="Monto bruto" value={formatMXN(amount)} />
-              <Row
-                label="Deducibles"
-                value={`- ${formatMXN(totalDed)}`}
-                color={totalDed > 0 ? 'var(--danger)' : undefined}
-              />
-              <div
-                className="border-t pt-3"
-                style={{ borderColor: 'var(--border)' }}
-              >
-                <div
-                  className="text-xs uppercase tracking-wide"
-                  style={{ color: 'var(--text-tertiary)' }}
-                >
-                  Ingreso neto
-                </div>
-                <div
-                  className="text-3xl font-bold mt-1"
-                  style={{ color: 'var(--success)' }}
-                >
-                  {formatMXN(net)}
-                </div>
-              </div>
-            </div>
-            <button className="btn btn-primary w-full mt-5" style={{ height: 44 }}>
-              Registrar Pago
-            </button>
-          </div>
-
-          {/* Historial */}
-          <div className="card p-5 mt-5">
-            <h3 className="font-semibold mb-3 text-sm">
-              Pagos previos · {lead.client_name}
-            </h3>
-            {previousPayments.length === 0 ? (
-              <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-                Sin pagos previos.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {previousPayments.map((p) => (
-                  <div
-                    key={p.id}
-                    className="flex items-center justify-between text-xs p-2 rounded"
-                    style={{ background: 'var(--bg-subtle)' }}
-                  >
-                    <div className="flex items-center gap-2">
-                      <MethodBadge method={p.method} />
-                      <TypeBadge type={p.type} />
-                    </div>
-                    <div className="text-right">
-                      <div className="font-semibold text-sm">
-                        {formatMXN(p.amount)}
-                      </div>
-                      <div style={{ color: 'var(--text-tertiary)' }}>
-                        {p.date}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
+    return <NewPaymentForm leads={leads} drivers={drivers} />;
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Error desconocido al cargar';
+    console.error('[NewPaymentPage] excepción no controlada:', err);
+    return <ErrorState message={message} />;
+  }
 }
 
-function Row({
-  label,
-  value,
-  color,
-}: {
-  label: string;
-  value: string;
-  color?: string;
-}) {
+function ErrorState({ message }: { message: string }) {
   return (
-    <div className="flex justify-between">
-      <span style={{ color: 'var(--text-secondary)' }}>{label}</span>
-      <span style={{ color, fontWeight: 600 }}>{value}</span>
+    <div className="card p-6 max-w-xl">
+      <h1 className="text-xl font-bold mb-2">No se pudo cargar el formulario</h1>
+      <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+        {message}
+      </p>
     </div>
   );
 }
