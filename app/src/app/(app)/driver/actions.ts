@@ -97,9 +97,11 @@ export async function confirmDeliveryAction(
     // ── Verificación de ownership: el lead debe estar asignado a este
     //    chofer y no estar ya entregado/cancelado. Defensa contra que un
     //    chofer cierre la entrega de otro chofer manipulando el lead_id.
+    //    Traemos también `client_name` para usarlo en la notificación
+    //    'entrega_confirmada' al final — evita un round-trip extra.
     const { data: leadRow, error: leadErr } = await admin
       .from('leads')
-      .select('id, driver_id, delivery_status')
+      .select('id, driver_id, delivery_status, client_name')
       .eq('id', data.lead_id)
       .maybeSingle();
     if (leadErr) {
@@ -159,15 +161,26 @@ export async function confirmDeliveryAction(
     }
 
     // ── INSERT driver_deliveries
+    //
+    // Nombres de columna del DDL real (algunos DIFERENTES al schema interno):
+    //   schema interno (FormData) -> DB column
+    //   ─────────────────────────────────────────────
+    //   data.receiver_id          -> admin_receiver_id
+    //   variable evidenceUrl      -> evidence_photo_url
+    //   timestamp del action      -> delivered_at  (NO confirmed_at)
+    // El campo `delivered_at` se manda explícito (en lugar de dejar el
+    // default `now()` del DB) para que el timestamp registrado refleje
+    // el momento del action, no el commit del INSERT — minimal pero útil
+    // si hay latencia entre validación y persistencia.
     const { data: delRow, error: delErr } = await admin
       .from('driver_deliveries')
       .insert({
         lead_id: data.lead_id,
         driver_id: driverId,
-        receiver_id: data.receiver_id,
+        admin_receiver_id: data.receiver_id,
         amount_collected: data.amount_collected,
-        evidence_url: evidenceUrl,
-        confirmed_at: new Date().toISOString(),
+        evidence_photo_url: evidenceUrl,
+        delivered_at: new Date().toISOString(),
       })
       .select('id')
       .single();
@@ -196,6 +209,56 @@ export async function confirmDeliveryAction(
         status: 'error',
         message: `No se pudo actualizar el estado del lead: ${updErr.message}`,
       };
+    }
+
+    // ── Notificación 'entrega_confirmada' a admins (best-effort, no fatal).
+    //    Se emite ANTES de la Edge Function para que aunque commit-stock
+    //    falle (la entrega física ya pasó, queda un cleanup manual de
+    //    stock), los admins reciban la notif igual.
+    try {
+      // Nombre del chofer para el mensaje. Si el SELECT falla caemos a
+      // 'Chofer' genérico — no abortamos la notif por eso.
+      const { data: driverProfile } = await admin
+        .from('profiles')
+        .select('full_name')
+        .eq('id', driverId)
+        .maybeSingle();
+      const driverName = driverProfile?.full_name ?? 'Chofer';
+      const clientName = leadRow.client_name ?? `Lead ${data.lead_id.slice(0, 8)}`;
+
+      const { data: admins } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('role', 'admin')
+        .eq('is_active', true);
+
+      if (admins && admins.length > 0) {
+        const amountFmt = new Intl.NumberFormat('es-MX', {
+          style: 'currency',
+          currency: 'MXN',
+          minimumFractionDigits: 0,
+        }).format(data.amount_collected);
+        const message = `Entrega confirmada: ${clientName} — cobró ${amountFmt} — Chofer: ${driverName}`;
+        const inserts = admins.map((a) => ({
+          recipient_id: a.id,
+          type: 'entrega_confirmada',
+          message,
+        }));
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifErr) {
+          console.error(
+            '[confirmDeliveryAction] notif insert falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[confirmDeliveryAction] notif lookup/insert falló (no fatal):',
+        e,
+      );
     }
 
     // ── Invocar Edge Function commit-stock-delivery

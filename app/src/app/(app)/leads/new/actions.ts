@@ -426,6 +426,35 @@ export async function saveLeadAction(
       console.error('[saveLeadAction] notif lookup/insert falló (no fatal):', e);
     }
 
+    // ── 10. Notificación al chofer asignado (solo si hay uno).
+    //    Bloque separado del de admins para que un fallo aquí no impida
+    //    avisar a los admins (y viceversa). `data.driver_id` puede llegar
+    //    como '' (literal vacío del schema Zod) o como undefined cuando
+    //    no se eligió chofer; tratamos ambos como "sin asignar".
+    if (data.driver_id && data.driver_id.length > 0) {
+      try {
+        const driverMessage = `Se te asignó una entrega: ${data.client_name} — ${data.address}`;
+        const { error: driverNotifErr } = await admin
+          .from('notifications')
+          .insert({
+            recipient_id: data.driver_id,
+            type: 'nuevo_lead',
+            message: driverMessage,
+          });
+        if (driverNotifErr) {
+          console.error(
+            '[saveLeadAction] notif al chofer falló (no fatal):',
+            driverNotifErr,
+          );
+        }
+      } catch (e) {
+        console.error(
+          '[saveLeadAction] notif al chofer excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
     revalidatePath('/leads');
     revalidatePath('/admin/catalogs'); // los stocks cambiaron
     return {
