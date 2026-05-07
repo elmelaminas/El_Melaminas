@@ -112,9 +112,20 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
+  // Rutas accesibles sin sesión. `/reset-password` está aquí porque el
+  // usuario llega desde el email con un code en la URL — el middleware
+  // corre ANTES de que el SDK pueda intercambiar ese code por sesión,
+  // así que `auth.getUser()` retorna null en ese tick. Si redirigiéramos,
+  // perderíamos el code y el reset fallaría.
+  const PUBLIC_ROUTES: readonly string[] = [
+    '/login',
+    '/forgot-password',
+    '/reset-password',
+  ];
+
   // ── Caso 1: NO autenticado
   if (!user) {
-    if (pathname === '/login') return response;
+    if (PUBLIC_ROUTES.includes(pathname)) return response;
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = '/login';
     loginUrl.search = '';
@@ -159,8 +170,10 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // ── Caso 3: autenticado en /login → mandar a su home
-  if (pathname === '/login') {
+  // ── Caso 3: autenticado en /login o /forgot-password → mandar a su home
+  //   /reset-password se permite siempre — el usuario puede tener una
+  //   sesión "recovery" activa y necesita el form para cambiar password.
+  if (pathname === '/login' || pathname === '/forgot-password') {
     const homeUrl = request.nextUrl.clone();
     homeUrl.pathname = HOME_BY_ROLE[role];
     homeUrl.search = '';
