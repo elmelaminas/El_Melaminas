@@ -6,10 +6,10 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { X, Mail, Phone, Loader } from 'lucide-react';
 import {
   CreateUserSchema,
-  createUserAction,
   initialCreateUserState,
   type CreateUserInput,
-} from './actions';
+} from './schema';
+import { createUserAction } from './actions';
 import type { Role } from '@/data/mock';
 
 const ROLES: { value: Role; label: string }[] = [

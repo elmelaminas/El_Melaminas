@@ -1,48 +1,12 @@
 'use server';
 
-import { z } from 'zod';
 import { revalidatePath } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import type { Role } from '@/data/mock';
+import { CreateUserSchema, type CreateUserState } from './schema';
 
-const ROLES = ['admin', 'seller', 'driver', 'warehouse', 'supervisor'] as const satisfies readonly Role[];
-
-/**
- * Schema compartido entre cliente (RHF + zodResolver) y servidor (validación
- * de defensa en profundidad). Si lo modificas, actualiza también el modal.
- */
-export const CreateUserSchema = z.object({
-  full_name: z
-    .string()
-    .trim()
-    .min(2, 'Nombre debe tener al menos 2 caracteres')
-    .max(120, 'Nombre demasiado largo'),
-  email: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .email('Correo inválido'),
-  phone: z
-    .string()
-    .trim()
-    .max(20, 'Teléfono demasiado largo')
-    .optional()
-    .or(z.literal('')),
-  role: z.enum(ROLES, { message: 'Rol inválido' }),
-});
-
-export type CreateUserInput = z.infer<typeof CreateUserSchema>;
-
-export type CreateUserState =
-  | { status: 'idle' }
-  | { status: 'success'; message: string }
-  | {
-      status: 'error';
-      message: string;
-      fieldErrors?: Partial<Record<keyof CreateUserInput, string[]>>;
-    };
-
-export const initialCreateUserState: CreateUserState = { status: 'idle' };
+// NB: este archivo solo puede exportar async functions porque tiene
+// `'use server'`. Schema, tipos y constantes viven en `./schema`. Ver el
+// docblock de ese archivo para el por qué.
 
 /**
  * Crea un usuario en Supabase Auth y su profile correspondiente.
