@@ -1,274 +1,171 @@
-'use client';
-
-import { useState } from 'react';
+import { supabaseAdmin } from '@/lib/supabase/admin';
+import { supabaseServer } from '@/lib/supabase/server';
 import {
-  MapPin,
-  Box,
-  CircleCheckBig,
-  Camera,
-  ChevronDown,
-  ChevronUp,
-  Layers,
-} from 'lucide-react';
-import {
-  formatMXN,
-  mockDeliveries,
-  mockLeads,
-  mockUsers,
-} from '@/data/mock';
-import { DeliveryBadge } from '@/components/ui/Badges';
-import { useDemo } from '@/context/DemoContext';
+  DriverClient,
+  type DeliveryCardData,
+  type ReceiverOption,
+} from './driver-client';
 
-export default function DriverPage() {
-  const { user } = useDemo();
-  const [historyOpen, setHistoryOpen] = useState(false);
+/**
+ * Página /driver — vista del chofer.
+ *
+ * Server Component:
+ *   1. Lee `auth.uid()` del usuario logueado vía cookies (supabaseServer).
+ *   2. SELECT leads donde driver_id = uid AND delivery_status IN
+ *      ('pendiente', 'en_transito') AND deleted_at IS NULL.
+ *   3. Para cada lead, joinea lead_colors → colors(name) y suma
+ *      payments(amount where status='exitoso') para calcular adeudo.
+ *   4. SELECT profiles activos role∈{admin, supervisor} para el
+ *      dropdown "Entregar efectivo a".
+ *   5. Pasa al Client Component.
+ *
+ * Mobile-first: el Client se encarga del layout estrecho (max 420px).
+ */
+export const dynamic = 'force-dynamic';
 
-  const driverName =
-    user.role === 'driver' ? user.name : 'Carlos Ramírez';
+export default async function DriverPage() {
+  try {
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return <ErrorState message="Sesión no válida. Vuelve a iniciar sesión." />;
+    }
+    const driverId = user.id;
 
-  const admins = mockUsers
-    .filter((u) => u.role === 'admin' || u.role === 'supervisor')
-    .map((u) => u.name);
+    const admin = supabaseAdmin();
 
-  const completed = mockLeads.filter((l) => l.delivery_status === 'entregado');
+    // SELECTs en paralelo.
+    const [leadsResult, profileResult, receiversResult] = await Promise.all([
+      admin
+        .from('leads')
+        .select(
+          `id, client_name, address, maps_url, total_amount, payment_status, delivery_status,
+           lead_colors (
+             quantity,
+             colors ( name )
+           )`,
+        )
+        .eq('driver_id', driverId)
+        .in('delivery_status', ['pendiente', 'en_transito'])
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false }),
+      admin
+        .from('profiles')
+        .select('full_name')
+        .eq('id', driverId)
+        .maybeSingle(),
+      admin
+        .from('profiles')
+        .select('id, full_name, role')
+        .in('role', ['admin', 'supervisor'])
+        .eq('is_active', true)
+        .order('full_name'),
+    ]);
 
-  return (
-    <div
-      className="mx-auto"
-      style={{ maxWidth: 420, width: '100%' }}
-    >
-      {/* Mobile-style header card */}
-      <div
-        className="rounded-2xl mb-5 p-4 flex items-center gap-3"
-        style={{
-          background: 'linear-gradient(135deg, #1B3A5C 0%, #2E74B5 100%)',
-          color: '#fff',
-        }}
-      >
-        <div
-          className="flex items-center justify-center"
-          style={{
-            width: 40,
-            height: 40,
-            borderRadius: 10,
-            background: 'var(--brand-accent)',
-            color: '#1F2937',
-          }}
-        >
-          <Layers size={22} />
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="text-xs" style={{ opacity: 0.75 }}>
-            Buen día,
-          </div>
-          <div className="font-semibold truncate">{driverName}</div>
-        </div>
-        <div className="text-right">
-          <div className="text-xs" style={{ opacity: 0.75 }}>
-            Hoy
-          </div>
-          <div className="font-bold">{mockDeliveries.length} entregas</div>
-        </div>
-      </div>
+    if (leadsResult.error) {
+      return <ErrorState message={`Error leyendo entregas: ${leadsResult.error.message}`} />;
+    }
+    if (receiversResult.error) {
+      return <ErrorState message={`Error leyendo admins: ${receiversResult.error.message}`} />;
+    }
 
-      {/* Active deliveries */}
-      <div className="flex flex-col gap-4">
-        <div className="px-1 text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>
-          Entregas activas
-        </div>
-        {mockDeliveries.map((d) => (
-          <DeliveryCard key={d.id} delivery={d} admins={admins} />
-        ))}
-      </div>
+    const leadIds = (leadsResult.data ?? []).map((l) => l.id);
 
-      {/* History */}
-      <div className="mt-6">
-        <button
-          onClick={() => setHistoryOpen((v) => !v)}
-          className="w-full card flex items-center justify-between p-4"
-          style={{ background: 'var(--bg-subtle)' }}
-        >
-          <div className="text-left">
-            <div className="font-semibold">Historial de entregas</div>
-            <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-              {completed.length} completadas hoy
-            </div>
-          </div>
-          {historyOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-        </button>
-        {historyOpen && (
-          <div className="mt-3 flex flex-col gap-2">
-            {completed.map((l) => (
-              <div
-                key={l.id}
-                className="card p-3 flex items-center justify-between"
-              >
-                <div>
-                  <div className="text-sm font-medium">{l.client_name}</div>
-                  <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-                    {l.id} · {formatMXN(l.total_amount)}
-                  </div>
-                </div>
-                <DeliveryBadge status={l.delivery_status} />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+    // Pagos exitosos previos para calcular adeudo de cada lead.
+    let paidByLead = new Map<string, number>();
+    if (leadIds.length > 0) {
+      const { data: pagosData, error: pagosErr } = await admin
+        .from('payments')
+        .select('lead_id, amount')
+        .eq('status', 'exitoso')
+        .in('lead_id', leadIds);
+      if (pagosErr) {
+        return <ErrorState message={`Error leyendo pagos previos: ${pagosErr.message}`} />;
+      }
+      for (const p of pagosData ?? []) {
+        if (!p.lead_id) continue;
+        paidByLead.set(p.lead_id, (paidByLead.get(p.lead_id) ?? 0) + Number(p.amount ?? 0));
+      }
+    }
+
+    // Lecciones aprendidas en módulos previos: PostgREST puede devolver
+    // joins anidados como objeto o array. `lead_colors` es many → array;
+    // `colors` dentro de cada lead_color es one → puede ser objeto o
+    // array de un único elemento. Manejamos ambos.
+    type RawLeadColor = {
+      quantity: number | null;
+      colors: { name: string } | { name: string }[] | null;
+    };
+    type RawLead = {
+      id: string;
+      client_name: string;
+      address: string | null;
+      maps_url: string | null;
+      total_amount: number | string | null;
+      payment_status: string | null;
+      delivery_status: string | null;
+      lead_colors: RawLeadColor[] | null;
+    };
+
+    const deliveries: DeliveryCardData[] = ((leadsResult.data ?? []) as RawLead[]).map(
+      (l) => {
+        const total = Number(l.total_amount ?? 0);
+        const paid = paidByLead.get(l.id) ?? 0;
+        const adeudo = Math.max(0, total - paid);
+        const colors = (l.lead_colors ?? [])
+          .map((lc) => {
+            const colorObj = Array.isArray(lc.colors) ? lc.colors[0] : lc.colors;
+            return {
+              color_name: colorObj?.name ?? '(color sin nombre)',
+              quantity: Number(lc.quantity ?? 0),
+            };
+          })
+          .filter((c) => c.quantity > 0);
+        return {
+          id: l.id,
+          client_name: l.client_name,
+          address: l.address ?? '',
+          maps_url: l.maps_url ?? '',
+          total_amount: total,
+          adeudo,
+          delivery_status: (l.delivery_status as 'pendiente' | 'en_transito') ?? 'pendiente',
+          colors,
+        };
+      },
+    );
+
+    const receivers: ReceiverOption[] = (receiversResult.data ?? []).map((r) => ({
+      id: r.id,
+      name: r.full_name ?? '(sin nombre)',
+    }));
+
+    const driverName = profileResult.data?.full_name ?? user.email ?? 'Chofer';
+
+    return (
+      <DriverClient
+        driverName={driverName}
+        deliveries={deliveries}
+        receivers={receivers}
+      />
+    );
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Error desconocido al cargar entregas';
+    console.error('[DriverPage] excepción no controlada:', err);
+    return <ErrorState message={message} />;
+  }
 }
 
-function DeliveryCard({
-  delivery,
-  admins,
-}: {
-  delivery: (typeof mockDeliveries)[number];
-  admins: string[];
-}) {
-  const [admin, setAdmin] = useState(admins[0] ?? 'Sergio Granados');
-  const owes = delivery.adeudo > 0;
-
+function ErrorState({ message }: { message: string }) {
   return (
-    <div className="card p-5">
-      <div className="flex items-start justify-between gap-2 mb-3">
-        <div>
-          <div className="text-xs font-mono" style={{ color: 'var(--text-tertiary)' }}>
-            {delivery.id}
-          </div>
-          <div
-            className="font-bold leading-tight mt-1"
-            style={{ fontSize: '1.25rem' }}
-          >
-            {delivery.client_name}
-          </div>
-        </div>
-        <DeliveryBadge status={delivery.delivery_status} />
-      </div>
-
-      {/* Address */}
-      <div className="text-sm mb-2" style={{ color: 'var(--text-secondary)' }}>
-        {delivery.address}
-      </div>
-      <a
-        href={delivery.maps_url}
-        className="btn w-full mb-4"
-        style={{
-          background: '#16A34A',
-          color: '#fff',
-          height: 44,
-        }}
-      >
-        <MapPin size={16} /> Ver en mapa
-      </a>
-
-      {/* Materials */}
-      <div className="mb-4">
-        <div
-          className="text-xs uppercase tracking-wide mb-2"
-          style={{ color: 'var(--text-tertiary)' }}
-        >
-          Materiales
-        </div>
-        <div className="flex flex-col gap-2">
-          {delivery.colors.map((c) => (
-            <div
-              key={c.color}
-              className="flex items-center gap-3 p-2 rounded-lg"
-              style={{ background: 'var(--bg-subtle)' }}
-            >
-              <div
-                className="flex items-center justify-center"
-                style={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 8,
-                  background: '#FEF3C7',
-                  color: '#92400E',
-                }}
-              >
-                <Box size={16} />
-              </div>
-              <div className="flex-1">
-                <div className="text-sm font-medium">{c.color}</div>
-              </div>
-              <div className="font-bold text-sm">×{c.qty}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Total + adeudo */}
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-            Total
-          </div>
-          <div className="font-semibold">{formatMXN(delivery.total_amount)}</div>
-        </div>
-        <div className="text-right">
-          {owes ? (
-            <>
-              <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-                Adeudo
-              </div>
-              <div
-                className="text-2xl font-bold"
-                style={{ color: 'var(--danger)' }}
-              >
-                {formatMXN(delivery.adeudo)}
-              </div>
-            </>
-          ) : (
-            <div
-              className="font-bold flex items-center gap-1"
-              style={{ color: 'var(--success)' }}
-            >
-              <CircleCheckBig size={18} /> Pagado
-            </div>
-          )}
-        </div>
-      </div>
-
-      <hr style={{ border: 0, borderTop: '1px solid var(--border)' }} />
-
-      <div className="mt-4">
-        <div className="font-semibold mb-3">Confirmar entrega</div>
-
-        {owes && (
-          <div className="dropzone mb-3">
-            <Camera size={22} style={{ color: 'var(--text-tertiary)' }} className="mx-auto mb-1" />
-            <div className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>
-              Sube foto del cobro
-            </div>
-            <div className="text-[11px]">
-              Comprobante de transferencia, ticket o efectivo
-            </div>
-          </div>
-        )}
-
-        <div className="mb-3">
-          <label className="label">Entregar efectivo a</label>
-          <select
-            className="select"
-            value={admin}
-            onChange={(e) => setAdmin(e.target.value)}
-          >
-            {admins.map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <button
-          className="btn btn-primary w-full"
-          style={{ height: 56, fontSize: '1rem', fontWeight: 600 }}
-        >
-          <CircleCheckBig size={20} /> Entregado a {admin.split(' ')[0]}
-        </button>
-      </div>
+    <div className="card p-6 max-w-xl">
+      <h1 className="text-xl font-bold mb-2">No se pudo cargar las entregas</h1>
+      <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+        {message}
+      </p>
     </div>
   );
 }
