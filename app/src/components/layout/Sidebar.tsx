@@ -23,6 +23,7 @@ import {
   LogOut,
   Layers,
   Loader,
+  X,
 } from 'lucide-react';
 import { useDemo } from '@/context/DemoContext';
 import { supabaseClient } from '@/lib/supabase/client';
@@ -51,7 +52,15 @@ const NAV: NavItem[] = [
   { href: '/dashboard',       label: 'Reportes',          icon: <ChartBarBig size={18} />,       roles: ['supervisor'] },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({
+  open = false,
+  onClose,
+}: {
+  /** Drawer abierto en mobile. Sin efecto en desktop (CSS lo deja siempre visible). */
+  open?: boolean;
+  /** Llamado al click en el botón cerrar (X) en mobile. Optional. */
+  onClose?: () => void;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const { role, user, setUser } = useDemo();
@@ -85,11 +94,14 @@ export default function Sidebar() {
   };
 
   return (
-    <aside className="sidebar">
-      {/* Logo */}
+    <aside className={`sidebar${open ? ' open' : ''}`}>
+      {/* Logo + botón cerrar en mobile */}
       <div
         className="flex items-center gap-3 px-5"
-        style={{ height: 'var(--header-height)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}
+        style={{
+          height: 'var(--header-height)',
+          borderBottom: '1px solid rgba(255,255,255,0.08)',
+        }}
       >
         <div
           className="flex items-center justify-center"
@@ -103,14 +115,45 @@ export default function Sidebar() {
         >
           <Layers size={20} />
         </div>
-        <div>
-          <div style={{ fontWeight: 800, letterSpacing: '0.02em', fontSize: '0.95rem' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              fontWeight: 800,
+              letterSpacing: '0.02em',
+              fontSize: '0.95rem',
+            }}
+          >
             EL MELAMINAS
           </div>
-          <div style={{ fontSize: '0.6875rem', color: 'var(--sidebar-text-muted)' }}>
+          <div
+            style={{
+              fontSize: '0.6875rem',
+              color: 'var(--sidebar-text-muted)',
+            }}
+          >
             Gestión Operativa
           </div>
         </div>
+        {/* Botón cerrar — solo visible en mobile (cuando el drawer es modal) */}
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="lg:hidden flex items-center justify-center"
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 8,
+              background: 'rgba(255,255,255,0.08)',
+              color: '#fff',
+              border: 'none',
+              cursor: 'pointer',
+            }}
+            aria-label="Cerrar menú"
+          >
+            <X size={18} />
+          </button>
+        )}
       </div>
 
       {/* Navigation */}

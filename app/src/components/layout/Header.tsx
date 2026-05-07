@@ -5,7 +5,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Bell, Search } from 'lucide-react';
+import { Bell, Menu, Search } from 'lucide-react';
 import { useDemo } from '@/context/DemoContext';
 import { mockNotifications, roleLabel } from '@/data/mock';
 
@@ -16,27 +16,60 @@ const TYPE_DOT: Record<string, string> = {
   danger: 'bg-[#DC2626]',
 };
 
-export default function Header() {
+export default function Header({
+  onMenuClick,
+}: {
+  /** Callback para abrir el sidebar drawer. Solo se invoca desde el botón
+   *  hamburger visible en mobile (`lg:hidden`). En desktop el sidebar
+   *  ya está siempre visible y el botón no aparece. */
+  onMenuClick?: () => void;
+}) {
   const { user, role } = useDemo();
   const [open, setOpen] = useState(false);
   const unread = mockNotifications.length;
 
   return (
     <header className="app-header">
-      {/* Search */}
-      <div className="hidden md:flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: 'var(--bg-muted)', minWidth: 320 }}>
-        <Search size={16} style={{ color: 'var(--text-tertiary)' }} />
-        <input
-          placeholder="Buscar leads, clientes, pagos…"
-          className="bg-transparent outline-none text-sm flex-1"
-          style={{ color: 'var(--text-primary)' }}
-        />
-        <kbd
-          className="hidden lg:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
-          style={{ background: '#fff', border: '1px solid var(--border)', color: 'var(--text-tertiary)' }}
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        {/* Botón hamburger — solo en mobile/tablet. Abre el sidebar drawer. */}
+        {onMenuClick && (
+          <button
+            type="button"
+            onClick={onMenuClick}
+            className="lg:hidden flex items-center justify-center rounded-lg"
+            style={{
+              width: 40,
+              height: 40,
+              color: 'var(--text-secondary)',
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+            aria-label="Abrir menú"
+          >
+            <Menu size={22} />
+          </button>
+        )}
+
+        {/* Search — visible solo en md+ (≥768px) */}
+        <div
+          className="hidden md:flex items-center gap-2 px-3 py-2 rounded-lg"
+          style={{ background: 'var(--bg-muted)', minWidth: 320 }}
         >
-          Ctrl + K
-        </kbd>
+          <Search size={16} style={{ color: 'var(--text-tertiary)' }} />
+          <input
+            placeholder="Buscar leads, clientes, pagos…"
+            className="bg-transparent outline-none text-sm flex-1"
+            style={{ color: 'var(--text-primary)' }}
+          />
+          <kbd
+            className="hidden lg:inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium"
+            style={{ background: '#fff', border: '1px solid var(--border)', color: 'var(--text-tertiary)' }}
+          >
+            Ctrl + K
+          </kbd>
+        </div>
       </div>
 
       <div className="flex items-center gap-3">
