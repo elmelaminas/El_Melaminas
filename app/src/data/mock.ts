@@ -30,7 +30,7 @@ export type SaleType =
 export type PurchaseType = 'A Domicilio' | 'En Fábrica';
 export type ProductType = 'Con Corte' | 'Sin Corte';
 export type DeliveryStatus = 'pendiente' | 'en_transito' | 'entregado' | 'cancelado';
-export type PaymentStatus = 'pendiente' | 'parcial' | 'pagado';
+export type PaymentStatus = 'pendiente' | 'parcial' | 'pagado' | 'cancelado';
 
 export interface MockLead {
   id: string;

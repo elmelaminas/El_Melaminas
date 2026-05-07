@@ -1,0 +1,415 @@
+'use client';
+
+import Link from 'next/link';
+import { useRouter, usePathname } from 'next/navigation';
+import { useEffect, useMemo, useState, useTransition } from 'react';
+import {
+  Plus,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  Loader,
+} from 'lucide-react';
+import {
+  ChannelBadge,
+  DeliveryBadge,
+  PaymentBadge,
+} from '@/components/ui/Badges';
+import {
+  formatMXN,
+  type Channel,
+  type DeliveryStatus,
+  type PaymentStatus,
+} from '@/data/mock';
+
+export type LeadRow = {
+  id: string;
+  client_name: string;
+  phone: string;
+  channel: Channel;
+  seller_name: string | null;
+  sheets_count: number;
+  total_amount: number;
+  sale_date: string | null;
+  created_at: string | null;
+  delivery_status: DeliveryStatus;
+  payment_status: PaymentStatus;
+};
+
+export type FiltersState = {
+  q: string;
+  channel: '' | 'whatsapp' | 'tiktok' | 'google' | 'tienda';
+  delivery: '' | 'pendiente' | 'en_transito' | 'entregado' | 'cancelado';
+  payment: '' | 'pendiente' | 'parcial' | 'pagado' | 'cancelado';
+};
+
+const CHANNEL_OPTS: { value: FiltersState['channel']; label: string }[] = [
+  { value: '', label: 'Todos los canales' },
+  { value: 'whatsapp', label: 'WhatsApp' },
+  { value: 'tiktok', label: 'TikTok' },
+  { value: 'google', label: 'Google' },
+  { value: 'tienda', label: 'Tienda' },
+];
+
+const DELIVERY_OPTS: { value: FiltersState['delivery']; label: string }[] = [
+  { value: '', label: 'Todas las entregas' },
+  { value: 'pendiente', label: 'Pendiente' },
+  { value: 'en_transito', label: 'En tránsito' },
+  { value: 'entregado', label: 'Entregado' },
+  { value: 'cancelado', label: 'Cancelado' },
+];
+
+const PAYMENT_OPTS: { value: FiltersState['payment']; label: string }[] = [
+  { value: '', label: 'Todos los pagos' },
+  { value: 'pendiente', label: 'Pendiente' },
+  { value: 'parcial', label: 'Parcial' },
+  { value: 'pagado', label: 'Pagado' },
+  { value: 'cancelado', label: 'Cancelado' },
+];
+
+const DEBOUNCE_MS = 300;
+
+/**
+ * Cliente del listado de leads.
+ *
+ * Estado importante: TODO el filtro vive en la URL (`?q=…&channel=…`),
+ * el Server Component lee searchParams y manda `leads` ya filtrados.
+ * Este componente sólo:
+ *  - mantiene `qInput` local para el campo de búsqueda (para que cada
+ *    keystroke no dispare un round-trip — debounce 300ms).
+ *  - construye nuevas URLs y navega con `router.push`.
+ *  - usa `useTransition` para atenuar la tabla mientras llega la nueva data.
+ *
+ * `qInput` se sincroniza con `filters.q` cuando éste cambia (ej. el
+ * usuario apretó "back" o usó un link externo) — sin esto, el input
+ * pintaría stale-text después de una navegación externa.
+ */
+export function LeadsClient({
+  leads,
+  total,
+  page,
+  pageSize,
+  totalPages,
+  filters,
+}: {
+  leads: LeadRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  filters: FiltersState;
+}) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const [pending, startTransition] = useTransition();
+
+  const [qInput, setQInput] = useState<string>(filters.q);
+
+  // Sync: si filters.q cambia desde fuera (back, link externo), refleja
+  // en el input local. Importante hacerlo ANTES del effect de debounce
+  // para que ese effect vea qInput === filters.q y no dispare un push.
+  useEffect(() => {
+    setQInput(filters.q);
+  }, [filters.q]);
+
+  // Debounce: 300ms después del último keystroke en `qInput`, navegamos.
+  // Si filters.q ya coincide con qInput (sync de arriba acaba de correr),
+  // no hacemos nada.
+  useEffect(() => {
+    if (qInput === filters.q) return;
+    const t = setTimeout(() => {
+      pushFilters({ q: qInput, page: 1 });
+    }, DEBOUNCE_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qInput, filters.q]);
+
+  function pushFilters(
+    next: Partial<{
+      q: string;
+      channel: string;
+      delivery: string;
+      payment: string;
+      page: number;
+    }>,
+  ) {
+    const merged = {
+      q: next.q ?? filters.q,
+      channel: next.channel ?? filters.channel,
+      delivery: next.delivery ?? filters.delivery,
+      payment: next.payment ?? filters.payment,
+      page: next.page ?? page,
+    };
+    const params = new URLSearchParams();
+    if (merged.q) params.set('q', merged.q);
+    if (merged.channel) params.set('channel', merged.channel);
+    if (merged.delivery) params.set('delivery', merged.delivery);
+    if (merged.payment) params.set('payment', merged.payment);
+    if (merged.page > 1) params.set('page', String(merged.page));
+    const qs = params.toString();
+    startTransition(() => {
+      router.push(qs ? `${pathname}?${qs}` : pathname);
+    });
+  }
+
+  const hasFilters = useMemo(
+    () =>
+      Boolean(
+        filters.q || filters.channel || filters.delivery || filters.payment,
+      ),
+    [filters],
+  );
+
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, total);
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Leads</h1>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            {total} {total === 1 ? 'lead registrado' : 'leads registrados'} —
+            gestiona pedidos, entregas y pagos.
+          </p>
+        </div>
+        <Link href="/leads/new" className="btn btn-primary">
+          <Plus size={16} /> Nuevo Lead
+        </Link>
+      </div>
+
+      {/* Filtros */}
+      <div className="card p-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="lg:col-span-1 relative">
+            <Search
+              size={16}
+              className="absolute left-3 top-1/2 -translate-y-1/2"
+              style={{ color: 'var(--text-tertiary)' }}
+            />
+            <input
+              placeholder="Buscar por nombre o teléfono…"
+              className="input"
+              style={{ paddingLeft: 36 }}
+              value={qInput}
+              onChange={(e) => setQInput(e.target.value)}
+              aria-label="Buscar leads"
+            />
+          </div>
+          <select
+            className="select"
+            value={filters.channel}
+            onChange={(e) =>
+              pushFilters({ channel: e.target.value, page: 1 })
+            }
+            aria-label="Filtrar por canal"
+          >
+            {CHANNEL_OPTS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <select
+            className="select"
+            value={filters.delivery}
+            onChange={(e) =>
+              pushFilters({ delivery: e.target.value, page: 1 })
+            }
+            aria-label="Filtrar por estado de entrega"
+          >
+            {DELIVERY_OPTS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <select
+            className="select"
+            value={filters.payment}
+            onChange={(e) =>
+              pushFilters({ payment: e.target.value, page: 1 })
+            }
+            aria-label="Filtrar por estado de pago"
+          >
+            {PAYMENT_OPTS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {hasFilters && (
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setQInput('');
+                pushFilters({
+                  q: '',
+                  channel: '',
+                  delivery: '',
+                  payment: '',
+                  page: 1,
+                });
+              }}
+              className="btn btn-ghost"
+              style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+            >
+              Limpiar filtros
+            </button>
+            {pending && (
+              <span
+                className="text-xs flex items-center gap-1"
+                style={{ color: 'var(--text-tertiary)' }}
+              >
+                <Loader size={12} className="animate-spin" /> Actualizando…
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Tabla */}
+      <div
+        className="tbl-wrap"
+        style={{ opacity: pending ? 0.6 : 1, transition: 'opacity 150ms ease' }}
+      >
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>Canal</th>
+                <th>Vendedor</th>
+                <th className="text-center">Hojas</th>
+                <th>Total</th>
+                <th>Fecha</th>
+                <th>Entrega</th>
+                <th>Pago</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leads.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={8}
+                    className="text-center py-8 text-sm"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    {hasFilters
+                      ? 'Ningún lead coincide con los filtros actuales.'
+                      : 'Sin leads todavía. Crea el primero con el botón "+ Nuevo Lead".'}
+                  </td>
+                </tr>
+              ) : (
+                leads.map((l) => (
+                  <tr key={l.id}>
+                    <td>
+                      <div className="font-medium">{l.client_name}</div>
+                      <div
+                        className="text-xs"
+                        style={{ color: 'var(--text-tertiary)' }}
+                      >
+                        {l.phone || '—'}
+                      </div>
+                    </td>
+                    <td>
+                      <ChannelBadge channel={l.channel} />
+                    </td>
+                    <td
+                      className="text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {l.seller_name ?? '—'}
+                    </td>
+                    <td className="text-center">{l.sheets_count}</td>
+                    <td className="font-semibold">
+                      {formatMXN(l.total_amount)}
+                    </td>
+                    <td
+                      className="text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {formatDate(l.sale_date)}
+                    </td>
+                    <td>
+                      <DeliveryBadge status={l.delivery_status} />
+                    </td>
+                    <td>
+                      <PaymentBadge status={l.payment_status} />
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Paginación */}
+        {total > 0 && (
+          <div
+            className="flex items-center justify-between px-6 py-3 border-t"
+            style={{
+              borderColor: 'var(--border)',
+              background: 'var(--bg-subtle)',
+            }}
+          >
+            <div
+              className="text-xs"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              Mostrando <strong>{start}-{end}</strong> de{' '}
+              <strong>{total}</strong> {total === 1 ? 'resultado' : 'resultados'}
+            </div>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ padding: '6px 10px' }}
+                disabled={page <= 1 || pending}
+                onClick={() => pushFilters({ page: page - 1 })}
+                aria-label="Página anterior"
+              >
+                <ChevronLeft size={14} />
+              </button>
+              <span
+                className="text-xs px-2"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                Página {page} de {totalPages}
+              </span>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ padding: '6px 10px' }}
+                disabled={page >= totalPages || pending}
+                onClick={() => pushFilters({ page: page + 1 })}
+                aria-label="Página siguiente"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Formatea una fecha ISO (`YYYY-MM-DD` o ISO timestamp) a texto corto
+ * en es-MX. Devuelve `—` si la fecha es null/undefined o inválida.
+ */
+function formatDate(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso; // muestra raw si no parsea
+  return d.toLocaleDateString('es-MX', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}

@@ -50,11 +50,13 @@ const PAYMENT_BADGE: Record<PaymentStatus, string> = {
   pendiente: 'badge badge-danger',
   parcial: 'badge badge-warning',
   pagado: 'badge badge-success',
+  cancelado: 'badge badge-neutral',
 };
 const PAYMENT_LABEL: Record<PaymentStatus, string> = {
   pendiente: 'Pendiente',
   parcial: 'Parcial',
   pagado: 'Pagado',
+  cancelado: 'Cancelado',
 };
 
 export function PaymentBadge({ status }: { status: PaymentStatus }) {
