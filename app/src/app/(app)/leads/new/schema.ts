@@ -102,6 +102,16 @@ export const LeadCreateSchema = z.object({
     .uuid('Selecciona un vendedor')
     .optional()
     .or(z.literal('')),
+  // Chofer asignado a la entrega. Antes vivía en /payments/new pero
+  // semánticamente pertenece al lead — el chofer se decide al crear el
+  // pedido, no al cobrar (un mismo lead puede tener varios pagos pero
+  // un solo chofer). El driver del lead es lo que filtra /driver y lo
+  // que ve la entrega.
+  driver_id: z
+    .string()
+    .uuid('Chofer inválido')
+    .optional()
+    .or(z.literal('')),
   sale_type: z.enum(SALE_TYPE_VALUES, { message: 'Tipo de venta inválido' }),
   sale_date: z
     .string()

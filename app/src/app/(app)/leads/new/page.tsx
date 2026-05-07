@@ -1,5 +1,10 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { NewLeadForm, type SellerOption, type ColorOption } from './new-lead-form';
+import {
+  NewLeadForm,
+  type SellerOption,
+  type ColorOption,
+  type DriverOption,
+} from './new-lead-form';
 
 /**
  * Página /leads/new.
@@ -20,7 +25,7 @@ export default async function NewLeadPage() {
   try {
     const admin = supabaseAdmin();
 
-    const [sellersResult, colorsResult] = await Promise.all([
+    const [sellersResult, colorsResult, driversResult] = await Promise.all([
       admin
         .from('sellers')
         .select('id, name')
@@ -31,6 +36,16 @@ export default async function NewLeadPage() {
         .select('id, name')
         .eq('is_active', true)
         .order('name', { ascending: true }),
+      // Choferes activos para el dropdown "Chofer asignado". Filtramos
+      // por role='driver' (no role IN [...]) — los admins ya no aparecen
+      // en este selector. Si necesitas que un admin pueda ser asignado
+      // como chofer puntualmente, agrega 'admin' al .in().
+      admin
+        .from('profiles')
+        .select('id, full_name')
+        .eq('role', 'driver')
+        .eq('is_active', true)
+        .order('full_name', { ascending: true }),
     ]);
 
     if (sellersResult.error) {
@@ -38,6 +53,9 @@ export default async function NewLeadPage() {
     }
     if (colorsResult.error) {
       return <ErrorState message={`Error leyendo colors: ${colorsResult.error.message}`} />;
+    }
+    if (driversResult.error) {
+      return <ErrorState message={`Error leyendo choferes: ${driversResult.error.message}`} />;
     }
 
     const sellers: SellerOption[] = (sellersResult.data ?? []).map((s) => ({
@@ -48,8 +66,12 @@ export default async function NewLeadPage() {
       id: c.id,
       name: c.name,
     }));
+    const drivers: DriverOption[] = (driversResult.data ?? []).map((d) => ({
+      id: d.id,
+      name: d.full_name ?? '(sin nombre)',
+    }));
 
-    return <NewLeadForm sellers={sellers} colors={colors} />;
+    return <NewLeadForm sellers={sellers} colors={colors} drivers={drivers} />;
   } catch (err) {
     const message =
       err instanceof Error ? err.message : 'Error desconocido al cargar formulario';

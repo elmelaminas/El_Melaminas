@@ -26,7 +26,9 @@ export type PaymentRow = {
   payment_type: 'anticipo' | 'liquidacion';
   status: 'exitoso' | 'pendiente' | 'rechazado';
   paid_at: string | null;
-  driver_name: string;
+  // Nota: la columna "chofer" se eliminó del listado. El chofer asignado
+  // ahora vive en `leads.driver_id` (asignado al crear el lead). Para
+  // mostrarlo aquí habría que JOIN payments → leads → profiles.
   deductibles: { concept: string; amount: number }[];
 };
 
@@ -249,7 +251,6 @@ export function PaymentsClient({
                 <th>Neto</th>
                 <th>Método</th>
                 <th>Tipo</th>
-                <th>Chofer</th>
                 <th>Fecha</th>
               </tr>
             </thead>
@@ -257,7 +258,7 @@ export function PaymentsClient({
               {payments.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={8}
+                    colSpan={7}
                     className="text-center py-8 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -314,12 +315,6 @@ export function PaymentsClient({
                       </td>
                       <td>
                         <TypeBadge type={TYPE_TO_BADGE[p.payment_type]} />
-                      </td>
-                      <td
-                        className="text-sm"
-                        style={{ color: 'var(--text-secondary)' }}
-                      >
-                        {p.driver_name}
                       </td>
                       <td
                         className="text-sm"

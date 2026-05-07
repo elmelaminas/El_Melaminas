@@ -36,12 +36,6 @@ export type LeadOption = {
   sale_date: string | null;
 };
 
-export type DriverOption = {
-  id: string;
-  name: string;
-  role: 'driver' | 'admin';
-};
-
 /**
  * Formulario para registrar un pago.
  *
@@ -59,21 +53,21 @@ export type DriverOption = {
  */
 export function NewPaymentForm({
   leads,
-  drivers,
 }: {
   leads: LeadOption[];
-  drivers: DriverOption[];
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
-  // Estado del formulario
+  // Estado del formulario.
+  // NOTA: el dropdown "Chofer asignado" se quitó — esa asignación ahora
+  // vive en /leads/new. Si necesitas saber el chofer de un pago, JOIN
+  // con leads.driver_id usando payments.lead_id.
   const [query, setQuery] = useState('');
   const [selectedLeadId, setSelectedLeadId] = useState<string>(leads[0]?.id ?? '');
   const [amount, setAmount] = useState<number>(leads[0]?.adeudo ?? 0);
   const [method, setMethod] = useState<typeof METHOD_OPTIONS[number]['value']>('transferencia');
   const [paymentType, setPaymentType] = useState<typeof PAYMENT_TYPE_OPTIONS[number]['value']>('anticipo');
-  const [driverId, setDriverId] = useState<string>(drivers[0]?.id ?? '');
   const [deductibles, setDeductibles] = useState<(DeductibleInput & { id: number })[]>([]);
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -142,7 +136,6 @@ export function NewPaymentForm({
     fd.set('amount', String(amount));
     fd.set('method', method);
     fd.set('payment_type', paymentType);
-    fd.set('driver_id', driverId);
     // Deducibles van como JSON string para que `formData.get` retorne un
     // único string parseable. Ver actions.ts donde se hace JSON.parse.
     fd.set(
@@ -160,7 +153,6 @@ export function NewPaymentForm({
       amount,
       method,
       payment_type: paymentType,
-      driver_id: driverId,
       deductibles_count: deductibles.length,
       evidence: evidenceFile?.name ?? null,
     });
@@ -369,23 +361,6 @@ export function NewPaymentForm({
                   {PAYMENT_TYPE_OPTIONS.map((t) => (
                     <option key={t.value} value={t.value}>
                       {t.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="label">Chofer asignado</label>
-                <select
-                  className="select"
-                  value={driverId}
-                  onChange={(e) => setDriverId(e.target.value)}
-                  disabled={pending}
-                >
-                  <option value="">— sin chofer —</option>
-                  {drivers.map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                      {d.role === 'admin' ? ' (admin)' : ''}
                     </option>
                   ))}
                 </select>

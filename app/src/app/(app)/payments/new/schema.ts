@@ -61,11 +61,9 @@ export const PaymentCreateSchema = z.object({
     .max(10_000_000, 'Monto demasiado grande'),
   method: z.enum(METHOD_VALUES, { message: 'Método inválido' }),
   payment_type: z.enum(PAYMENT_TYPE_VALUES, { message: 'Tipo inválido' }),
-  driver_id: z
-    .string()
-    .uuid('Chofer inválido')
-    .optional()
-    .or(z.literal('')),
+  // `driver_id` ya no vive en payments — se asigna al crear el lead en
+  // /leads/new. La columna `payments.driver_id` puede seguir existiendo
+  // en DB; este endpoint la deja siempre null.
   deductibles: z.array(DeductibleSchema).optional().default([]),
 });
 

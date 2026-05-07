@@ -1,17 +1,16 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import {
-  NewPaymentForm,
-  type LeadOption,
-  type DriverOption,
-} from './new-payment-form';
+import { NewPaymentForm, type LeadOption } from './new-payment-form';
 
 /**
  * Página /payments/new.
  *
- * Server Component: carga (a) leads no totalmente pagados con su adeudo
- * calculado a partir de la suma de pagos exitosos previos, y
- * (b) profiles activos con role∈{driver,admin} para el dropdown de
- * "chofer asignado". Pasa todo a `<NewPaymentForm>`.
+ * Server Component: carga leads no totalmente pagados con su adeudo
+ * calculado a partir de la suma de pagos exitosos previos. Pasa al
+ * `<NewPaymentForm>`.
+ *
+ * El SELECT de profiles (drivers) se eliminó: la asignación de chofer
+ * migró al formulario /leads/new. La columna `payments.driver_id` queda
+ * siempre null aquí.
  *
  * Adeudo se calcula en memoria porque Supabase JS no soporta agregaciones
  * GROUP BY directamente desde la API. Hacemos dos SELECTs en paralelo:
@@ -26,7 +25,7 @@ export default async function NewPaymentPage() {
   try {
     const admin = supabaseAdmin();
 
-    const [leadsResult, driversResult, paymentsResult] = await Promise.all([
+    const [leadsResult, paymentsResult] = await Promise.all([
       admin
         .from('leads')
         .select(
@@ -37,12 +36,6 @@ export default async function NewPaymentPage() {
         .order('created_at', { ascending: false })
         .limit(200),
       admin
-        .from('profiles')
-        .select('id, full_name, role')
-        .in('role', ['driver', 'admin'])
-        .eq('is_active', true)
-        .order('full_name'),
-      admin
         .from('payments')
         .select('lead_id, amount')
         .eq('status', 'exitoso'),
@@ -50,9 +43,6 @@ export default async function NewPaymentPage() {
 
     if (leadsResult.error) {
       return <ErrorState message={`Error leyendo leads: ${leadsResult.error.message}`} />;
-    }
-    if (driversResult.error) {
-      return <ErrorState message={`Error leyendo profiles: ${driversResult.error.message}`} />;
     }
     if (paymentsResult.error) {
       return <ErrorState message={`Error leyendo pagos previos: ${paymentsResult.error.message}`} />;
@@ -85,13 +75,7 @@ export default async function NewPaymentPage() {
       })
       .filter((l) => l.adeudo > 0));
 
-    const drivers: DriverOption[] = (driversResult.data ?? []).map((d) => ({
-      id: d.id,
-      name: d.full_name ?? '(sin nombre)',
-      role: d.role as 'driver' | 'admin',
-    }));
-
-    return <NewPaymentForm leads={leads} drivers={drivers} />;
+    return <NewPaymentForm leads={leads} />;
   } catch (err) {
     const message =
       err instanceof Error ? err.message : 'Error desconocido al cargar';

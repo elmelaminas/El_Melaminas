@@ -5,7 +5,6 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import {
   PaymentCreateSchema,
-  emptyToNull,
   type PaymentFormState,
 } from './schema';
 
@@ -91,7 +90,6 @@ export async function savePaymentAction(
       amount: amountNum,
       method: formData.get('method'),
       payment_type: formData.get('payment_type'),
-      driver_id: formData.get('driver_id'),
       deductibles: deductiblesParsed,
     });
 
@@ -174,6 +172,10 @@ export async function savePaymentAction(
     // UI↔server (`PaymentCreateInput.method`) sea independiente del nombre
     // físico de la columna. Si más adelante renombramos en DB, solo se
     // tocan los dos puntos de borde (este INSERT y el SELECT en page.tsx).
+    //
+    // `driver_id` siempre null aquí — la asignación de chofer migró al
+    // formulario de /leads/new. La columna se mantiene en payments por si
+    // alguien quiere reusarla a futuro, pero este endpoint no la setea.
     const { data: paymentRow, error: payErr } = await admin
       .from('payments')
       .insert({
@@ -182,7 +184,7 @@ export async function savePaymentAction(
         net_amount: netAmount,
         payment_method: data.method,
         payment_type: data.payment_type,
-        driver_id: emptyToNull(data.driver_id),
+        driver_id: null,
         status: 'exitoso',
         evidence_photo_url: evidenceUrl,
         paid_at: new Date().toISOString(),

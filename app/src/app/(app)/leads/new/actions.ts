@@ -261,6 +261,10 @@ export async function saveLeadAction(
         edge_banding: emptyToNull(data.edge_banding),
         sheets_count,
         total_amount,
+        // driver_id se asigna aquí (antes vivía en /payments/new). Si el
+        // usuario no eligió uno se queda null y el chofer puede asignarse
+        // después editando el lead. /driver filtra por driver_id = uid().
+        driver_id: emptyToNull(data.driver_id),
         created_by: userId,
         // delivery_status, payment_status: defaults 'pendiente'
         // stock_committed: false → lo flippeamos a true tras paso 7 si todo OK

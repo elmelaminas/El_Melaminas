@@ -4,15 +4,14 @@ import { PaymentsClient, type PaymentRow } from './payments-client';
 /**
  * Página /payments — listado paginado.
  *
- * Server Component que ejecuta tres SELECTs en paralelo:
+ * Server Component que ejecuta dos SELECTs principales:
  *   1. payments con su lead (client_name) — paginado.
  *   2. payment_deductibles para los payments_id de la página actual.
- *   3. profiles para los driver_ids de la página (mostrar nombre del chofer).
  *
- * Usamos joins en Supabase JS para (1) (PostgREST `leads(client_name)`),
- * pero los deducibles y drivers van por separado y se mergean por id —
- * más explícito y evita los problemas de "embedding ambiguity" cuando hay
- * múltiples FK entre tablas.
+ * El SELECT de profiles para "nombre del chofer" se eliminó: la columna
+ * "Chofer" salió del listado porque el chofer ahora vive en
+ * `leads.driver_id` y no se trackea por pago. Si más adelante quieres
+ * volver a mostrarlo, JOIN payments → leads → profiles vía leads.driver_id.
  *
  * Filtros: method, payment_type, búsqueda por client_name (vía join).
  *  La búsqueda por nombre de cliente requiere `.or()` sobre la relación
@@ -67,11 +66,12 @@ export default async function PaymentsPage({
     // Nombre real de la columna es `payment_method` (no `method`); el
     // schema interno del cliente sigue exponiéndolo como `method` por
     // simetría con `<MethodBadge>` y la URL `?method=…`. El mapeo
-    // happens en el .map() de abajo.
+    // happens en el .map() de abajo. `driver_id` ya no se selecciona —
+    // la columna ya no se muestra en el listado.
     let query = admin
       .from('payments')
       .select(
-        `id, amount, net_amount, payment_method, payment_type, status, paid_at, driver_id,
+        `id, amount, net_amount, payment_method, payment_type, status, paid_at,
          leads ( client_name )`,
         { count: 'exact' },
       )
@@ -105,38 +105,25 @@ export default async function PaymentsPage({
       payment_type: string | null;
       status: string | null;
       paid_at: string | null;
-      driver_id: string | null;
       leads: { client_name: string } | { client_name: string }[] | null;
     };
 
     const rawRows = (data ?? []) as RawPayment[];
 
-    // Cargar deducibles y drivers de la página en queries separadas.
+    // Cargar solo los deducibles de la página actual; el SELECT de
+    // profiles para resolver nombre de chofer se eliminó junto con la
+    // columna del listado.
     const paymentIds = rawRows.map((r) => r.id);
-    const driverIds = Array.from(
-      new Set(rawRows.map((r) => r.driver_id).filter((id): id is string => !!id)),
-    );
-
-    const [dedResult, driverResult] = await Promise.all([
+    const dedResult =
       paymentIds.length > 0
-        ? admin
+        ? await admin
             .from('payment_deductibles')
             .select('payment_id, concept, amount')
             .in('payment_id', paymentIds)
-        : Promise.resolve({ data: [], error: null }),
-      driverIds.length > 0
-        ? admin
-            .from('profiles')
-            .select('id, full_name')
-            .in('id', driverIds)
-        : Promise.resolve({ data: [], error: null }),
-    ]);
+        : { data: [], error: null };
 
     if (dedResult.error) {
       return <ErrorState message={`Error leyendo deducibles: ${dedResult.error.message}`} />;
-    }
-    if (driverResult.error) {
-      return <ErrorState message={`Error leyendo choferes: ${driverResult.error.message}`} />;
     }
 
     const dedByPaymentId = new Map<string, { concept: string; amount: number }[]>();
@@ -144,10 +131,6 @@ export default async function PaymentsPage({
       const list = dedByPaymentId.get(d.payment_id) ?? [];
       list.push({ concept: d.concept, amount: Number(d.amount ?? 0) });
       dedByPaymentId.set(d.payment_id, list);
-    }
-    const driverNameById = new Map<string, string>();
-    for (const d of driverResult.data ?? []) {
-      driverNameById.set(d.id, d.full_name ?? '(sin nombre)');
     }
 
     const rows: PaymentRow[] = rawRows.map((r) => {
@@ -163,7 +146,6 @@ export default async function PaymentsPage({
         payment_type: (r.payment_type ?? 'anticipo') as 'anticipo' | 'liquidacion',
         status: (r.status ?? 'exitoso') as 'exitoso' | 'pendiente' | 'rechazado',
         paid_at: r.paid_at,
-        driver_name: r.driver_id ? driverNameById.get(r.driver_id) ?? '—' : '—',
         deductibles: dedByPaymentId.get(r.id) ?? [],
       };
     });

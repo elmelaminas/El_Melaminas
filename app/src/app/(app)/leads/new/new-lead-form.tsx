@@ -27,6 +27,7 @@ import { formatMXN } from '@/data/mock';
 
 export type SellerOption = { id: string; name: string };
 export type ColorOption = { id: string; name: string };
+export type DriverOption = { id: string; name: string };
 
 const COST_PER_SHEET_OPTIONS = [750, 650, 600] as const;
 
@@ -47,9 +48,11 @@ const COST_PER_SHEET_OPTIONS = [750, 650, 600] as const;
 export function NewLeadForm({
   sellers,
   colors,
+  drivers,
 }: {
   sellers: SellerOption[];
   colors: ColorOption[];
+  drivers: DriverOption[];
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -69,6 +72,7 @@ export function NewLeadForm({
     defaultValues: {
       channel: 'whatsapp',
       seller_id: sellers[0]?.id ?? '',
+      driver_id: '', // Default sin asignar; el admin/seller decide al crear.
       sale_type: 'primer_contacto',
       sale_date: today,
       client_name: '',
@@ -209,6 +213,28 @@ export function NewLeadForm({
                     style={{ color: 'var(--text-tertiary)' }}
                   >
                     No hay vendedores activos. Crea uno en /admin/catalogs.
+                  </p>
+                )}
+              </Field>
+
+              <Field
+                label="Chofer asignado (opcional)"
+                error={errors.driver_id?.message}
+              >
+                <select {...register('driver_id')} className="select" disabled={pending}>
+                  <option value="">— Sin asignar —</option>
+                  {drivers.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+                {drivers.length === 0 && (
+                  <p
+                    className="text-xs mt-1"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    No hay choferes activos en el sistema.
                   </p>
                 )}
               </Field>
