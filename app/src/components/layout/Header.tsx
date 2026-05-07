@@ -1,20 +1,76 @@
 /* ═══════════════════════════════════════════
-   HEADER — Barra superior con notificaciones
+   HEADER — Barra superior con notificaciones reales
    ═══════════════════════════════════════════ */
 
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Bell, Menu, Search } from 'lucide-react';
 import { useDemo } from '@/context/DemoContext';
-import { mockNotifications, roleLabel } from '@/data/mock';
+import { roleLabel } from '@/data/mock';
+import { supabaseClient } from '@/lib/supabase/client';
 
-const TYPE_DOT: Record<string, string> = {
-  info: 'bg-[#2E74B5]',
-  success: 'bg-[#16A34A]',
-  warning: 'bg-[#D97706]',
-  danger: 'bg-[#DC2626]',
+/**
+ * Tipo de notificación que la app emite. Coincide con los valores que
+ * insertan los Server Actions (`leads/new`, `payments/new`,
+ * `warehouse/registerEntryAction`). La columna `type` en DB es `text`
+ * pero la limitamos a este union para mapear color y título; cualquier
+ * valor desconocido cae a un default neutral.
+ */
+type NotificationType =
+  | 'nuevo_lead'
+  | 'pago_confirmado'
+  | 'entrega_confirmada'
+  | 'stock_bajo';
+
+interface NotificationRow {
+  id: string;
+  recipient_id: string | null;
+  type: NotificationType | string;
+  message: string;
+  is_read: boolean | null;
+  created_at: string | null;
+}
+
+/** Mapa type → color del puntito de la izquierda en el dropdown. */
+const TYPE_DOT: Record<NotificationType, string> = {
+  nuevo_lead: 'bg-[#2E74B5]', // info azul
+  pago_confirmado: 'bg-[#16A34A]', // success verde
+  entrega_confirmada: 'bg-[#16A34A]', // success verde
+  stock_bajo: 'bg-[#D97706]', // warning amarillo
 };
+
+/** Mapa type → título humano (la DB solo guarda `message`, generamos title). */
+const TYPE_TITLE: Record<NotificationType, string> = {
+  nuevo_lead: 'Nuevo lead',
+  pago_confirmado: 'Pago confirmado',
+  entrega_confirmada: 'Entrega confirmada',
+  stock_bajo: 'Stock bajo',
+};
+
+const PAGE_SIZE = 20;
+
+/**
+ * Tiempo relativo en español: "hace 12 min", "hace 3 h", "hace 2 d".
+ * Para notifs muy recientes (< 60s) decimos "hace unos segundos".
+ *
+ * NB: El cálculo es client-side; durante hidratación el `now` puede diferir
+ * del `now` del server por unos segundos. Para evitar mismatch de SSR
+ * dejamos que el primer render pinte el ISO crudo y un useEffect lo
+ * actualiza. Como Header es 'use client' y el contenido del dropdown
+ * sólo se ve cuando el usuario clickea (mucho después de la hidratación),
+ * el riesgo de hydration mismatch es nulo.
+ */
+function timeAgo(iso: string | null): string {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '';
+  const diffSec = Math.floor((Date.now() - then) / 1000);
+  if (diffSec < 60) return 'hace unos segundos';
+  if (diffSec < 3600) return `hace ${Math.floor(diffSec / 60)} min`;
+  if (diffSec < 86400) return `hace ${Math.floor(diffSec / 3600)} h`;
+  return `hace ${Math.floor(diffSec / 86400)} d`;
+}
 
 export default function Header({
   onMenuClick,
@@ -26,7 +82,163 @@ export default function Header({
 }) {
   const { user, role } = useDemo();
   const [open, setOpen] = useState(false);
-  const unread = mockNotifications.length;
+  const [notifications, setNotifications] = useState<NotificationRow[]>([]);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  /**
+   * Carga inicial + suscripción Realtime.
+   *
+   * 1. `auth.getUser()` desde el cliente (cookies del browser ya están
+   *    sync por @supabase/ssr) para obtener el id del usuario logueado.
+   * 2. SELECT inicial de las últimas 20 notificaciones donde
+   *    `recipient_id = userId`. RLS de `notifications` debe permitir
+   *    `auth.uid() = recipient_id` para SELECT — si no, la query
+   *    devuelve filas vacías sin error y el dropdown queda vacío.
+   * 3. Subscribe a `postgres_changes` event=INSERT en `notifications`
+   *    filtrado por recipient_id. Cada INSERT que matchee el filter
+   *    se prepende al state y mantenemos el cap de 20.
+   *
+   * Caveats que el usuario debe atender en Supabase Dashboard:
+   *  - Realtime habilitado para tabla `notifications`
+   *    (Database → Replication). Sin esto, la subscription se monta
+   *    sin error pero nunca recibe eventos.
+   *  - RLS policy SELECT `auth.uid() = recipient_id` para que el cliente
+   *    pueda leer sus propias notifs.
+   *  - RLS policy UPDATE `auth.uid() = recipient_id` para que `markRead`
+   *    y `markAllRead` funcionen.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    let channel: ReturnType<ReturnType<typeof supabaseClient>['channel']> | null = null;
+
+    (async () => {
+      try {
+        const supabase = supabaseClient();
+
+        const {
+          data: { user: authUser },
+        } = await supabase.auth.getUser();
+        if (cancelled) return;
+        if (!authUser) {
+          // No hay sesión activa (ej. /login) — el header sigue funcionando
+          // sin notifs. No es un error.
+          return;
+        }
+        setUserId(authUser.id);
+
+        const { data, error } = await supabase
+          .from('notifications')
+          .select('id, recipient_id, type, message, is_read, created_at')
+          .eq('recipient_id', authUser.id)
+          .order('created_at', { ascending: false })
+          .limit(PAGE_SIZE);
+        if (cancelled) return;
+        if (error) {
+          console.error('[Header] fetchNotifications falló:', error);
+          setLoadError(error.message);
+        } else {
+          setNotifications((data ?? []) as NotificationRow[]);
+        }
+
+        // Realtime: solo INSERTs nuevos. UPDATEs (mark-as-read) los hago
+        // optimísticos en el cliente, no necesito recibirlos por el canal.
+        channel = supabase
+          .channel(`notifications:${authUser.id}`)
+          .on(
+            'postgres_changes',
+            {
+              event: 'INSERT',
+              schema: 'public',
+              table: 'notifications',
+              filter: `recipient_id=eq.${authUser.id}`,
+            },
+            (payload) => {
+              const next = payload.new as NotificationRow;
+              setNotifications((prev) => [next, ...prev].slice(0, PAGE_SIZE));
+            },
+          )
+          .subscribe();
+      } catch (err) {
+        console.error('[Header] excepción al cargar notificaciones:', err);
+        if (!cancelled) {
+          setLoadError(
+            err instanceof Error ? err.message : 'Error desconocido',
+          );
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (channel) {
+        try {
+          supabaseClient().removeChannel(channel);
+        } catch (e) {
+          console.error('[Header] removeChannel falló:', e);
+        }
+      }
+    };
+  }, []);
+
+  const unread = useMemo(
+    () => notifications.filter((n) => !n.is_read).length,
+    [notifications],
+  );
+
+  /**
+   * Marcar una notificación como leída.
+   * - Optimistic update: pintamos `is_read=true` en cliente inmediato.
+   * - UPDATE en DB. Si falla, revertimos.
+   * - El RLS policy debe permitir UPDATE para `auth.uid()=recipient_id`.
+   */
+  const markRead = async (id: string) => {
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)),
+    );
+    try {
+      const { error } = await supabaseClient()
+        .from('notifications')
+        .update({ is_read: true })
+        .eq('id', id);
+      if (error) {
+        console.error('[Header] markRead falló:', error);
+        // Revertir
+        setNotifications((prev) =>
+          prev.map((n) => (n.id === id ? { ...n, is_read: false } : n)),
+        );
+      }
+    } catch (e) {
+      console.error('[Header] markRead excepción:', e);
+    }
+  };
+
+  /**
+   * Marcar todas como leídas. Ejecutamos UPDATE bulk con filtro
+   * `recipient_id = userId AND is_read = false` (el segundo filtro
+   * reduce el footprint de la query: no toca filas que ya estaban
+   * leídas).
+   */
+  const markAllRead = async () => {
+    if (!userId) return;
+    if (unread === 0) return;
+    const snapshot = notifications;
+    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    try {
+      const { error } = await supabaseClient()
+        .from('notifications')
+        .update({ is_read: true })
+        .eq('recipient_id', userId)
+        .eq('is_read', false);
+      if (error) {
+        console.error('[Header] markAllRead falló:', error);
+        setNotifications(snapshot);
+      }
+    } catch (e) {
+      console.error('[Header] markAllRead excepción:', e);
+      setNotifications(snapshot);
+    }
+  };
 
   return (
     <header className="app-header">
@@ -79,7 +291,13 @@ export default function Header({
             onClick={() => setOpen((v) => !v)}
             className="relative flex items-center justify-center rounded-full hover:bg-[var(--bg-muted)]"
             style={{ width: 40, height: 40, color: 'var(--text-secondary)' }}
-            aria-label="Notificaciones"
+            aria-label={
+              unread > 0
+                ? `Notificaciones (${unread} sin leer)`
+                : 'Notificaciones'
+            }
+            aria-expanded={open}
+            aria-haspopup="dialog"
           >
             <Bell size={20} />
             {unread > 0 && (
@@ -97,53 +315,147 @@ export default function Header({
                   fontSize: '0.625rem',
                   fontWeight: 700,
                 }}
+                aria-hidden="true"
               >
-                {unread}
+                {unread > 99 ? '99+' : unread}
               </span>
             )}
           </button>
 
           {open && (
             <>
-              <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
               <div
+                className="fixed inset-0 z-10"
+                onClick={() => setOpen(false)}
+              />
+              <div
+                role="dialog"
+                aria-label="Panel de notificaciones"
                 className="absolute right-0 mt-2 z-20 animate-fade card"
-                style={{ width: 360, padding: 0 }}
+                style={{ width: 360, padding: 0, maxWidth: 'calc(100vw - 24px)' }}
               >
-                <div className="px-4 py-3 border-b" style={{ borderColor: 'var(--border)' }}>
-                  <div className="font-semibold text-sm">Notificaciones</div>
-                  <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-                    Tienes {unread} sin leer
-                  </div>
-                </div>
-                <div className="max-h-80 overflow-y-auto">
-                  {mockNotifications.map((n) => (
+                <div
+                  className="px-4 py-3 border-b flex items-center justify-between gap-3"
+                  style={{ borderColor: 'var(--border)' }}
+                >
+                  <div>
+                    <div className="font-semibold text-sm">Notificaciones</div>
                     <div
-                      key={n.id}
-                      className="flex gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--bg-muted)] border-b last:border-b-0"
-                      style={{ borderColor: 'var(--border)' }}
+                      className="text-xs"
+                      style={{ color: 'var(--text-tertiary)' }}
                     >
-                      <span
-                        className={`mt-1.5 inline-block rounded-full ${TYPE_DOT[n.type]}`}
-                        style={{ width: 8, height: 8, flexShrink: 0 }}
-                      />
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div className="text-sm font-medium truncate">{n.title}</div>
-                        <div
-                          className="text-xs"
-                          style={{ color: 'var(--text-secondary)' }}
-                        >
-                          {n.message}
-                        </div>
-                        <div
-                          className="text-[11px] mt-1"
-                          style={{ color: 'var(--text-tertiary)' }}
-                        >
-                          {n.time}
-                        </div>
-                      </div>
+                      {unread === 0
+                        ? 'Sin notificaciones nuevas'
+                        : unread === 1
+                        ? 'Tienes 1 sin leer'
+                        : `Tienes ${unread} sin leer`}
                     </div>
-                  ))}
+                  </div>
+                  {unread > 0 && (
+                    <button
+                      type="button"
+                      onClick={markAllRead}
+                      className="text-xs hover:underline"
+                      style={{
+                        color: 'var(--brand-secondary)',
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        padding: 0,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      Marcar todas
+                    </button>
+                  )}
+                </div>
+
+                <div className="max-h-80 overflow-y-auto">
+                  {loadError ? (
+                    <div
+                      className="p-4 text-sm"
+                      style={{ color: 'var(--danger)' }}
+                    >
+                      No se pudieron cargar: {loadError}
+                    </div>
+                  ) : notifications.length === 0 ? (
+                    <div
+                      className="p-6 text-sm text-center"
+                      style={{ color: 'var(--text-tertiary)' }}
+                    >
+                      No tienes notificaciones.
+                    </div>
+                  ) : (
+                    notifications.map((n) => {
+                      const t = (n.type as NotificationType) ?? 'nuevo_lead';
+                      const dot = TYPE_DOT[t] ?? 'bg-[#94A3B8]';
+                      const title = TYPE_TITLE[t] ?? 'Notificación';
+                      const isRead = n.is_read === true;
+                      return (
+                        <button
+                          key={n.id}
+                          type="button"
+                          onClick={() => {
+                            if (!isRead) markRead(n.id);
+                          }}
+                          className="flex gap-3 px-4 py-3 cursor-pointer hover:bg-[var(--bg-muted)] border-b last:border-b-0 w-full text-left"
+                          style={{
+                            borderColor: 'var(--border)',
+                            background: isRead
+                              ? 'transparent'
+                              : 'rgba(46,116,181,0.04)',
+                          }}
+                        >
+                          <span
+                            className={`mt-1.5 inline-block rounded-full ${dot}`}
+                            style={{
+                              width: 8,
+                              height: 8,
+                              flexShrink: 0,
+                              opacity: isRead ? 0.4 : 1,
+                            }}
+                          />
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div
+                              className="text-sm font-medium truncate"
+                              style={{
+                                color: isRead
+                                  ? 'var(--text-secondary)'
+                                  : 'var(--text-primary)',
+                              }}
+                            >
+                              {title}
+                            </div>
+                            <div
+                              className="text-xs"
+                              style={{ color: 'var(--text-secondary)' }}
+                            >
+                              {n.message}
+                            </div>
+                            <div
+                              className="text-[11px] mt-1"
+                              style={{ color: 'var(--text-tertiary)' }}
+                            >
+                              {timeAgo(n.created_at)}
+                            </div>
+                          </div>
+                          {!isRead && (
+                            <span
+                              className="self-center"
+                              style={{
+                                width: 6,
+                                height: 6,
+                                borderRadius: 9999,
+                                background: 'var(--brand-secondary)',
+                                flexShrink: 0,
+                              }}
+                              aria-label="No leída"
+                            />
+                          )}
+                        </button>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             </>
@@ -151,7 +463,10 @@ export default function Header({
         </div>
 
         {/* User */}
-        <div className="flex items-center gap-3 px-3 py-1.5 rounded-lg" style={{ background: 'var(--bg-muted)' }}>
+        <div
+          className="flex items-center gap-3 px-3 py-1.5 rounded-lg"
+          style={{ background: 'var(--bg-muted)' }}
+        >
           <div
             className="flex items-center justify-center"
             style={{
@@ -168,7 +483,10 @@ export default function Header({
           </div>
           <div className="hidden sm:block leading-tight">
             <div className="text-sm font-semibold">{user.name}</div>
-            <div className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+            <div
+              className="text-[11px]"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
               {roleLabel(role)}
             </div>
           </div>

@@ -388,6 +388,44 @@ export async function saveLeadAction(
       console.error('[saveLeadAction] flip stock_committed falló (no fatal):', flagErr);
     }
 
+    // ── 9. Notificaciones a admins (best-effort, no fatal).
+    //    Si la tabla `notifications` no existe / RLS bloquea / cualquier
+    //    otro error, lo logueamos pero el lead ya está creado y exitoso.
+    try {
+      const { data: admins } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('role', 'admin')
+        .eq('is_active', true);
+      if (admins && admins.length > 0) {
+        // El message expone montos en MXN. No usamos formatMXN porque es
+        // del cliente; un Intl.NumberFormat directo basta y NO requiere
+        // toLocaleString para bridge SSR.
+        const amountFmt = new Intl.NumberFormat('es-MX', {
+          style: 'currency',
+          currency: 'MXN',
+          minimumFractionDigits: 0,
+        }).format(total_amount);
+        const message = `Nuevo lead: ${data.client_name} — ${sheets_count} hojas, ${amountFmt}`;
+        const inserts = admins.map((a) => ({
+          recipient_id: a.id,
+          type: 'nuevo_lead',
+          message,
+        }));
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifErr) {
+          console.error(
+            '[saveLeadAction] notif insert falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error('[saveLeadAction] notif lookup/insert falló (no fatal):', e);
+    }
+
     revalidatePath('/leads');
     revalidatePath('/admin/catalogs'); // los stocks cambiaron
     return {

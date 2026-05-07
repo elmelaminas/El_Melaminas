@@ -274,6 +274,57 @@ export async function savePaymentAction(
       );
     }
 
+    // ── 7. Notificaciones a admins (best-effort, no fatal).
+    //    Necesitamos el client_name del lead para el message. Si el SELECT
+    //    falla, intentamos un mensaje genérico con el id corto. Cualquier
+    //    error aquí se loguea pero el pago ya está registrado.
+    try {
+      const { data: leadName } = await admin
+        .from('leads')
+        .select('client_name')
+        .eq('id', data.lead_id)
+        .maybeSingle();
+      const clientName =
+        leadName?.client_name ?? `Lead ${data.lead_id.slice(0, 8)}`;
+
+      const { data: admins } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('role', 'admin')
+        .eq('is_active', true);
+
+      if (admins && admins.length > 0) {
+        const amountFmt = new Intl.NumberFormat('es-MX', {
+          style: 'currency',
+          currency: 'MXN',
+          minimumFractionDigits: 0,
+        }).format(data.amount);
+        // Capitalizamos el método para el mensaje (efectivo → Efectivo).
+        const methodLabel =
+          data.method.charAt(0).toUpperCase() + data.method.slice(1);
+        const message = `Pago confirmado: ${clientName} — ${amountFmt} via ${methodLabel}`;
+        const inserts = admins.map((a) => ({
+          recipient_id: a.id,
+          type: 'pago_confirmado',
+          message,
+        }));
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifErr) {
+          console.error(
+            '[savePaymentAction] notif insert falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[savePaymentAction] notif lookup/insert falló (no fatal):',
+        e,
+      );
+    }
+
     revalidatePath('/payments');
     revalidatePath('/leads');
     return {

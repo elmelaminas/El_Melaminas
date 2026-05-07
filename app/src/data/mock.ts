@@ -109,14 +109,6 @@ export interface MockMovement {
   user: string;
 }
 
-export interface MockNotification {
-  id: string;
-  title: string;
-  message: string;
-  time: string;
-  type: 'info' | 'warning' | 'success' | 'danger';
-}
-
 export interface MockSeller {
   id: string;
   name: string;
@@ -185,15 +177,6 @@ export const mockMovements: MockMovement[] = [
   { id: 'M006', date: '2026-05-03 18:20', type: 'Salida',  material: 'Wengue', quantity: -5,  reference: 'Lead L003', user: 'Pedro Méndez'  },
   { id: 'M007', date: '2026-05-03 12:05', type: 'Entrada', material: 'Negra',  quantity: 50,  reference: 'OC-2026-081', user: 'Pedro Méndez'},
   { id: 'M008', date: '2026-05-02 17:45', type: 'Salida',  material: 'Gris',   quantity: -8,  reference: 'Lead L005', user: 'Pedro Méndez'  },
-];
-
-/* ── Notificaciones ── */
-export const mockNotifications: MockNotification[] = [
-  { id: 'N001', title: 'Stock bajo en Parota', message: 'Solo quedan 0 disponibles. Reposición urgente.',     time: 'hace 12 min', type: 'danger'  },
-  { id: 'N002', title: 'Nuevo lead asignado',  message: 'Juan Pérez García — 13 hojas, $9,750.',                time: 'hace 35 min', type: 'info'    },
-  { id: 'N003', title: 'Pago confirmado',      message: 'María Fernández liquidó $5,200 en efectivo.',          time: 'hace 1 h',    type: 'success' },
-  { id: 'N004', title: 'Stock bajo en Gris',   message: 'Solo 5 hojas disponibles, mínimo 20.',                 time: 'hace 2 h',    type: 'warning' },
-  { id: 'N005', title: 'Entrega completada',   message: 'Carlos Ramírez entregó el pedido L005.',               time: 'hace 3 h',    type: 'success' },
 ];
 
 /* ── Vendedores (catálogo) ── */

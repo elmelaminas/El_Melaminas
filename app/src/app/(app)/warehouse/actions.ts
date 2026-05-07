@@ -69,10 +69,15 @@ export async function registerEntryAction(
 
     const admin = supabaseAdmin();
 
-    // Leer fila de inventory actual para sumar.
+    // Leer fila de inventory actual para sumar. Traemos también
+    // stock_committed, stock_minimum y el name del color (vía join) — los
+    // necesitamos al final para evaluar si el stock quedó bajo y emitir
+    // la notificación 'stock_bajo'.
     const { data: invRow, error: invErr } = await admin
       .from('inventory')
-      .select('id, stock_total')
+      .select(
+        'id, stock_total, stock_committed, stock_minimum, colors ( name )',
+      )
       .eq('color_id', data.color_id)
       .maybeSingle();
     if (invErr) {
@@ -90,6 +95,14 @@ export async function registerEntryAction(
     }
     const previousTotal = Number(invRow.stock_total ?? 0);
     const newTotal = previousTotal + data.quantity;
+    const stockCommitted = Number(invRow.stock_committed ?? 0);
+    const stockMinimum = Number(invRow.stock_minimum ?? 0);
+    // PostgREST devuelve el embed `colors(name)` como objeto o como array
+    // dependiendo de la cardinalidad inferida; toleramos ambas formas.
+    const colorObj = Array.isArray(invRow.colors)
+      ? invRow.colors[0]
+      : invRow.colors;
+    const colorName = colorObj?.name ?? '(sin nombre)';
 
     // UPDATE stock_total
     const { error: updErr } = await admin
@@ -135,6 +148,44 @@ export async function registerEntryAction(
         status: 'error',
         message: `No se pudo registrar el movimiento: ${mvErr.message}`,
       };
+    }
+
+    // ── Notificación 'stock_bajo' a admins si la entrada NO fue
+    //    suficiente para superar el mínimo. Útil cuando alguien recibe
+    //    un pedido pequeño y el stock sigue por debajo del umbral
+    //    operativo (caso típico: reposición parcial mientras llega el
+    //    grueso del pedido). Best-effort, no fatal.
+    const stockAvailable = Math.max(0, newTotal - stockCommitted);
+    if (stockAvailable <= stockMinimum) {
+      try {
+        const { data: admins } = await admin
+          .from('profiles')
+          .select('id')
+          .eq('role', 'admin')
+          .eq('is_active', true);
+        if (admins && admins.length > 0) {
+          const message = `Stock bajo en ${colorName}: ${stockAvailable} hojas disponibles`;
+          const inserts = admins.map((a) => ({
+            recipient_id: a.id,
+            type: 'stock_bajo',
+            message,
+          }));
+          const { error: notifErr } = await admin
+            .from('notifications')
+            .insert(inserts);
+          if (notifErr) {
+            console.error(
+              '[registerEntryAction] notif insert falló (no fatal):',
+              notifErr,
+            );
+          }
+        }
+      } catch (e) {
+        console.error(
+          '[registerEntryAction] notif lookup/insert falló (no fatal):',
+          e,
+        );
+      }
     }
 
     revalidatePath('/warehouse');
