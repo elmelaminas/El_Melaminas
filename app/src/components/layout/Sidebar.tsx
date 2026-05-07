@@ -4,8 +4,9 @@
 
 'use client';
 
+import { useTransition } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
   ClipboardList,
@@ -21,8 +22,10 @@ import {
   History,
   LogOut,
   Layers,
+  Loader,
 } from 'lucide-react';
 import { useDemo } from '@/context/DemoContext';
+import { supabaseClient } from '@/lib/supabase/client';
 import { roleLabel, type Role } from '@/data/mock';
 
 interface NavItem {
@@ -50,7 +53,28 @@ const NAV: NavItem[] = [
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const { role, user } = useDemo();
+  const router = useRouter();
+  const { role, user, setUser } = useDemo();
+  const [signingOut, startSignOut] = useTransition();
+
+  const handleSignOut = () => {
+    startSignOut(async () => {
+      try {
+        // signOut limpia las cookies de sesión del browser; el middleware
+        // verá la siguiente request sin auth y nos rebotará a /login si
+        // intentamos acceder a una ruta protegida (defensa en profundidad).
+        await supabaseClient().auth.signOut();
+      } catch (err) {
+        // No bloqueamos el logout local por un error de red al server —
+        // peor caso quedan cookies stale que el siguiente refresh limpia.
+        console.error('[Sidebar] signOut server falló:', err);
+      }
+      // Limpia el override del DemoContext + localStorage del browser.
+      setUser(null);
+      router.push('/login');
+      router.refresh();
+    });
+  };
 
   const items = NAV.filter((it) => it.roles.includes(role));
 
@@ -136,14 +160,25 @@ export default function Sidebar() {
             </div>
           </div>
         </div>
-        <Link
-          href="/login"
+        <button
+          type="button"
+          onClick={handleSignOut}
+          disabled={signingOut}
           className="nav-link mt-2"
-          style={{ color: '#FCA5A5' }}
+          style={{
+            color: '#FCA5A5',
+            width: '100%',
+            textAlign: 'left',
+            background: 'transparent',
+            border: 'none',
+            cursor: signingOut ? 'wait' : 'pointer',
+            opacity: signingOut ? 0.6 : 1,
+          }}
+          aria-busy={signingOut}
         >
-          <LogOut size={18} />
-          <span>Cerrar sesión</span>
-        </Link>
+          {signingOut ? <Loader size={18} className="animate-spin" /> : <LogOut size={18} />}
+          <span>{signingOut ? 'Cerrando…' : 'Cerrar sesión'}</span>
+        </button>
       </div>
     </aside>
   );
