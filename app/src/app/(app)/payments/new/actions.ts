@@ -167,17 +167,24 @@ export async function savePaymentAction(
     const totalDed = data.deductibles.reduce((s, d) => s + d.amount, 0);
     const netAmount = Math.max(0, data.amount - totalDed);
 
+    // NB: la DB usa nombres distintos a los del schema interno del form:
+    //   form `method`        → DB column `payment_method`
+    //   variable `evidenceUrl` → DB column `evidence_photo_url`
+    // El mapeo se hace en este sitio (no en schema.ts) para que el contrato
+    // UI↔server (`PaymentCreateInput.method`) sea independiente del nombre
+    // físico de la columna. Si más adelante renombramos en DB, solo se
+    // tocan los dos puntos de borde (este INSERT y el SELECT en page.tsx).
     const { data: paymentRow, error: payErr } = await admin
       .from('payments')
       .insert({
         lead_id: data.lead_id,
         amount: data.amount,
         net_amount: netAmount,
-        method: data.method,
+        payment_method: data.method,
         payment_type: data.payment_type,
         driver_id: emptyToNull(data.driver_id),
         status: 'exitoso',
-        evidence_url: evidenceUrl,
+        evidence_photo_url: evidenceUrl,
         paid_at: new Date().toISOString(),
         registered_by: userId,
       })

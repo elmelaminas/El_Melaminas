@@ -64,16 +64,20 @@ export default async function PaymentsPage({
 
     const admin = supabaseAdmin();
 
+    // Nombre real de la columna es `payment_method` (no `method`); el
+    // schema interno del cliente sigue exponiéndolo como `method` por
+    // simetría con `<MethodBadge>` y la URL `?method=…`. El mapeo
+    // happens en el .map() de abajo.
     let query = admin
       .from('payments')
       .select(
-        `id, amount, net_amount, method, payment_type, status, paid_at, driver_id,
+        `id, amount, net_amount, payment_method, payment_type, status, paid_at, driver_id,
          leads ( client_name )`,
         { count: 'exact' },
       )
       .order('paid_at', { ascending: false });
 
-    if (method) query = query.eq('method', method);
+    if (method) query = query.eq('payment_method', method);
     if (paymentType) query = query.eq('payment_type', paymentType);
 
     // Búsqueda por nombre del cliente — la sintaxis `leads.client_name.ilike`
@@ -97,7 +101,7 @@ export default async function PaymentsPage({
       id: string;
       amount: number | string | null;
       net_amount: number | string | null;
-      method: string | null;
+      payment_method: string | null;
       payment_type: string | null;
       status: string | null;
       paid_at: string | null;
@@ -153,7 +157,9 @@ export default async function PaymentsPage({
         client_name: leadObj?.client_name ?? '(lead no encontrado)',
         amount: Number(r.amount ?? 0),
         net_amount: Number(r.net_amount ?? 0),
-        method: (r.method ?? 'efectivo') as 'efectivo' | 'transferencia' | 'clip',
+        // DB column `payment_method` se expone al cliente como `method`
+        // para mantener el contrato simple del PaymentRow.
+        method: (r.payment_method ?? 'efectivo') as 'efectivo' | 'transferencia' | 'clip',
         payment_type: (r.payment_type ?? 'anticipo') as 'anticipo' | 'liquidacion',
         status: (r.status ?? 'exitoso') as 'exitoso' | 'pendiente' | 'rechazado',
         paid_at: r.paid_at,
