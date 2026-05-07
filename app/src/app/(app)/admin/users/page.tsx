@@ -16,37 +16,52 @@ import { UsersClient, type UserRow } from './users-client';
 export const dynamic = 'force-dynamic';
 
 export default async function AdminUsersPage() {
-  const admin = supabaseAdmin();
+  // Política de errores: TODA falla (env vars faltantes, error de red,
+  // RLS, etc.) se renderiza como <ErrorState> con mensaje legible. Nunca
+  // dejamos escapar el throw porque en Server Components Next sanitiza el
+  // mensaje a un digest genérico en producción ("Errors forwarded from
+  // Server Components show a generic message with an identifier" — docs
+  // Next 16, file-conventions/error.md). Para que el admin vea cuál env
+  // var falta sin abrir Vercel logs, lo capturamos y devolvemos texto.
+  try {
+    const admin = supabaseAdmin();
 
-  const [profilesResult, usersResult] = await Promise.all([
-    admin
-      .from('profiles')
-      .select('id, full_name, role, phone, is_active, created_at')
-      .order('created_at', { ascending: false }),
-    admin.auth.admin.listUsers({ perPage: 200 }),
-  ]);
+    const [profilesResult, usersResult] = await Promise.all([
+      admin
+        .from('profiles')
+        .select('id, full_name, role, phone, is_active, created_at')
+        .order('created_at', { ascending: false }),
+      admin.auth.admin.listUsers({ perPage: 200 }),
+    ]);
 
-  if (profilesResult.error) {
-    return <ErrorState message={`Error leyendo profiles: ${profilesResult.error.message}`} />;
+    if (profilesResult.error) {
+      return <ErrorState message={`Error leyendo profiles: ${profilesResult.error.message}`} />;
+    }
+    if (usersResult.error) {
+      return <ErrorState message={`Error leyendo auth.users: ${usersResult.error.message}`} />;
+    }
+
+    const emailById = new Map(
+      usersResult.data.users.map((u) => [u.id, u.email ?? '—'] as const),
+    );
+
+    const rows: UserRow[] = (profilesResult.data ?? []).map((p) => ({
+      id: p.id,
+      full_name: p.full_name,
+      role: p.role as Role,
+      phone: p.phone ?? null,
+      is_active: p.is_active ?? false,
+      email: emailById.get(p.id) ?? '—',
+    }));
+
+    return <UsersClient initialUsers={rows} />;
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Error desconocido al cargar usuarios';
+    // Visible en Vercel Function Logs con prefijo localizable.
+    console.error('[AdminUsersPage] excepción no controlada:', err);
+    return <ErrorState message={message} />;
   }
-  if (usersResult.error) {
-    return <ErrorState message={`Error leyendo auth.users: ${usersResult.error.message}`} />;
-  }
-
-  const emailById = new Map(
-    usersResult.data.users.map((u) => [u.id, u.email ?? '—'] as const),
-  );
-
-  const rows: UserRow[] = (profilesResult.data ?? []).map((p) => ({
-    id: p.id,
-    full_name: p.full_name,
-    role: p.role as Role,
-    phone: p.phone ?? null,
-    is_active: p.is_active ?? false,
-    email: emailById.get(p.id) ?? '—',
-  }));
-
-  return <UsersClient initialUsers={rows} />;
 }
 
 function ErrorState({ message }: { message: string }) {
