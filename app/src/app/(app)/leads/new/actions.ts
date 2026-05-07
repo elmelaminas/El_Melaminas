@@ -190,35 +190,22 @@ export async function saveLeadAction(
           message: `No se pudieron crear los colores nuevos: ${colorErr?.message ?? 'sin datos'}`,
         };
       }
-      // Registrar undo para borrar estos colors si falla un paso siguiente.
+      // El trigger `on_color_created` crea la fila correspondiente en
+      // `inventory` (con stocks 0) automáticamente al INSERT en colors —
+      // por eso aquí NO insertamos manualmente: lo intentábamos antes y
+      // chocaba con `inventory_color_id_key` (unique).
+      //
+      // Para el undo: si un paso posterior falla y queremos borrar estos
+      // colors recién creados, el FK inventory.color_id → colors.id puede
+      // tener CASCADE o no — no asumimos. Para ser robustos en ambos
+      // casos, primero borramos manualmente las filas de inventory que el
+      // trigger creó (no-op si ya las limpió un CASCADE), después borramos
+      // los colors. Ambos DELETE son best-effort dentro del rollback
+      // del TxnLog: errores se loguean y siguen.
       const newIds = insertedColors.map((c) => c.id);
       txn.push(async () => {
+        await admin.from('inventory').delete().in('color_id', newIds);
         await admin.from('colors').delete().in('id', newIds);
-      });
-
-      // Crear inventory rows con stock 0 para que el UPDATE += qty del paso 6
-      // tenga fila a la cual aplicar.
-      const invInserts = insertedColors.map((c) => ({
-        color_id: c.id,
-        stock_total: 0,
-        stock_committed: 0,
-        stock_minimum: 0,
-      }));
-      const { data: invRows, error: invErr } = await admin
-        .from('inventory')
-        .insert(invInserts)
-        .select('id');
-      if (invErr || !invRows) {
-        console.error('[saveLeadAction] insert inventory para colores nuevos falló:', invErr);
-        await txn.rollback('inventory insert para nuevos falló');
-        return {
-          status: 'error',
-          message: `No se pudieron crear inventarios para colores nuevos: ${invErr?.message ?? 'sin datos'}`,
-        };
-      }
-      const newInvIds = invRows.map((r) => r.id);
-      txn.push(async () => {
-        await admin.from('inventory').delete().in('id', newInvIds);
       });
 
       // Resolver normalized_name → id y reemplazar buckets "new" restantes
