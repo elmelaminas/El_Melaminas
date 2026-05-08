@@ -29,10 +29,20 @@ export const METHOD_OPTIONS: { value: (typeof METHOD_VALUES)[number]; label: str
   { value: 'clip', label: 'Clip' },
 ];
 
-export const PAYMENT_TYPE_VALUES = ['anticipo', 'liquidacion'] as const;
+// `contra_entrega` agregado en migración manual:
+//   ALTER TYPE payment_type_enum ADD VALUE 'contra_entrega';
+// Si la migración aún no corrió, el INSERT con este valor fallará con
+// "invalid input value for enum payment_type_enum" — error visible en
+// el banner del form.
+export const PAYMENT_TYPE_VALUES = [
+  'anticipo',
+  'liquidacion',
+  'contra_entrega',
+] as const;
 export const PAYMENT_TYPE_OPTIONS: { value: (typeof PAYMENT_TYPE_VALUES)[number]; label: string }[] = [
   { value: 'anticipo', label: 'Anticipo' },
   { value: 'liquidacion', label: 'Liquidación' },
+  { value: 'contra_entrega', label: 'Contra entrega' },
 ];
 
 // ─── Deductible row ─────────────────────────────────────────────────────

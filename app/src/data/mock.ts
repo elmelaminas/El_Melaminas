@@ -55,7 +55,7 @@ export interface MockLead {
 }
 
 export type PaymentMethod = 'Efectivo' | 'Transferencia' | 'Clip';
-export type PaymentType = 'Anticipo' | 'Liquidación';
+export type PaymentType = 'Anticipo' | 'Liquidación' | 'Contra entrega';
 
 export interface Deductible {
   concept: string;

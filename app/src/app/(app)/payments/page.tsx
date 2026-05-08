@@ -23,7 +23,7 @@ export const dynamic = 'force-dynamic';
 const PAGE_SIZE = 20;
 
 const METHOD_VALUES = ['efectivo', 'transferencia', 'clip'] as const;
-const TYPE_VALUES = ['anticipo', 'liquidacion'] as const;
+const TYPE_VALUES = ['anticipo', 'liquidacion', 'contra_entrega'] as const;
 
 type RawSearchParams = {
   q?: string | string[];
@@ -171,7 +171,10 @@ export default async function PaymentsPage({
         // DB column `payment_method` se expone al cliente como `method`
         // para mantener el contrato simple del PaymentRow.
         method: (r.payment_method ?? 'efectivo') as 'efectivo' | 'transferencia' | 'clip',
-        payment_type: (r.payment_type ?? 'anticipo') as 'anticipo' | 'liquidacion',
+        payment_type: (r.payment_type ?? 'anticipo') as
+          | 'anticipo'
+          | 'liquidacion'
+          | 'contra_entrega',
         status: (r.status ?? 'exitoso') as 'exitoso' | 'pendiente' | 'rechazado',
         paid_at: r.paid_at,
         deductibles: dedByPaymentId.get(r.id) ?? [],

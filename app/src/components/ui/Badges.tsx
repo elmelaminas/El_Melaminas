@@ -75,6 +75,7 @@ export function MethodBadge({ method }: { method: PaymentMethod }) {
 const TYPE_BADGE: Record<PaymentType, string> = {
   Anticipo: 'badge badge-warning',
   Liquidación: 'badge badge-success',
+  'Contra entrega': 'badge badge-info',
 };
 export function TypeBadge({ type }: { type: PaymentType }) {
   return <span className={TYPE_BADGE[type]}>{type}</span>;

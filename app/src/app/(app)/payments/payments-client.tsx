@@ -23,7 +23,7 @@ export type PaymentRow = {
   amount: number;
   net_amount: number;
   method: 'efectivo' | 'transferencia' | 'clip';
-  payment_type: 'anticipo' | 'liquidacion';
+  payment_type: 'anticipo' | 'liquidacion' | 'contra_entrega';
   status: 'exitoso' | 'pendiente' | 'rechazado';
   paid_at: string | null;
   // Nota: la columna "chofer" se eliminó del listado. El chofer asignado
@@ -35,7 +35,7 @@ export type PaymentRow = {
 type FiltersState = {
   q: string;
   method: '' | 'efectivo' | 'transferencia' | 'clip';
-  type: '' | 'anticipo' | 'liquidacion';
+  type: '' | 'anticipo' | 'liquidacion' | 'contra_entrega';
   /** Mes 1-12; 0 = sin filtro. Pareja inseparable con `anio`. */
   mes: number;
   /** Año 4-dígitos; 0 = sin filtro. */
@@ -65,6 +65,7 @@ const TYPE_OPTS: { value: FiltersState['type']; label: string }[] = [
   { value: '', label: 'Todos los tipos' },
   { value: 'anticipo', label: 'Anticipo' },
   { value: 'liquidacion', label: 'Liquidación' },
+  { value: 'contra_entrega', label: 'Contra entrega' },
 ];
 
 const DEBOUNCE_MS = 300;
@@ -83,6 +84,7 @@ const METHOD_TO_BADGE: Record<PaymentRow['method'], PaymentMethod> = {
 const TYPE_TO_BADGE: Record<PaymentRow['payment_type'], PaymentType> = {
   anticipo: 'Anticipo',
   liquidacion: 'Liquidación',
+  contra_entrega: 'Contra entrega',
 };
 
 export function PaymentsClient({
