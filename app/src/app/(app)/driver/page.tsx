@@ -37,8 +37,15 @@ export default async function DriverPage() {
 
     const admin = supabaseAdmin();
 
-    // SELECTs en paralelo.
-    const [leadsResult, profileResult, receiversResult] = await Promise.all([
+    // SELECTs en paralelo. Cuatro queries:
+    //   1. Leads activos asignados a este chofer.
+    //   2. Profile del chofer (para el saludo).
+    //   3. Profiles admin/supervisor (para "Entregar efectivo a").
+    //   4. Cash transfers pendientes de este chofer — la suma es el
+    //      "efectivo que llevas" que se muestra en el banner. Si la
+    //      tabla no existe o RLS bloquea, el banner cae a $0 y la
+    //      página sigue funcionando.
+    const [leadsResult, profileResult, receiversResult, cashResult] = await Promise.all([
       admin
         .from('leads')
         .select(
@@ -63,6 +70,11 @@ export default async function DriverPage() {
         .in('role', ['admin', 'supervisor'])
         .eq('is_active', true)
         .order('full_name'),
+      admin
+        .from('cash_transfers')
+        .select('amount')
+        .eq('driver_id', driverId)
+        .eq('status', 'pendiente'),
     ]);
 
     if (leadsResult.error) {
@@ -71,6 +83,15 @@ export default async function DriverPage() {
     if (receiversResult.error) {
       return <ErrorState message={`Error leyendo admins: ${receiversResult.error.message}`} />;
     }
+    // cashResult: si falla (tabla no existe / RLS) NO abortamos — el
+    // banner caerá a $0 pero las entregas siguen visibles. Loguamos.
+    if (cashResult.error) {
+      console.error('[DriverPage] cash_transfers select falló (no fatal):', cashResult.error);
+    }
+    const cashPending = (cashResult.data ?? []).reduce(
+      (s, t) => s + Number(t.amount ?? 0),
+      0,
+    );
 
     const leadIds = (leadsResult.data ?? []).map((l) => l.id);
 
@@ -149,6 +170,7 @@ export default async function DriverPage() {
         driverName={driverName}
         deliveries={deliveries}
         receivers={receivers}
+        cashPending={cashPending}
       />
     );
   } catch (err) {

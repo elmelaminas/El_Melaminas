@@ -9,6 +9,7 @@ import {
   Camera,
   Layers,
   Loader,
+  DollarSign,
 } from 'lucide-react';
 import { formatMXN } from '@/data/mock';
 import { DeliveryBadge } from '@/components/ui/Badges';
@@ -45,10 +46,14 @@ export function DriverClient({
   driverName,
   deliveries,
   receivers,
+  cashPending,
 }: {
   driverName: string;
   deliveries: DeliveryCardData[];
   receivers: ReceiverOption[];
+  /** Suma de cash_transfers WHERE driver_id=uid AND status='pendiente'.
+   *  Es el efectivo físico que el chofer trae y debe entregar al contador. */
+  cashPending: number;
 }) {
   return (
     <div className="mx-auto" style={{ maxWidth: 420, width: '100%' }}>
@@ -85,6 +90,60 @@ export function DriverClient({
           <div className="font-bold">
             {deliveries.length}{' '}
             {deliveries.length === 1 ? 'entrega' : 'entregas'}
+          </div>
+        </div>
+      </div>
+
+      {/* Banner de efectivo acumulado.
+          Visible incluso cuando cashPending=0 — sirve también de
+          confirmación al chofer ("no traigo efectivo, ya entregué todo"). */}
+      <div
+        className="rounded-xl mb-5 p-4 flex items-center gap-3"
+        style={{
+          background: cashPending > 0 ? '#DCFCE7' : 'var(--bg-subtle)',
+          border: cashPending > 0
+            ? '1px solid rgba(22,163,74,0.25)'
+            : '1px solid var(--border)',
+        }}
+      >
+        <div
+          className="flex items-center justify-center"
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: 10,
+            background: cashPending > 0 ? '#16A34A' : 'var(--text-tertiary)',
+            color: '#fff',
+            flexShrink: 0,
+          }}
+        >
+          <DollarSign size={22} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            className="text-xs"
+            style={{
+              color: cashPending > 0 ? '#15803D' : 'var(--text-tertiary)',
+              fontWeight: 600,
+            }}
+          >
+            Efectivo que llevas
+          </div>
+          <div
+            className="text-2xl font-bold leading-tight"
+            style={{
+              color: cashPending > 0 ? '#15803D' : 'var(--text-tertiary)',
+            }}
+          >
+            {formatMXN(cashPending)}
+          </div>
+          <div
+            className="text-[11px] mt-1"
+            style={{ color: 'var(--text-tertiary)' }}
+          >
+            {cashPending > 0
+              ? 'Pendiente de entregar al contador'
+              : 'No tienes efectivo pendiente'}
           </div>
         </div>
       </div>

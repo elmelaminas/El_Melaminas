@@ -28,6 +28,7 @@ export const ROLES = [
   'driver',
   'warehouse',
   'supervisor',
+  'contador',
 ] as const satisfies readonly Role[];
 
 export const CreateUserSchema = z.object({

@@ -45,6 +45,7 @@ const ROLE_TARGET: Record<Role, string> = {
   driver: '/driver',
   warehouse: '/warehouse',
   supervisor: '/reports',
+  contador: '/contador',
 };
 
 const ALLOWED_ROLES: readonly Role[] = [
@@ -53,6 +54,7 @@ const ALLOWED_ROLES: readonly Role[] = [
   'driver',
   'warehouse',
   'supervisor',
+  'contador',
 ];
 
 export default function LoginPage() {

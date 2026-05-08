@@ -100,6 +100,7 @@ const ROLE_BADGE: Record<Role, string> = {
   driver: 'badge badge-purple',
   warehouse: 'badge badge-orange',
   supervisor: 'badge badge-neutral',
+  contador: 'badge badge-info',
 };
 const ROLE_LABEL: Record<Role, string> = {
   admin: 'Administrador',
@@ -107,6 +108,7 @@ const ROLE_LABEL: Record<Role, string> = {
   driver: 'Chofer',
   warehouse: 'Almacén',
   supervisor: 'Supervisor',
+  contador: 'Contador',
 };
 export function RoleBadge({ role }: { role: Role }) {
   return <span className={ROLE_BADGE[role]}>{ROLE_LABEL[role]}</span>;

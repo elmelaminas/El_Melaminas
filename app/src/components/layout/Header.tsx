@@ -21,7 +21,9 @@ type NotificationType =
   | 'nuevo_lead'
   | 'pago_confirmado'
   | 'entrega_confirmada'
-  | 'stock_bajo';
+  | 'stock_bajo'
+  | 'efectivo_pendiente'
+  | 'efectivo_recibido';
 
 interface NotificationRow {
   id: string;
@@ -38,6 +40,8 @@ const TYPE_DOT: Record<NotificationType, string> = {
   pago_confirmado: 'bg-[#16A34A]', // success verde
   entrega_confirmada: 'bg-[#16A34A]', // success verde
   stock_bajo: 'bg-[#D97706]', // warning amarillo
+  efectivo_pendiente: 'bg-[#F59E0B]', // brand-accent — algo que requiere acción
+  efectivo_recibido: 'bg-[#16A34A]', // success verde — flujo completado
 };
 
 /** Mapa type → título humano (la DB solo guarda `message`, generamos title). */
@@ -46,6 +50,8 @@ const TYPE_TITLE: Record<NotificationType, string> = {
   pago_confirmado: 'Pago confirmado',
   entrega_confirmada: 'Entrega confirmada',
   stock_bajo: 'Stock bajo',
+  efectivo_pendiente: 'Efectivo pendiente',
+  efectivo_recibido: 'Efectivo recibido',
 };
 
 const PAGE_SIZE = 20;

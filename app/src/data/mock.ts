@@ -4,7 +4,7 @@
    Sin Supabase: todos los datos viven aquí.
    ═══════════════════════════════════════════ */
 
-export type Role = 'admin' | 'seller' | 'driver' | 'warehouse' | 'supervisor';
+export type Role = 'admin' | 'seller' | 'driver' | 'warehouse' | 'supervisor' | 'contador';
 
 export interface MockUser {
   id: string;
@@ -132,6 +132,7 @@ export const mockUsers: MockUser[] = [
   { id: '4', name: 'Pedro Méndez',    role: 'warehouse',  email: 'pedro@elmelaminas.com',   phone: '5511110004', active: true },
   { id: '5', name: 'Laura Vega',      role: 'supervisor', email: 'laura@elmelaminas.com',   phone: '5511110005', active: true },
   { id: '6', name: 'Javier Torres',   role: 'seller',     email: 'javier@elmelaminas.com',  phone: '5511110006', active: false },
+  { id: '7', name: 'Mónica Castillo', role: 'contador',   email: 'monica@elmelaminas.com',  phone: '5511110007', active: true },
 ];
 
 /* ── Leads ── */
@@ -208,4 +209,11 @@ export const formatMXN = (n: number): string =>
   new Intl.NumberFormat('es-MX', { style: 'currency', currency: 'MXN', minimumFractionDigits: 0 }).format(n);
 
 export const roleLabel = (r: Role): string =>
-  ({ admin: 'Administrador', seller: 'Vendedor', driver: 'Chofer', warehouse: 'Almacén', supervisor: 'Supervisor' }[r]);
+  ({
+    admin: 'Administrador',
+    seller: 'Vendedor',
+    driver: 'Chofer',
+    warehouse: 'Almacén',
+    supervisor: 'Supervisor',
+    contador: 'Contador',
+  }[r]);

@@ -19,6 +19,7 @@ import {
   Users as UsersIcon,
   BookOpen,
   ChartBarBig,
+  DollarSign,
   History,
   LogOut,
   Layers,
@@ -49,6 +50,10 @@ const NAV: NavItem[] = [
   { href: '/warehouse?tab=mov', label: 'Movimientos',     icon: <ArrowLeftRight size={18} />,  roles: ['warehouse'] },
   { href: '/admin/users',     label: 'Usuarios',          icon: <UsersIcon size={18} />,       roles: ['admin'] },
   { href: '/admin/catalogs',  label: 'Catálogos',         icon: <BookOpen size={18} />,        roles: ['admin'] },
+  // Caja del contador — recibe el efectivo que los choferes traen.
+  { href: '/contador',        label: 'Caja',              icon: <DollarSign size={18} />,      roles: ['admin', 'contador'] },
+  // Validación de admin: confirma que el contador entregó el efectivo.
+  { href: '/admin/caja',      label: 'Validar Caja',      icon: <DollarSign size={18} />,      roles: ['admin'] },
   { href: '/dashboard',       label: 'Reportes',          icon: <ChartBarBig size={18} />,       roles: ['supervisor'] },
 ];
 

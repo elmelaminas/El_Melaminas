@@ -34,7 +34,14 @@ import { createClient } from '@supabase/supabase-js';
  *     para diagnóstico sin sesión.
  */
 
-const ROLES = ['admin', 'seller', 'driver', 'warehouse', 'supervisor'] as const;
+const ROLES = [
+  'admin',
+  'seller',
+  'driver',
+  'warehouse',
+  'supervisor',
+  'contador',
+] as const;
 type Role = (typeof ROLES)[number];
 
 /** Pantalla principal por rol — destino tras login y fallback de RBAC. */
@@ -44,6 +51,7 @@ const HOME_BY_ROLE: Record<Role, string> = {
   driver: '/driver',
   warehouse: '/warehouse',
   supervisor: '/reports',
+  contador: '/contador',
 };
 
 /**
@@ -54,6 +62,8 @@ const HOME_BY_ROLE: Record<Role, string> = {
  * porque ambos prefijos chocan y la regla de `/leads/new` es más estricta.
  */
 function rolesAllowed(pathname: string): readonly Role[] | null {
+  // /admin/* (incluye /admin/caja) → solo admin. Esa regla "atrapa-todo"
+  // se evalúa primero, así no hay que listar /admin/caja explícitamente.
   if (pathname.startsWith('/admin')) return ['admin'];
   if (pathname === '/leads/new' || pathname.startsWith('/leads/new/')) return ['admin', 'seller'];
   if (pathname === '/leads' || pathname.startsWith('/leads/')) return ['admin', 'supervisor'];
@@ -62,6 +72,9 @@ function rolesAllowed(pathname: string): readonly Role[] | null {
   if (pathname === '/driver' || pathname.startsWith('/driver/')) return ['admin', 'driver'];
   if (pathname === '/warehouse' || pathname.startsWith('/warehouse/')) return ['admin', 'warehouse'];
   if (pathname === '/reports' || pathname.startsWith('/reports/')) return ['admin', 'supervisor'];
+  // /contador es para el rol contador (recibe efectivo de los choferes).
+  // Los admins también pueden entrar para auditar/operar como contador.
+  if (pathname === '/contador' || pathname.startsWith('/contador/')) return ['admin', 'contador'];
   return null;
 }
 

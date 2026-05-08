@@ -197,6 +197,88 @@ export async function confirmDeliveryAction(
       await admin.from('driver_deliveries').delete().eq('id', deliveryId);
     });
 
+    // ── Driver name lookup (best-effort, non-fatal).
+    //    Lo necesitamos para los mensajes de dos notifs distintas
+    //    (efectivo_pendiente al contador + entrega_confirmada al admin).
+    //    Lo hacemos UNA VEZ acá para no duplicar el round-trip a profiles.
+    //    Si falla, ambos mensajes caen al fallback 'Chofer'.
+    let driverName = 'Chofer';
+    try {
+      const { data: dp } = await admin
+        .from('profiles')
+        .select('full_name')
+        .eq('id', driverId)
+        .maybeSingle();
+      if (dp?.full_name) driverName = dp.full_name;
+    } catch (e) {
+      console.error(
+        '[confirmDeliveryAction] driver name lookup falló (no fatal):',
+        e,
+      );
+    }
+
+    // ── Cash transfer flow (non-fatal).
+    //    Si el chofer cobró efectivo (amount_collected > 0), creamos un
+    //    registro pendiente en `cash_transfers` que el contador verá en
+    //    /contador, y notificamos a todos los contadores activos.
+    //
+    //    Política de errores: si esto falla, la entrega física ya
+    //    sucedió y está registrada — solo perdemos el tracking del
+    //    efectivo. Loguamos pero no abortamos. El admin puede crear el
+    //    cash_transfer manualmente desde DB si se necesita.
+    if (data.amount_collected > 0) {
+      try {
+        const { error: ctErr } = await admin
+          .from('cash_transfers')
+          .insert({
+            driver_id: driverId,
+            contador_id: null,
+            amount: data.amount_collected,
+            status: 'pendiente',
+          });
+        if (ctErr) {
+          console.error(
+            '[confirmDeliveryAction] cash_transfer insert falló (no fatal):',
+            ctErr,
+          );
+        } else {
+          // Notif a contadores activos.
+          const { data: contadores } = await admin
+            .from('profiles')
+            .select('id')
+            .eq('role', 'contador')
+            .eq('is_active', true);
+          if (contadores && contadores.length > 0) {
+            const amountFmt = new Intl.NumberFormat('es-MX', {
+              style: 'currency',
+              currency: 'MXN',
+              minimumFractionDigits: 0,
+            }).format(data.amount_collected);
+            const message = `El chofer ${driverName} trae ${amountFmt} en efectivo para entregar`;
+            const notifInserts = contadores.map((c) => ({
+              recipient_id: c.id,
+              type: 'efectivo_pendiente',
+              message,
+            }));
+            const { error: notifErr } = await admin
+              .from('notifications')
+              .insert(notifInserts);
+            if (notifErr) {
+              console.error(
+                '[confirmDeliveryAction] notif efectivo_pendiente falló (no fatal):',
+                notifErr,
+              );
+            }
+          }
+        }
+      } catch (e) {
+        console.error(
+          '[confirmDeliveryAction] cash_transfer flow excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
     // ── UPDATE leads.delivery_status = 'entregado'
     const { error: updErr } = await admin
       .from('leads')
@@ -215,15 +297,10 @@ export async function confirmDeliveryAction(
     //    Se emite ANTES de la Edge Function para que aunque commit-stock
     //    falle (la entrega física ya pasó, queda un cleanup manual de
     //    stock), los admins reciban la notif igual.
+    //
+    //    `driverName` ya fue resuelto arriba (compartido con el bloque
+    //    cash_transfer) — no volvemos a SELECT.
     try {
-      // Nombre del chofer para el mensaje. Si el SELECT falla caemos a
-      // 'Chofer' genérico — no abortamos la notif por eso.
-      const { data: driverProfile } = await admin
-        .from('profiles')
-        .select('full_name')
-        .eq('id', driverId)
-        .maybeSingle();
-      const driverName = driverProfile?.full_name ?? 'Chofer';
       const clientName = leadRow.client_name ?? `Lead ${data.lead_id.slice(0, 8)}`;
 
       const { data: admins } = await admin
