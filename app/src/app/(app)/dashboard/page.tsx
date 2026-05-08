@@ -6,6 +6,7 @@ import {
   TriangleAlert,
   TrendingUp,
   Wallet,
+  PackagePlus,
 } from 'lucide-react';
 import {
   ChannelBadge,
@@ -141,6 +142,7 @@ export default async function DashboardPage({
       deliveriesPendingResult,
       stockResult,
       cashValidatedResult,
+      materialsSpendResult,
       channelChartResult,
       recentLeadsResult,
       profileResult,
@@ -176,13 +178,27 @@ export default async function DashboardPage({
         .eq('status', 'validado')
         .gte('admin_validated_at', startOfMonthIso)
         .lt('admin_validated_at', startOfNextMonthIso),
-      // 6. Chart por canal (últimos 7 días — independiente)
+      // 6. Gasto en materiales del mes — suma de
+      //    inventory_movements WHERE movement_type='entrada' AND
+      //    unit_cost IS NOT NULL AND created_at ∈ rango.
+      //    Sumamos quantity * unit_cost en JS porque PostgREST no
+      //    expresa multiplicaciones server-side. unit_cost null lo
+      //    descartamos en el WHERE para evitar traer rows que no
+      //    contribuyen.
+      admin
+        .from('inventory_movements')
+        .select('quantity, unit_cost')
+        .eq('movement_type', 'entrada')
+        .not('unit_cost', 'is', null)
+        .gte('created_at', startOfMonthIso)
+        .lt('created_at', startOfNextMonthIso),
+      // 7. Chart por canal (últimos 7 días — independiente)
       admin
         .from('leads')
         .select('channel')
         .gte('sale_date', sevenDaysAgo)
         .is('deleted_at', null),
-      // 7. Recent leads (5 más recientes — independiente)
+      // 8. Recent leads (5 más recientes — independiente)
       admin
         .from('leads')
         .select(
@@ -192,7 +208,7 @@ export default async function DashboardPage({
         .is('deleted_at', null)
         .order('created_at', { ascending: false })
         .limit(5),
-      // 8. Profile del usuario para el greeting (best-effort)
+      // 9. Profile del usuario para el greeting (best-effort)
       user
         ? admin
             .from('profiles')
@@ -221,6 +237,13 @@ export default async function DashboardPage({
         cashValidatedResult.error,
       );
     }
+    // materialsSpend: no fatal igual — si falla, métrica cae a $0.
+    if (materialsSpendResult.error) {
+      console.error(
+        '[DashboardPage] materials spend select falló (no fatal):',
+        materialsSpendResult.error,
+      );
+    }
     if (channelChartResult.error) {
       return <ErrorState message={`Error leyendo chart: ${channelChartResult.error.message}`} />;
     }
@@ -243,6 +266,13 @@ export default async function DashboardPage({
     }, 0);
     const cashValidatedMonth = (cashValidatedResult.data ?? []).reduce(
       (s, t) => s + Number(t.amount ?? 0),
+      0,
+    );
+    // Σ (quantity * unit_cost) — entradas con costo registrado en el mes.
+    // Si unit_cost es null la query ya lo filtró; igual usamos `?? 0` por
+    // defensa.
+    const materialsSpendMonth = (materialsSpendResult.data ?? []).reduce(
+      (s, m) => s + Number(m.quantity ?? 0) * Number(m.unit_cost ?? 0),
       0,
     );
 
@@ -314,11 +344,11 @@ export default async function DashboardPage({
           <MonthYearFilter mes={mes} anio={anio} />
         </div>
 
-        {/* Metric cards (5) — todas clickeables. Cada href incluye los
+        {/* Metric cards (6) — todas clickeables. Cada href incluye los
             mismos `mes`/`anio` activos para que el drill-down respete el
             filtro del dashboard, EXCEPTO "Stock bajo" que va a /warehouse
             sin params (el stock es estado actual, no tiene rango de mes). */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
           <MetricCard
             icon={<ClipboardList size={20} />}
             iconBg="#DBEAFE"
@@ -345,6 +375,15 @@ export default async function DashboardPage({
             value={formatMXN(cashValidatedMonth)}
             unit="entregado y conciliado en el mes"
             href={`/admin/caja?tab=validados&mes=${mes}&anio=${anio}`}
+          />
+          <MetricCard
+            icon={<PackagePlus size={20} />}
+            iconBg="#FFEDD5"
+            iconColor="#C2410C"
+            label="Gasto en materiales"
+            value={formatMXN(materialsSpendMonth)}
+            unit="invertido en entradas del mes"
+            href={`/warehouse/movements?type=entrada&mes=${mes}&anio=${anio}`}
           />
           <MetricCard
             icon={<Truck size={20} />}

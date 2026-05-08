@@ -28,6 +28,10 @@ const PAGE_SIZE = 30;
 type RawSearchParams = {
   type?: string | string[];
   color?: string | string[];
+  /** Mes 1-12 — filtra `created_at` del movimiento por la ventana del mes. */
+  mes?: string | string[];
+  /** Año 4-dígitos — pareja inseparable con `mes`. */
+  anio?: string | string[];
   page?: string | string[];
 };
 
@@ -52,6 +56,25 @@ export default async function MovementsPage({
     const typeFilter = whitelistType(pickStr(raw.type));
     const colorFilter = pickStr(raw.color);
     const pageNumber = Math.max(1, Number(pickStr(raw.page)) || 1);
+
+    // Filtro mes/anio (ambos opcionales, deben venir JUNTOS para aplicar).
+    // Drill-down típico desde el card "Gasto en materiales" del dashboard,
+    // que linkea con ?type=entrada&mes=…&anio=…
+    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
+    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
+    const mes =
+      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12 ? mesRaw : 0;
+    const anio =
+      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
+        ? anioRaw
+        : 0;
+    const monthFilterActive = mes > 0 && anio > 0;
+    const startOfMonthIso = monthFilterActive
+      ? new Date(Date.UTC(anio, mes - 1, 1)).toISOString()
+      : null;
+    const startOfNextMonthIso = monthFilterActive
+      ? new Date(Date.UTC(anio, mes, 1)).toISOString()
+      : null;
 
     const admin = supabaseAdmin();
 
@@ -84,6 +107,11 @@ export default async function MovementsPage({
 
     if (typeFilter) query = query.eq('movement_type', typeFilter);
     if (validColor) query = query.eq('color_id', validColor);
+    if (monthFilterActive && startOfMonthIso && startOfNextMonthIso) {
+      query = query
+        .gte('created_at', startOfMonthIso)
+        .lt('created_at', startOfNextMonthIso);
+    }
 
     const start = (pageNumber - 1) * PAGE_SIZE;
     const end = start + PAGE_SIZE - 1;
@@ -176,7 +204,12 @@ export default async function MovementsPage({
         pageSize={PAGE_SIZE}
         totalPages={totalPages}
         colors={colorOptions}
-        filters={{ type: typeFilter, color: validColor }}
+        filters={{
+          type: typeFilter,
+          color: validColor,
+          mes: monthFilterActive ? mes : 0,
+          anio: monthFilterActive ? anio : 0,
+        }}
       />
     );
   } catch (err) {

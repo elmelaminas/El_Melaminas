@@ -56,6 +56,12 @@ const TYPE_ICON: Record<MovementType, React.ReactNode> = {
   ajuste: <Settings2 size={12} />,
 };
 
+/** Mes corto para el chip — mismo patrón que /leads y /payments. */
+const MES_SHORT: Readonly<Record<number, string>> = {
+  1: 'ene', 2: 'feb', 3: 'mar', 4: 'abr', 5: 'may', 6: 'jun',
+  7: 'jul', 8: 'ago', 9: 'sep', 10: 'oct', 11: 'nov', 12: 'dic',
+};
+
 export function MovementsClient({
   movements,
   total,
@@ -71,23 +77,44 @@ export function MovementsClient({
   pageSize: number;
   totalPages: number;
   colors: ColorOption[];
-  filters: { type: MovementType | ''; color: string };
+  filters: {
+    type: MovementType | '';
+    color: string;
+    /** Mes 1-12; 0 = sin filtro. Pareja inseparable con `anio`. */
+    mes: number;
+    /** Año 4-dígitos; 0 = sin filtro. */
+    anio: number;
+  };
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
 
   function pushFilters(
-    next: Partial<{ type: string; color: string; page: number }>,
+    next: Partial<{
+      type: string;
+      color: string;
+      page: number;
+      mes: number;
+      anio: number;
+    }>,
   ) {
     const merged = {
       type: next.type ?? filters.type,
       color: next.color ?? filters.color,
       page: next.page ?? page,
+      // mes/anio se preservan al cambiar otros filtros (mismo patrón
+      // que /leads y /payments). Solo "Limpiar filtros" los resetea.
+      mes: next.mes ?? filters.mes,
+      anio: next.anio ?? filters.anio,
     };
     const params = new URLSearchParams();
     if (merged.type) params.set('type', merged.type);
     if (merged.color) params.set('color', merged.color);
+    if (merged.mes > 0 && merged.anio > 0) {
+      params.set('mes', String(merged.mes));
+      params.set('anio', String(merged.anio));
+    }
     if (merged.page > 1) params.set('page', String(merged.page));
     const qs = params.toString();
     startTransition(() => {
@@ -95,7 +122,11 @@ export function MovementsClient({
     });
   }
 
-  const hasFilters = Boolean(filters.type || filters.color);
+  const hasFilters = Boolean(
+    filters.type ||
+      filters.color ||
+      (filters.mes > 0 && filters.anio > 0),
+  );
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const end = Math.min(page * pageSize, total);
 
@@ -150,7 +181,15 @@ export function MovementsClient({
           {hasFilters && (
             <button
               type="button"
-              onClick={() => pushFilters({ type: '', color: '', page: 1 })}
+              onClick={() =>
+                pushFilters({
+                  type: '',
+                  color: '',
+                  mes: 0,
+                  anio: 0,
+                  page: 1,
+                })
+              }
               className="btn btn-ghost"
               style={{ fontSize: '0.875rem' }}
             >
@@ -158,6 +197,22 @@ export function MovementsClient({
             </button>
           )}
         </div>
+        {filters.mes > 0 && filters.anio > 0 && (
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            <span
+              className="text-xs"
+              style={{
+                background: 'var(--bg-muted)',
+                color: 'var(--text-secondary)',
+                padding: '4px 10px',
+                borderRadius: 9999,
+                fontWeight: 500,
+              }}
+            >
+              Mes: {MES_SHORT[filters.mes] ?? filters.mes}/{filters.anio}
+            </span>
+          </div>
+        )}
         {pending && (
           <div
             className="mt-3 text-xs flex items-center gap-1"
