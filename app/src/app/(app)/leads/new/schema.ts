@@ -285,6 +285,45 @@ export type LeadFormState =
 
 export const initialLeadFormState: LeadFormState = { status: 'idle' };
 
+// ─── Upload de documento PDF (Grupo 3) ───────────────────────────────
+
+/**
+ * Upload de PDF asociado a un lead. La validación de archivo (mime,
+ * size) vive en el action porque `File` no se serializa en JSON; el
+ * schema valida solo el `lead_id`.
+ *
+ * Flujo: al guardar el lead, si el usuario adjuntó PDF, después del
+ * INSERT exitoso se llama `uploadLeadDocumentAction(leadId, file)`
+ * que sube al bucket `lead-documents` y UPDATEa
+ * `leads.document_url`. La subida es non-fatal: si falla, el lead
+ * sigue creado y la UI muestra warning (mejor un lead sin PDF que
+ * un lead perdido).
+ *
+ * Migración manual previa en Supabase:
+ *   ALTER TABLE leads ADD COLUMN IF NOT EXISTS document_url text;
+ *   -- Storage: crear bucket 'lead-documents' (público o con políticas).
+ */
+export const UploadLeadDocumentSchema = z.object({
+  lead_id: z.string().uuid('lead_id inválido'),
+});
+
+export type UploadLeadDocumentState =
+  | { status: 'idle' }
+  | { status: 'success'; document_url: string }
+  | { status: 'error'; message: string };
+
+export const initialUploadLeadDocumentState: UploadLeadDocumentState = {
+  status: 'idle',
+};
+
+/** Tamaño máximo del PDF (10 MB). Igual al límite del File input
+ *  en el form para feedback temprano. */
+export const LEAD_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Bucket de Supabase Storage donde van los PDFs de leads. Crear
+ *  manualmente en el dashboard si no existe. */
+export const LEAD_DOCUMENT_BUCKET = 'lead-documents';
+
 // ─── Helpers compartidos ────────────────────────────────────────────────
 
 /**

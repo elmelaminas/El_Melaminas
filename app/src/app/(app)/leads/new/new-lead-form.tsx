@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useMemo, useTransition } from 'react';
+import { useMemo, useRef, useState, useTransition } from 'react';
 import { useForm, useFieldArray, type FieldErrors } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import {
@@ -11,6 +11,7 @@ import {
   X,
   Calendar,
   Loader,
+  FileText,
 } from 'lucide-react';
 import {
   LeadCreateSchema,
@@ -24,9 +25,10 @@ import {
   EDGE_BANDING_RATE,
   CUT_RATE,
   NEW_COLOR_SENTINEL,
+  LEAD_DOCUMENT_MAX_BYTES,
   type LeadCreateInput,
 } from './schema';
-import { saveLeadAction } from './actions';
+import { saveLeadAction, uploadLeadDocumentAction } from './actions';
 import { formatMXN } from '@/data/mock';
 
 export type SellerOption = { id: string; name: string };
@@ -58,6 +60,17 @@ export function NewLeadForm({
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
+
+  // PDF adjunto (opcional). El File NO entra al schema RHF — se maneja
+  // como state local y se sube DESPUÉS del save exitoso del lead.
+  // Razón: cambiar el schema RHF a aceptar File rompe el flujo
+  // existente y obliga a serializar el form a FormData en vez de
+  // JSON. Más simple: dos pasos secuenciales (lead → upload PDF).
+  // Si el upload falla, el lead ya está creado y la UI muestra
+  // warning (mejor un lead sin PDF que un lead perdido).
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [pdfWarning, setPdfWarning] = useState<string | null>(null);
+  const pdfRef = useRef<HTMLInputElement>(null);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -140,6 +153,7 @@ export function NewLeadForm({
 
   const onValidSubmit = (values: LeadCreateInput) => {
     clearErrors('root.serverError');
+    setPdfWarning(null);
     console.log('[NewLeadForm] enviando saveLeadAction…', values);
 
     startTransition(async () => {
@@ -148,6 +162,45 @@ export function NewLeadForm({
         console.log('[NewLeadForm] respuesta:', result);
 
         if (result.status === 'success') {
+          // Si hay PDF, lo subimos antes de navegar. La subida es
+          // non-fatal: si falla, mostramos warning y navegamos igual
+          // (el lead ya está creado).
+          if (pdfFile && pdfFile.size > 0) {
+            try {
+              const fd = new FormData();
+              fd.set('lead_id', result.leadId);
+              fd.set('document', pdfFile);
+              const upRes = await uploadLeadDocumentAction(
+                { status: 'idle' },
+                fd,
+              );
+              if (upRes.status !== 'success') {
+                console.error(
+                  '[NewLeadForm] upload PDF falló (no fatal):',
+                  upRes,
+                );
+                // Mostramos warning pero NO bloqueamos la navegación —
+                // el lead ya está creado y guardado.
+                setPdfWarning(
+                  upRes.status === 'error'
+                    ? `Lead creado, pero el PDF no se pudo subir: ${upRes.message}`
+                    : 'Lead creado, pero el PDF no se pudo subir.',
+                );
+                return; // No navegamos para que el usuario vea el warning.
+              }
+            } catch (uploadErr) {
+              console.error(
+                '[NewLeadForm] upload PDF excepción (no fatal):',
+                uploadErr,
+              );
+              const msg =
+                uploadErr instanceof Error
+                  ? uploadErr.message
+                  : 'Error de red al subir PDF';
+              setPdfWarning(`Lead creado, pero el PDF no se pudo subir: ${msg}`);
+              return;
+            }
+          }
           // Vamos al listado; cuando exista /leads/[id] redirigimos ahí.
           router.push('/leads');
           router.refresh();
@@ -180,6 +233,30 @@ export function NewLeadForm({
       }
     });
   };
+
+  /** Validación cliente del PDF antes de aceptar el archivo en state.
+   *  Si falla, mostramos error inline y limpiamos el input. */
+  function handlePdfChange(file: File | null) {
+    setPdfWarning(null);
+    if (!file) {
+      setPdfFile(null);
+      return;
+    }
+    if (file.size > LEAD_DOCUMENT_MAX_BYTES) {
+      setPdfWarning('El PDF excede 10 MB. Comprime o reduce el archivo.');
+      setPdfFile(null);
+      if (pdfRef.current) pdfRef.current.value = '';
+      return;
+    }
+    const ext = (file.name.split('.').pop() ?? '').toLowerCase();
+    if (ext !== 'pdf') {
+      setPdfWarning('Solo se aceptan archivos PDF (.pdf).');
+      setPdfFile(null);
+      if (pdfRef.current) pdfRef.current.value = '';
+      return;
+    }
+    setPdfFile(file);
+  }
 
   const onInvalidSubmit = (formErrors: FieldErrors<LeadCreateInput>) => {
     console.warn('[NewLeadForm] validación cliente falló:', formErrors);
@@ -573,6 +650,84 @@ export function NewLeadForm({
                 </select>
               </Field>
             </div>
+          </Section>
+
+          {/* Documento adjunto (Grupo 3). PDF opcional asociado al lead.
+              Se sube al bucket lead-documents después de que el lead
+              se crea exitosamente. Max 10 MB, solo .pdf. */}
+          <Section
+            title="Documento adjunto"
+            subtitle="Cotización, contrato o cualquier PDF asociado al pedido (opcional, máx. 10 MB)."
+          >
+            <div
+              className="rounded-lg border p-4 flex items-start gap-3"
+              style={{
+                borderColor: pdfFile
+                  ? 'var(--success, #16A34A)'
+                  : 'var(--border)',
+                background: pdfFile ? '#F0FDF4' : 'var(--bg-subtle)',
+                cursor: pending ? 'not-allowed' : 'pointer',
+              }}
+              onClick={() => !pending && pdfRef.current?.click()}
+            >
+              <FileText
+                size={22}
+                style={{
+                  color: pdfFile
+                    ? 'var(--success, #16A34A)'
+                    : 'var(--text-tertiary)',
+                  flexShrink: 0,
+                  marginTop: 2,
+                }}
+              />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="text-sm font-medium">
+                  {pdfFile ? pdfFile.name : 'Selecciona un PDF…'}
+                </div>
+                <div
+                  className="text-[11px] mt-1"
+                  style={{ color: 'var(--text-tertiary)' }}
+                >
+                  {pdfFile
+                    ? `${(pdfFile.size / 1024 / 1024).toFixed(2)} MB · listo para subir`
+                    : 'Solo .pdf · máx. 10 MB'}
+                </div>
+              </div>
+              {pdfFile && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePdfChange(null);
+                  }}
+                  className="btn btn-ghost"
+                  style={{ padding: '4px' }}
+                  disabled={pending}
+                  aria-label="Quitar PDF"
+                >
+                  <X size={14} />
+                </button>
+              )}
+              <input
+                ref={pdfRef}
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={(e) =>
+                  handlePdfChange(e.target.files?.[0] ?? null)
+                }
+                style={{ display: 'none' }}
+                disabled={pending}
+              />
+            </div>
+            {pdfWarning && (
+              <div
+                role="alert"
+                className="text-xs mt-2"
+                style={{ color: 'var(--danger, #dc2626)' }}
+              >
+                {pdfWarning}
+              </div>
+            )}
           </Section>
         </div>
 

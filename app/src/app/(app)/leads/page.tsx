@@ -125,6 +125,7 @@ export default async function LeadsPage({
       .select(
         `id, client_name, phone, channel, sheets_count, total_amount,
          sale_date, created_at, delivery_status, payment_status,
+         document_url,
          sellers ( name )`,
         { count: 'exact' },
       )
@@ -179,6 +180,7 @@ export default async function LeadsPage({
       created_at: string | null;
       delivery_status: string | null;
       payment_status: string | null;
+      document_url: string | null;
       sellers: { name: string } | { name: string }[] | null;
     };
 
@@ -201,6 +203,7 @@ export default async function LeadsPage({
       created_at: r.created_at,
       delivery_status: (r.delivery_status as DeliveryStatus) ?? 'pendiente',
       payment_status: (r.payment_status as PaymentStatus) ?? 'pendiente',
+      document_url: r.document_url,
     }));
 
     const total = count ?? 0;

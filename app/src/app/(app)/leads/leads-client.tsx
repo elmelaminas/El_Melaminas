@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Loader,
   Pencil,
+  FileText,
 } from 'lucide-react';
 import {
   ChannelBadge,
@@ -35,6 +36,9 @@ export type LeadRow = {
   created_at: string | null;
   delivery_status: DeliveryStatus;
   payment_status: PaymentStatus;
+  /** URL del PDF adjunto al lead (Grupo 3). null si no hay documento.
+   *  Se muestra como ícono FileText clicable en la columna Cliente. */
+  document_url: string | null;
 };
 
 export type FiltersState = {
@@ -372,7 +376,29 @@ export function LeadsClient({
                 leads.map((l) => (
                   <tr key={l.id}>
                     <td>
-                      <div className="font-medium">{l.client_name}</div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="font-medium">{l.client_name}</div>
+                        {l.document_url && (
+                          <a
+                            href={l.document_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded"
+                            style={{
+                              background: '#FEE2E2',
+                              color: '#B91C1C',
+                              fontSize: '0.6875rem',
+                              fontWeight: 600,
+                              textDecoration: 'none',
+                            }}
+                            title="Ver documento adjunto (PDF)"
+                            aria-label={`Ver PDF adjunto de ${l.client_name}`}
+                          >
+                            <FileText size={11} /> PDF
+                          </a>
+                        )}
+                      </div>
                       <div
                         className="text-xs"
                         style={{ color: 'var(--text-tertiary)' }}

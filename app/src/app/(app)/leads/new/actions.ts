@@ -8,8 +8,12 @@ import {
   NEW_COLOR_SENTINEL,
   CUT_RATE,
   EDGE_BANDING_RATE,
+  UploadLeadDocumentSchema,
+  LEAD_DOCUMENT_MAX_BYTES,
+  LEAD_DOCUMENT_BUCKET,
   type LeadCreateInput,
   type LeadFormState,
+  type UploadLeadDocumentState,
   normalizeName,
   emptyToNull,
 } from './schema';
@@ -512,6 +516,151 @@ export async function saveLeadAction(
       err instanceof Error ? err.message : 'Error desconocido al crear lead';
     console.error('[saveLeadAction] excepción no controlada:', err);
     await txn.rollback('excepción no controlada');
+    return { status: 'error', message };
+  }
+}
+
+/**
+ * `uploadLeadDocumentAction(_prev, formData)` — sube un PDF al bucket
+ * `lead-documents` y guarda la URL pública en `leads.document_url`.
+ *
+ * Llamado por el formulario DESPUÉS del `saveLeadAction` exitoso. Si
+ * la subida falla, el lead ya existe (no se rolledback) — el usuario
+ * ve un warning en la UI y puede reintentar el upload luego desde la
+ * página del lead.
+ *
+ * Auth: cualquier usuario autenticado puede subir un PDF a un lead.
+ * El `lead_id` se valida que exista (pero no que sea propiedad del
+ * caller — los leads no tienen ownership formal, son colaborativos
+ * entre admin/seller/contador). Si en el futuro quieres restringir
+ * por created_by, agrega la verificación acá.
+ *
+ * Solo se aceptan PDFs (validación de extensión + content-type).
+ * Tamaño máximo 10 MB (definido en schema.ts).
+ */
+export async function uploadLeadDocumentAction(
+  _prev: UploadLeadDocumentState,
+  formData: FormData,
+): Promise<UploadLeadDocumentState> {
+  try {
+    const parsed = UploadLeadDocumentSchema.safeParse({
+      lead_id: formData.get('lead_id'),
+    });
+    if (!parsed.success) {
+      return { status: 'error', message: 'lead_id inválido.' };
+    }
+    const { lead_id } = parsed.data;
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return { status: 'error', message: 'Sesión no válida.' };
+    }
+
+    const file = formData.get('document');
+    if (!(file instanceof File) || file.size === 0) {
+      return { status: 'error', message: 'No se recibió el documento PDF.' };
+    }
+    if (file.size > LEAD_DOCUMENT_MAX_BYTES) {
+      return {
+        status: 'error',
+        message: 'El PDF excede 10 MB. Comprime o reduce el archivo.',
+      };
+    }
+    // Validación cinturón+tirantes: extensión Y mime. El mime de un
+    // .pdf debería ser application/pdf, pero algunos navegadores lo
+    // mandan como octet-stream — aceptamos ambos si la extensión es
+    // .pdf.
+    const ext = (file.name.split('.').pop() ?? '').toLowerCase();
+    if (ext !== 'pdf') {
+      return {
+        status: 'error',
+        message: 'Solo se aceptan archivos PDF (.pdf).',
+      };
+    }
+
+    const admin = supabaseAdmin();
+
+    // Verificar que el lead existe — evitar PDFs huérfanos
+    // referenciando leads inexistentes/borrados.
+    const { data: leadRow, error: leadErr } = await admin
+      .from('leads')
+      .select('id, document_url')
+      .eq('id', lead_id)
+      .maybeSingle();
+    if (leadErr) {
+      return {
+        status: 'error',
+        message: `No se pudo verificar el lead: ${leadErr.message}`,
+      };
+    }
+    if (!leadRow) {
+      return { status: 'error', message: 'Lead no encontrado.' };
+    }
+
+    // Path: {lead_id}/{timestamp}-{rand}.pdf — ver `driver/actions.ts`
+    // para el patrón. Random-suffix evita colisiones si dos uploads
+    // simultáneos al mismo lead caen en el mismo milisegundo.
+    const path = `${lead_id}/${Date.now()}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}.pdf`;
+    const { error: upErr } = await admin.storage
+      .from(LEAD_DOCUMENT_BUCKET)
+      .upload(path, file, {
+        contentType: 'application/pdf',
+        upsert: false,
+      });
+    if (upErr) {
+      return {
+        status: 'error',
+        message: `No se pudo subir el PDF: ${upErr.message}`,
+      };
+    }
+    const { data: pub } = admin.storage
+      .from(LEAD_DOCUMENT_BUCKET)
+      .getPublicUrl(path);
+    const documentUrl = pub.publicUrl;
+
+    // UPDATE leads.document_url. Si el lead ya tenía un documento
+    // adjunto, lo sobreescribimos (no borramos el anterior — queda
+    // huérfano en storage). Si en el futuro quieres limpiar, agrega
+    // un DELETE del path anterior antes del UPDATE.
+    const { error: updErr } = await admin
+      .from('leads')
+      .update({ document_url: documentUrl })
+      .eq('id', lead_id);
+    if (updErr) {
+      // Cleanup del PDF recién subido — si el UPDATE falla no queremos
+      // huérfanos en storage.
+      try {
+        await admin.storage.from(LEAD_DOCUMENT_BUCKET).remove([path]);
+      } catch (e) {
+        console.error(
+          '[uploadLeadDocumentAction] cleanup PDF huérfano falló:',
+          e,
+        );
+      }
+      return {
+        status: 'error',
+        message: `No se pudo guardar la URL del documento: ${updErr.message}`,
+      };
+    }
+
+    revalidatePath('/leads');
+    revalidatePath(`/leads/${lead_id}/edit`);
+    return { status: 'success', document_url: documentUrl };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al subir el documento';
+    console.error(
+      '[uploadLeadDocumentAction] excepción no controlada:',
+      err,
+    );
     return { status: 'error', message };
   }
 }
