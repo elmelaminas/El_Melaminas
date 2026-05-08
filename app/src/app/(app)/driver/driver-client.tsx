@@ -12,6 +12,7 @@ import {
   DollarSign,
   TriangleAlert,
   X,
+  Package,
 } from 'lucide-react';
 import { formatMXN } from '@/data/mock';
 import { DeliveryBadge } from '@/components/ui/Badges';
@@ -50,6 +51,8 @@ export function DriverClient({
   deliveries,
   receivers,
   cashPending,
+  todayDeliveriesCount,
+  todayIso,
 }: {
   driverName: string;
   deliveries: DeliveryCardData[];
@@ -57,6 +60,12 @@ export function DriverClient({
   /** Suma de cash_transfers WHERE driver_id=uid AND status='pendiente'.
    *  Es el efectivo físico que el chofer trae y debe entregar al contador. */
   cashPending: number;
+  /** Cantidad de entregas con delivery_date=hoy asignadas a este chofer.
+   *  Usado para el banner "📦 Tienes N entregas programadas para hoy". */
+  todayDeliveriesCount: number;
+  /** Hoy en YYYY-MM-DD (UTC) — viene del server para que el formato del
+   *  banner sea consistente con lo que se SELECTeó. */
+  todayIso: string;
 }) {
   return (
     <div className="mx-auto" style={{ maxWidth: 420, width: '100%' }}>
@@ -96,6 +105,17 @@ export function DriverClient({
           </div>
         </div>
       </div>
+
+      {/* Banner "Entregas programadas para hoy" (Grupo 1).
+          Color azul si N > 0, gris si N = 0. Distinto del header
+          "Hoy: N entregas" que muestra TODAS las entregas activas
+          (incluye sin delivery_date asignada): este banner contesta
+          específicamente "¿qué entregas me toca HOY según la ruta
+          que el admin asignó?". */}
+      <TodayDeliveriesBanner
+        count={todayDeliveriesCount}
+        todayIso={todayIso}
+      />
 
       {/* Banner de efectivo acumulado.
           Visible incluso cuando cashPending=0 — sirve también de
@@ -174,6 +194,90 @@ export function DriverClient({
       </div>
     </div>
   );
+}
+
+/**
+ * Banner azul/gris en el tope del feed del chofer con el número de
+ * entregas programadas para hoy. Si `count=0` muestra mensaje neutro
+ * gris ("No tienes entregas programadas para hoy"); si > 0 azul con
+ * el conteo + fecha legible.
+ */
+function TodayDeliveriesBanner({
+  count,
+  todayIso,
+}: {
+  count: number;
+  todayIso: string;
+}) {
+  const hasDeliveries = count > 0;
+  return (
+    <div
+      className="rounded-xl mb-5 p-4 flex items-center gap-3"
+      style={{
+        background: hasDeliveries ? '#DBEAFE' : 'var(--bg-subtle)',
+        border: hasDeliveries
+          ? '1px solid rgba(37,99,235,0.25)'
+          : '1px solid var(--border)',
+      }}
+    >
+      <div
+        className="flex items-center justify-center"
+        style={{
+          width: 40,
+          height: 40,
+          borderRadius: 10,
+          background: hasDeliveries ? '#2563EB' : 'var(--text-tertiary)',
+          color: '#fff',
+          flexShrink: 0,
+        }}
+      >
+        <Package size={22} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          className="text-xs"
+          style={{
+            color: hasDeliveries ? '#1E40AF' : 'var(--text-tertiary)',
+            fontWeight: 600,
+          }}
+        >
+          Programadas para hoy
+        </div>
+        <div
+          className="text-2xl font-bold leading-tight"
+          style={{
+            color: hasDeliveries ? '#1E40AF' : 'var(--text-tertiary)',
+          }}
+        >
+          {hasDeliveries
+            ? `📦 ${count} ${count === 1 ? 'entrega' : 'entregas'}`
+            : 'Sin entregas para hoy'}
+        </div>
+        <div
+          className="text-[11px] mt-1"
+          style={{ color: 'var(--text-tertiary)' }}
+        >
+          {formatDateLong(todayIso)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** YYYY-MM-DD → "lun 8 may 2026" en español (UTC-safe). */
+function formatDateLong(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  const [, y, mo, d] = m;
+  const date = new Date(Date.UTC(Number(y), Number(mo) - 1, Number(d)));
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString('es-MX', {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
 }
 
 function DeliveryCard({

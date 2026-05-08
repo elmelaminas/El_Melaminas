@@ -37,7 +37,12 @@ export default async function DriverPage() {
 
     const admin = supabaseAdmin();
 
-    // SELECTs en paralelo. Cuatro queries:
+    // Hoy en YYYY-MM-DD (UTC para consistencia con el campo
+    // `delivery_date` que es DATE sin huso). El banner usa esto para
+    // contar entregas programadas para hoy.
+    const todayIso = new Date().toISOString().slice(0, 10);
+
+    // SELECTs en paralelo. Cinco queries:
     //   1. Leads activos asignados a este chofer.
     //   2. Profile del chofer (para el saludo).
     //   3. Profiles admin/supervisor (para "Entregar efectivo a").
@@ -45,7 +50,12 @@ export default async function DriverPage() {
     //      "efectivo que llevas" que se muestra en el banner. Si la
     //      tabla no existe o RLS bloquea, el banner cae a $0 y la
     //      página sigue funcionando.
-    const [leadsResult, profileResult, receiversResult, cashResult] = await Promise.all([
+    //   5. COUNT de entregas programadas para HOY (Grupo 1 — banner
+    //      "📦 Tienes N entregas programadas para hoy"). Usamos
+    //      `count: 'exact'` y `head: true` para no traer filas, solo
+    //      el número. Non-fatal: si la columna `delivery_date` no
+    //      existe (migración pendiente) loggeamos y el banner muestra 0.
+    const [leadsResult, profileResult, receiversResult, cashResult, todayCountResult] = await Promise.all([
       admin
         .from('leads')
         .select(
@@ -75,6 +85,13 @@ export default async function DriverPage() {
         .select('amount')
         .eq('driver_id', driverId)
         .eq('status', 'pendiente'),
+      admin
+        .from('leads')
+        .select('id', { count: 'exact', head: true })
+        .eq('driver_id', driverId)
+        .eq('delivery_date', todayIso)
+        .in('delivery_status', ['pendiente', 'en_transito'])
+        .is('deleted_at', null),
     ]);
 
     if (leadsResult.error) {
@@ -92,6 +109,17 @@ export default async function DriverPage() {
       (s, t) => s + Number(t.amount ?? 0),
       0,
     );
+
+    // todayCountResult: igual que cashResult, non-fatal. Si la columna
+    // `delivery_date` no existe en DB (migración pendiente), el COUNT
+    // falla y mostramos 0 en el banner.
+    if (todayCountResult.error) {
+      console.error(
+        '[DriverPage] today count select falló (no fatal):',
+        todayCountResult.error,
+      );
+    }
+    const todayDeliveriesCount = todayCountResult.count ?? 0;
 
     const leadIds = (leadsResult.data ?? []).map((l) => l.id);
 
@@ -171,6 +199,8 @@ export default async function DriverPage() {
         deliveries={deliveries}
         receivers={receivers}
         cashPending={cashPending}
+        todayDeliveriesCount={todayDeliveriesCount}
+        todayIso={todayIso}
       />
     );
   } catch (err) {

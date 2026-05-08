@@ -10,6 +10,8 @@ import {
   TriangleAlert,
   X,
   CircleCheckBig,
+  Route,
+  Calendar,
 } from 'lucide-react';
 import {
   DeliveryBadge,
@@ -20,7 +22,7 @@ import {
   type DeliveryStatus,
   type PaymentStatus,
 } from '@/data/mock';
-import { resolveIssueAction } from './actions';
+import { resolveIssueAction, assignDeliveryRouteAction } from './actions';
 
 export type EntregaRow = {
   id: string;
@@ -40,6 +42,24 @@ export type EntregaRow = {
 };
 
 export type DriverOption = { id: string; name: string };
+
+/**
+ * Candidato a entrar en la ruta del día. Llega con `delivery_order`
+ * SOLO si `assigned_to_this_date=true` (es decir, su delivery_date
+ * coincide con la fecha seleccionada). Los demás vienen con
+ * `delivery_order=null` y el admin los puede agregar.
+ */
+export type RouteCandidate = {
+  id: string;
+  client_name: string;
+  address: string;
+  sale_date: string | null;
+  driver_id: string | null;
+  driver_name: string | null;
+  delivery_order: number | null;
+  assigned_to_this_date: boolean;
+  colors: { color_name: string; quantity: number }[];
+};
 
 /**
  * Issue (faltante o detalle) reportado por un chofer en una entrega.
@@ -80,6 +100,8 @@ export function EntregasClient({
   drivers,
   filters,
   issuesByLead,
+  routeDate,
+  routeCandidates,
 }: {
   rows: EntregaRow[];
   drivers: DriverOption[];
@@ -87,6 +109,11 @@ export function EntregasClient({
   /** Issues no resueltos por lead_id. Si un lead no tiene entrada o el
    *  array está vacío, no aparece el badge en su fila. */
   issuesByLead: Record<string, IssueRow[]>;
+  /** Fecha YYYY-MM-DD seleccionada para la sección "Ruta del día". */
+  routeDate: string;
+  /** Leads candidatos a la ruta del día (ya asignados a esa fecha o
+   *  sin fecha asignada). */
+  routeCandidates: RouteCandidate[];
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -102,6 +129,23 @@ export function EntregasClient({
     const params = new URLSearchParams();
     if (merged.driver) params.set('driver', merged.driver);
     if (merged.status) params.set('status', merged.status);
+    // Preservamos `fecha` si está activa (drill-down con filtro
+    // de fecha + filtros de chofer/estado simultáneos).
+    const sp = new URLSearchParams(window.location.search);
+    const fecha = sp.get('fecha');
+    if (fecha) params.set('fecha', fecha);
+    const qs = params.toString();
+    startTransition(() => {
+      router.push(qs ? `${pathname}?${qs}` : pathname);
+    });
+  }
+
+  /** Cambia la fecha de la ruta vía router.push (preserva otros filtros). */
+  function pushRouteDate(newDate: string) {
+    const params = new URLSearchParams();
+    if (filters.driver) params.set('driver', filters.driver);
+    if (filters.status) params.set('status', filters.status);
+    params.set('fecha', newDate);
     const qs = params.toString();
     startTransition(() => {
       router.push(qs ? `${pathname}?${qs}` : pathname);
@@ -176,6 +220,17 @@ export function EntregasClient({
           </div>
         )}
       </div>
+
+      {/* Sección "Ruta del día" — selector de fecha + lista de
+          candidatos con input de orden por entrega.
+          Se renderiza ARRIBA de la tabla general porque es la operación
+          de planeación más frecuente del admin (organizar el día
+          antes de empezar la jornada). */}
+      <RouteSection
+        routeDate={routeDate}
+        candidates={routeCandidates}
+        onChangeDate={pushRouteDate}
+      />
 
       {/* Modal de issues — montado fuera de la tabla para overlay
           fullscreen sin restricciones de overflow del tbl-wrap. */}
@@ -462,6 +517,365 @@ function IssuesModal({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Sección "Ruta del día".
+ *
+ * UX:
+ *   - Selector de fecha en la cabecera (controla `?fecha=` vía
+ *     router.push, recarga el SELECT del page.tsx).
+ *   - Lista de candidatos: cada fila tiene su propio `<input
+ *     type="number">` para el orden. Estado local (`orderInputs`) se
+ *     mantiene aparte del `delivery_order` que viene del server, para
+ *     que el admin pueda editar varios antes de guardar sin que cada
+ *     keystroke dispare un fetch.
+ *   - Botón "Guardar ruta del día" valida que cualquiera de los inputs
+ *     sea > 0 (al menos UNA entrega en la ruta) y envía un FormData
+ *     con `delivery_date` + `assignments` (JSON serializado) al
+ *     `assignDeliveryRouteAction`. Solo se incluyen los leads cuyo
+ *     orden cambió respecto al server (optimización: evitar UPDATE
+ *     no-op).
+ *   - Tras success: router.refresh() para que el server vuelva a
+ *     leer y reflejar el estado.
+ *
+ * Validación del input: 0 = quitar de la ruta de ese día, 1..N = orden,
+ * vacío = "no tocar". Aceptamos repetidos (no validamos unicidad de
+ * delivery_order) — el admin puede tener dos entregas con orden 1 si
+ * son simultáneas. La UI pinta un warning sutil si hay duplicados pero
+ * permite guardar.
+ */
+function RouteSection({
+  routeDate,
+  candidates,
+  onChangeDate,
+}: {
+  routeDate: string;
+  candidates: RouteCandidate[];
+  onChangeDate: (newDate: string) => void;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  // Map<lead_id, raw input value (string)>. Inicializamos con el
+  // delivery_order actual del server (si está asignado a ESTA fecha) o
+  // '' si no. El usuario edita strings; al guardar parseamos.
+  const [orderInputs, setOrderInputs] = useState<Record<string, string>>(
+    () => {
+      const acc: Record<string, string> = {};
+      for (const c of candidates) {
+        acc[c.id] =
+          c.assigned_to_this_date && c.delivery_order != null
+            ? String(c.delivery_order)
+            : '';
+      }
+      return acc;
+    },
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  function handleOrderChange(leadId: string, raw: string) {
+    // Permitimos solo dígitos (max 3) o vacío para que el usuario
+    // pueda borrar y dejar "no asignado".
+    if (raw !== '' && !/^\d{1,3}$/.test(raw)) return;
+    setOrderInputs((prev) => ({ ...prev, [leadId]: raw }));
+    setError(null);
+    setSuccess(null);
+  }
+
+  /**
+   * Calcula los assignments a enviar:
+   *   - Solo incluimos leads cuyo input difiere del estado actual
+   *     en server.
+   *   - Input vacío + ya asignado a esta fecha → enviamos order=0
+   *     (= quitar de la ruta).
+   *   - Input vacío + NO asignado → no enviamos nada (sin cambios).
+   *   - Input N + estado server distinto → enviamos order=N.
+   */
+  const dirtyAssignments = useMemo(() => {
+    const out: { lead_id: string; delivery_order: number }[] = [];
+    for (const c of candidates) {
+      const raw = orderInputs[c.id] ?? '';
+      const currentOrder =
+        c.assigned_to_this_date && c.delivery_order != null
+          ? c.delivery_order
+          : 0; // 0 = "no en la ruta de esta fecha"
+      const newOrder = raw === '' ? 0 : Number(raw);
+      if (newOrder !== currentOrder) {
+        out.push({ lead_id: c.id, delivery_order: newOrder });
+      }
+    }
+    return out;
+  }, [orderInputs, candidates]);
+
+  function handleSave() {
+    setError(null);
+    setSuccess(null);
+    if (dirtyAssignments.length === 0) {
+      setError('No hay cambios para guardar.');
+      return;
+    }
+    const fd = new FormData();
+    fd.set('delivery_date', routeDate);
+    fd.set('assignments', JSON.stringify(dirtyAssignments));
+
+    startTransition(async () => {
+      try {
+        const r = await assignDeliveryRouteAction({ status: 'idle' }, fd);
+        if (r.status === 'success') {
+          setSuccess(r.message);
+          router.refresh();
+        } else if (r.status === 'error') {
+          setError(r.message);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de red';
+        setError(message);
+      }
+    });
+  }
+
+  // Detectamos órdenes duplicados (warning visual, no bloqueante).
+  const usedOrders = new Map<number, number>();
+  for (const v of Object.values(orderInputs)) {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) {
+      usedOrders.set(n, (usedOrders.get(n) ?? 0) + 1);
+    }
+  }
+  const hasDuplicates = Array.from(usedOrders.values()).some((c) => c > 1);
+
+  // Conteo de entregas asignadas (orden > 0) en el state actual.
+  const assignedCount = Object.values(orderInputs).filter(
+    (v) => Number(v) > 0,
+  ).length;
+
+  return (
+    <div className="card p-5">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+        <div className="flex items-center gap-2">
+          <Route size={20} style={{ color: 'var(--brand-secondary)' }} />
+          <div>
+            <h3 className="font-semibold">Ruta del día</h3>
+            <p
+              className="text-xs"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              Asigna el orden de las entregas para una fecha. Los
+              choferes verán la secuencia en su vista.
+            </p>
+          </div>
+        </div>
+        <div className="relative">
+          <Calendar
+            size={16}
+            className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+            style={{ color: 'var(--text-tertiary)' }}
+          />
+          <input
+            type="date"
+            className="input"
+            style={{ paddingLeft: 36, minWidth: 180 }}
+            value={routeDate}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (/^\d{4}-\d{2}-\d{2}$/.test(v)) onChangeDate(v);
+            }}
+            aria-label="Fecha de la ruta"
+            disabled={pending}
+          />
+        </div>
+      </div>
+
+      {candidates.length === 0 ? (
+        <div
+          className="text-sm text-center py-6"
+          style={{ color: 'var(--text-tertiary)' }}
+        >
+          No hay entregas pendientes para asignar a esta fecha.
+        </div>
+      ) : (
+        <>
+          <div
+            className="rounded-lg border overflow-hidden"
+            style={{ borderColor: 'var(--border)' }}
+          >
+            <div
+              className="grid px-4 py-2 text-xs font-semibold uppercase tracking-wide"
+              style={{
+                gridTemplateColumns: '90px 1fr 200px 200px',
+                background: 'var(--bg-subtle)',
+                color: 'var(--text-secondary)',
+                borderBottom: '1px solid var(--border)',
+              }}
+            >
+              <div>Orden</div>
+              <div>Cliente</div>
+              <div>Chofer</div>
+              <div>Dirección</div>
+            </div>
+            {candidates.map((c) => {
+              const raw = orderInputs[c.id] ?? '';
+              const n = Number(raw);
+              const isDup =
+                Number.isFinite(n) && n > 0 && (usedOrders.get(n) ?? 0) > 1;
+              return (
+                <div
+                  key={c.id}
+                  className="grid px-4 py-2 items-center border-t"
+                  style={{
+                    gridTemplateColumns: '90px 1fr 200px 200px',
+                    borderColor: 'var(--border)',
+                  }}
+                >
+                  <div>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      className="input"
+                      style={{
+                        width: 70,
+                        padding: '6px 8px',
+                        textAlign: 'center',
+                        fontWeight: 600,
+                        borderColor: isDup
+                          ? 'var(--warning, #C2410C)'
+                          : undefined,
+                      }}
+                      placeholder="—"
+                      value={raw}
+                      onChange={(e) =>
+                        handleOrderChange(c.id, e.target.value)
+                      }
+                      disabled={pending}
+                      aria-label={`Orden de entrega para ${c.client_name}`}
+                    />
+                  </div>
+                  <div className="text-sm">
+                    <div className="font-medium">{c.client_name}</div>
+                    {c.colors.length > 0 && (
+                      <div
+                        className="text-xs truncate"
+                        style={{ color: 'var(--text-tertiary)' }}
+                        title={c.colors
+                          .map((cc) => `${cc.quantity}× ${cc.color_name}`)
+                          .join(', ')}
+                      >
+                        {c.colors
+                          .map((cc) => `${cc.quantity}× ${cc.color_name}`)
+                          .join(', ')}
+                      </div>
+                    )}
+                  </div>
+                  <div
+                    className="text-sm"
+                    style={{
+                      color: c.driver_name
+                        ? 'var(--text-primary)'
+                        : '#B91C1C',
+                    }}
+                  >
+                    {c.driver_name ?? 'Sin asignar'}
+                  </div>
+                  <div
+                    className="text-xs truncate"
+                    style={{ color: 'var(--text-secondary)' }}
+                    title={c.address}
+                  >
+                    {c.address || '—'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {hasDuplicates && (
+            <div
+              className="text-xs mt-3 flex items-center gap-1"
+              style={{ color: '#C2410C' }}
+            >
+              <TriangleAlert size={12} />
+              Hay órdenes repetidos — el chofer verá ambos en la misma
+              posición.
+            </div>
+          )}
+
+          <div className="flex items-center justify-between mt-4 gap-3 flex-wrap">
+            <div
+              className="text-xs"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              <strong>{assignedCount}</strong>{' '}
+              {assignedCount === 1
+                ? 'entrega en la ruta'
+                : 'entregas en la ruta'}
+              {dirtyAssignments.length > 0 && (
+                <span style={{ marginLeft: 8 }}>
+                  · <strong>{dirtyAssignments.length}</strong>{' '}
+                  {dirtyAssignments.length === 1
+                    ? 'cambio sin guardar'
+                    : 'cambios sin guardar'}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              {pending && (
+                <span
+                  className="text-xs flex items-center gap-1"
+                  style={{ color: 'var(--text-tertiary)' }}
+                >
+                  <Loader size={12} className="animate-spin" /> Guardando…
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={handleSave}
+                className="btn btn-primary"
+                disabled={pending || dirtyAssignments.length === 0}
+                aria-busy={pending}
+              >
+                <Route size={14} /> Guardar ruta del día
+              </button>
+            </div>
+          </div>
+
+          {error && (
+            <div
+              role="alert"
+              className="text-sm mt-3"
+              style={{
+                color: 'var(--danger, #dc2626)',
+                background: 'var(--danger-bg, rgba(220,38,38,0.08))',
+                border: '1px solid rgba(220,38,38,0.25)',
+                padding: '8px 12px',
+                borderRadius: 6,
+                whiteSpace: 'pre-wrap',
+              }}
+            >
+              {error}
+            </div>
+          )}
+
+          {success && (
+            <div
+              role="status"
+              className="text-sm mt-3 flex items-center gap-2"
+              style={{
+                color: '#15803D',
+                background: 'rgba(22,163,74,0.08)',
+                border: '1px solid rgba(22,163,74,0.25)',
+                padding: '8px 12px',
+                borderRadius: 6,
+              }}
+            >
+              <CircleCheckBig size={16} /> {success}
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

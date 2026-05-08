@@ -4,6 +4,7 @@ import {
   type EntregaRow,
   type DriverOption,
   type IssueRow,
+  type RouteCandidate,
 } from './entregas-client';
 
 /**
@@ -44,7 +45,17 @@ const STATUS_VALUES = ['pendiente', 'entregado', 'cancelado'] as const;
 type RawSearchParams = {
   driver?: string | string[];
   status?: string | string[];
+  /** Fecha YYYY-MM-DD para la sección "Ruta del día". Default = hoy
+   *  (UTC) en page.tsx si no viene o es inválida. */
+  fecha?: string | string[];
 };
+
+/** Devuelve hoy en formato YYYY-MM-DD. Usamos UTC para consistencia
+ *  servidor/cliente (igual que el campo `delivery_date` que es DATE
+ *  y no tiene huso). */
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
 
 function pickStr(v: string | string[] | undefined): string {
   if (Array.isArray(v)) return v[0] ?? '';
@@ -68,6 +79,14 @@ export default async function EntregasPage({
     const raw = await searchParams;
     const driverParam = pickStr(raw.driver);
     const statusFilter = whitelist(pickStr(raw.status), STATUS_VALUES);
+
+    // Fecha para la sección "Ruta del día". Si viene mal formateada
+    // caemos a hoy — no es un filtro estricto, es un selector de fecha
+    // sobre la que el admin opera la ruta.
+    const fechaParam = pickStr(raw.fecha);
+    const routeDate = /^\d{4}-\d{2}-\d{2}$/.test(fechaParam)
+      ? fechaParam
+      : todayIso();
 
     const admin = supabaseAdmin();
 
@@ -288,12 +307,113 @@ export default async function EntregasPage({
       }
     }
 
+    // ── Ruta del día: candidatos para `routeDate`.
+    // Criterio (matchea spec): leads donde
+    //   delivery_date = routeDate
+    //   OR (delivery_date IS NULL AND delivery_status IN
+    //       ('pendiente','en_transito') AND deleted_at IS NULL)
+    //
+    // Los con delivery_date asignada para esa fecha llegan con
+    // su `delivery_order` actual; los sin fecha llegan con
+    // `delivery_order=null` y el admin los puede agregar a la ruta.
+    //
+    // PostgREST `.or()` para combinar dos cláusulas. La sintaxis
+    // exige escapar adecuadamente — usamos una expresión simple:
+    //   delivery_date.eq.YYYY-MM-DD,delivery_date.is.null
+    // y añadimos los demás filtros con `.in()`/`.is()` separados (que
+    // se aplican a TODA la query, no a cada lado del OR). Eso es OK
+    // porque el filtro de "delivery_status IN (pendiente,en_transito)"
+    // y "deleted_at IS NULL" son válidos también para la rama
+    // `delivery_date = routeDate` — solo nos interesan entregas
+    // activas (no entregadas/canceladas) en cualquiera de los dos
+    // casos.
+    const routeCandidates: RouteCandidate[] = [];
+    try {
+      const { data: routeRows, error: routeErr } = await admin
+        .from('leads')
+        .select(
+          `id, client_name, address, sale_date, driver_id,
+           delivery_status, delivery_order, delivery_date,
+           lead_colors ( quantity, colors ( name ) )`,
+        )
+        .in('delivery_status', ['pendiente', 'en_transito'])
+        .is('deleted_at', null)
+        .or(`delivery_date.eq.${routeDate},delivery_date.is.null`)
+        .order('delivery_order', {
+          ascending: true,
+          nullsFirst: false,
+        })
+        .limit(100);
+      if (routeErr) {
+        console.error(
+          '[EntregasPage] route candidates select falló (no fatal):',
+          routeErr,
+        );
+      } else {
+        type RawRouteRow = {
+          id: string;
+          client_name: string | null;
+          address: string | null;
+          sale_date: string | null;
+          driver_id: string | null;
+          delivery_status: string | null;
+          delivery_order: number | null;
+          delivery_date: string | null;
+          lead_colors:
+            | {
+                quantity: number | null;
+                colors: { name: string } | { name: string }[] | null;
+              }[]
+            | null;
+        };
+        for (const r of (routeRows ?? []) as RawRouteRow[]) {
+          const colors = (r.lead_colors ?? [])
+            .map((lc) => {
+              const colorObj = Array.isArray(lc.colors)
+                ? lc.colors[0]
+                : lc.colors;
+              return {
+                color_name: colorObj?.name ?? '(sin nombre)',
+                quantity: Number(lc.quantity ?? 0),
+              };
+            })
+            .filter((c) => c.quantity > 0);
+          routeCandidates.push({
+            id: r.id,
+            client_name: r.client_name ?? '(sin nombre)',
+            address: r.address ?? '',
+            sale_date: r.sale_date,
+            driver_id: r.driver_id,
+            driver_name: r.driver_id
+              ? driverNameById.get(r.driver_id) ?? null
+              : null,
+            // Solo asignados a ESTA fecha tienen orden visible.
+            // Los con delivery_date IS NULL llegan con order=null →
+            // el cliente los muestra como "no asignados".
+            delivery_order:
+              r.delivery_date === routeDate
+                ? r.delivery_order ?? null
+                : null,
+            assigned_to_this_date: r.delivery_date === routeDate,
+            colors,
+          });
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[EntregasPage] route candidates excepción (no fatal):',
+        e,
+      );
+    }
+
     return (
       <EntregasClient
         rows={rows}
         drivers={drivers}
         filters={{ driver: validDriver, status: statusFilter }}
         issuesByLead={issuesByLead}
+        routeDate={routeDate}
+        routeCandidates={routeCandidates}
       />
     );
   } catch (err) {
