@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Eye, EyeOff, Layers, Lock, Mail, Loader } from 'lucide-react';
@@ -57,7 +57,58 @@ const ALLOWED_ROLES: readonly Role[] = [
   'contador',
 ];
 
+/**
+ * Default export wrapper.
+ *
+ * `LoginForm` usa `useSearchParams()` para leer `?reason=disabled` del
+ * middleware (cuando un usuario desactivado fue kickeado). Eso hace que
+ * Next bailee del prerender estático y exija un Suspense boundary, o el
+ * `next build` falla con:
+ *   "useSearchParams() should be wrapped in a suspense boundary at page /login"
+ *   (https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout)
+ *
+ * El fallback replica el shell del card (gradient + max-w-md + altura
+ * aproximada del form) para que no haya layout shift visible cuando el
+ * subtree resuelve. Centramos un Loader spinner en el lugar donde
+ * normalmente irían los inputs.
+ */
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginFallback />}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginFallback() {
+  return (
+    <div
+      className="min-h-screen flex items-center justify-center px-4"
+      style={{
+        background: 'linear-gradient(135deg, #1B3A5C 0%, #2E74B5 100%)',
+      }}
+    >
+      <div className="w-full max-w-md">
+        <div
+          className="card p-8 flex items-center justify-center"
+          style={{
+            boxShadow: '0 20px 60px rgba(0,0,0,0.20)',
+            minHeight: 360,
+          }}
+        >
+          <Loader
+            size={28}
+            className="animate-spin"
+            style={{ color: 'var(--brand-primary)' }}
+            aria-label="Cargando"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { setUser } = useDemo();
