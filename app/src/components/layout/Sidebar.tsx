@@ -43,7 +43,13 @@ const NAV: NavItem[] = [
   { href: '/leads',           label: 'Leads',             icon: <ClipboardList size={18} />,   roles: ['admin', 'seller'] },
   { href: '/payments',        label: 'Pagos',             icon: <CreditCard size={18} />,      roles: ['admin'] },
   { href: '/payments/new',    label: 'Registrar Pago',    icon: <CirclePlus size={18} />,      roles: ['admin'] },
-  { href: '/driver',          label: 'Mis Entregas',      icon: <Truck size={18} />,           roles: ['admin', 'driver'] },
+  // Admin ve TODAS las entregas con info del chofer asignado en una
+  // ruta dedicada; el chofer ve solo las suyas en /driver. Dos NavItems
+  // separados (en lugar de un href dinámico) porque cada rol los
+  // entiende como pantallas semánticamente distintas — el admin nunca
+  // verá "Mis Entregas" como label, lo confundiría.
+  { href: '/admin/entregas',  label: 'Entregas',          icon: <Truck size={18} />,           roles: ['admin'] },
+  { href: '/driver',          label: 'Mis Entregas',      icon: <Truck size={18} />,           roles: ['driver'] },
   { href: '/driver?tab=hist', label: 'Historial',         icon: <History size={18} />,         roles: ['driver'] },
   { href: '/warehouse',       label: 'Stock',             icon: <Package size={18} />,         roles: ['admin', 'warehouse'] },
   { href: '/warehouse?new=1', label: 'Registrar Entrada', icon: <PackagePlus size={18} />,     roles: ['warehouse'] },
