@@ -13,6 +13,19 @@ export type DriverWithCash = {
 };
 
 /**
+ * Una fila del historial personal del contador. `status` cubre los dos
+ * estados post-pendiente (recibido = sigue esperando validación del
+ * admin; validado = el ciclo terminó).
+ */
+export type HistoryRow = {
+  id: string;
+  driver_name: string;
+  amount: number;
+  status: 'recibido' | 'validado';
+  created_at: string | null;
+};
+
+/**
  * Vista del contador.
  *
  * Layout:
@@ -29,9 +42,14 @@ export type DriverWithCash = {
 export function ContadorClient({
   drivers,
   grandTotal,
+  history,
 }: {
   drivers: DriverWithCash[];
   grandTotal: number;
+  /** Últimas 20 transferencias que este contador recibió (recibido +
+   *  validado). Para que pueda ver qué ya entregó al admin y qué sigue
+   *  esperando validación. */
+  history: HistoryRow[];
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -290,6 +308,93 @@ export function ContadorClient({
           </div>
         </>
       )}
+
+      {/* Historial personal — siempre visible aunque no haya pendientes */}
+      <div className="tbl-wrap">
+        <div
+          className="px-6 py-4 border-b"
+          style={{ borderColor: 'var(--border)' }}
+        >
+          <h3 className="font-semibold">Historial de efectivo recibido</h3>
+          <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+            Tus últimas 20 recepciones. Estado{' '}
+            <span className="badge badge-info" style={{ fontSize: '0.6875rem' }}>
+              Recibido
+            </span>{' '}
+            = esperando validación del admin;{' '}
+            <span
+              className="badge badge-success"
+              style={{ fontSize: '0.6875rem' }}
+            >
+              Validado
+            </span>{' '}
+            = ciclo cerrado.
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Chofer</th>
+                <th className="text-right">Monto</th>
+                <th>Fecha</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={4}
+                    className="text-center py-6 text-sm"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Aún no has recibido efectivo de ningún chofer.
+                  </td>
+                </tr>
+              ) : (
+                history.map((h) => (
+                  <tr key={h.id}>
+                    <td className="font-medium">{h.driver_name}</td>
+                    <td
+                      className="text-right font-bold"
+                      style={{ color: '#15803D' }}
+                    >
+                      {formatMXN(h.amount)}
+                    </td>
+                    <td
+                      className="text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {formatDateTime(h.created_at)}
+                    </td>
+                    <td>
+                      {h.status === 'validado' ? (
+                        <span className="badge badge-success">Validado</span>
+                      ) : (
+                        <span className="badge badge-info">Recibido</span>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
+}
+
+function formatDateTime(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString('es-MX', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }

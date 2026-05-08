@@ -1,7 +1,9 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { supabaseServer } from '@/lib/supabase/server';
 import {
   ContadorClient,
   type DriverWithCash,
+  type HistoryRow,
 } from './contador-client';
 
 /**
@@ -25,20 +27,47 @@ export default async function ContadorPage() {
   try {
     const admin = supabaseAdmin();
 
-    // Pendientes globales — los contadores ven todos los pendientes,
-    // no filtramos por contador_id (cualquier contador puede recibir
-    // de cualquier chofer).
-    const { data: transfers, error: tErr } = await admin
-      .from('cash_transfers')
-      .select('driver_id, amount')
-      .eq('status', 'pendiente');
-    if (tErr) {
-      return <ErrorState message={`Error leyendo transferencias: ${tErr.message}`} />;
+    // Auth para el historial — necesitamos el contador_id del usuario
+    // logueado para filtrar las transferencias que ÉL recibió.
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+    } = await userClient.auth.getUser();
+    const contadorId = user?.id ?? null;
+
+    // Dos queries en paralelo:
+    //   1. Pendientes GLOBALES (cualquier contador puede recibir de
+    //      cualquier chofer; no filtramos por contador_id).
+    //   2. Historial PERSONAL del contador logueado: transferencias
+    //      donde él aparece como contador_id, sin filtrar por status
+    //      (incluye recibido + validado para que vea el ciclo completo).
+    //      Si no hay user (caso teórico, el middleware ya bloquea), el
+    //      historial sale vacío.
+    const [pendingResult, historyResult] = await Promise.all([
+      admin
+        .from('cash_transfers')
+        .select('driver_id, amount')
+        .eq('status', 'pendiente'),
+      contadorId
+        ? admin
+            .from('cash_transfers')
+            .select('id, driver_id, amount, status, created_at')
+            .eq('contador_id', contadorId)
+            .order('created_at', { ascending: false })
+            .limit(20)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+
+    if (pendingResult.error) {
+      return <ErrorState message={`Error leyendo transferencias: ${pendingResult.error.message}`} />;
+    }
+    if (historyResult.error) {
+      return <ErrorState message={`Error leyendo historial: ${historyResult.error.message}`} />;
     }
 
-    // Sumamos por driver_id.
+    // Sumamos pendientes por driver_id.
     const totalsByDriver = new Map<string, number>();
-    for (const t of transfers ?? []) {
+    for (const t of pendingResult.data ?? []) {
       if (!t.driver_id) continue;
       totalsByDriver.set(
         t.driver_id,
@@ -46,14 +75,23 @@ export default async function ContadorPage() {
       );
     }
 
-    // Si no hay pendientes, no necesitamos ir a profiles.
-    const driverIds = Array.from(totalsByDriver.keys());
+    // Conjunto de driver_ids únicos a resolver: pendientes + historial.
+    const allDriverIds = Array.from(
+      new Set(
+        [
+          ...totalsByDriver.keys(),
+          ...((historyResult.data ?? []).map((h) => h.driver_id).filter(
+            (id): id is string => !!id,
+          )),
+        ],
+      ),
+    );
     let nameById = new Map<string, string>();
-    if (driverIds.length > 0) {
+    if (allDriverIds.length > 0) {
       const { data: drivers, error: dErr } = await admin
         .from('profiles')
         .select('id, full_name')
-        .in('id', driverIds);
+        .in('id', allDriverIds);
       if (dErr) {
         return <ErrorState message={`Error leyendo choferes: ${dErr.message}`} />;
       }
@@ -62,7 +100,7 @@ export default async function ContadorPage() {
       }
     }
 
-    const rows: DriverWithCash[] = driverIds
+    const rows: DriverWithCash[] = Array.from(totalsByDriver.keys())
       .map((id) => ({
         driver_id: id,
         driver_name: nameById.get(id) ?? '(chofer desconocido)',
@@ -73,7 +111,40 @@ export default async function ContadorPage() {
 
     const grandTotal = rows.reduce((s, r) => s + r.amount, 0);
 
-    return <ContadorClient drivers={rows} grandTotal={grandTotal} />;
+    type RawHistory = {
+      id: string;
+      driver_id: string | null;
+      amount: number | string | null;
+      status: string | null;
+      created_at: string | null;
+    };
+    const history: HistoryRow[] = ((historyResult.data ?? []) as RawHistory[]).map(
+      (h) => ({
+        id: h.id,
+        driver_name: h.driver_id
+          ? nameById.get(h.driver_id) ?? '(chofer desconocido)'
+          : '—',
+        amount: Number(h.amount ?? 0),
+        // Sólo nos interesan los estados post-pendiente; si por raro
+        // motivo aparece un 'pendiente' del propio contador (no debería),
+        // lo mostramos igual con un fallback a 'recibido' para el badge.
+        status:
+          h.status === 'validado'
+            ? 'validado'
+            : h.status === 'recibido'
+            ? 'recibido'
+            : 'recibido',
+        created_at: h.created_at,
+      }),
+    );
+
+    return (
+      <ContadorClient
+        drivers={rows}
+        grandTotal={grandTotal}
+        history={history}
+      />
+    );
   } catch (err) {
     const message =
       err instanceof Error ? err.message : 'Error desconocido al cargar caja';

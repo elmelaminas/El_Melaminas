@@ -5,6 +5,7 @@ import {
   Truck,
   TriangleAlert,
   TrendingUp,
+  Wallet,
 } from 'lucide-react';
 import {
   ChannelBadge,
@@ -14,24 +15,37 @@ import {
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import { formatMXN, type Channel } from '@/data/mock';
+import { MonthYearFilter, MES_LABEL } from './dashboard-client';
 
 /**
  * Dashboard /dashboard.
  *
- * 100% Server Component — sin Client Component intermedio porque no hay
- * interactividad. Todo el rendering es estático tras hacer las queries.
+ * Server Component con un Client Component pequeño embebido (el
+ * `<MonthYearFilter>`) para los selectores de mes/año. Todas las queries
+ * pesadas se ejecutan server-side; el cliente solo construye URLs nuevas
+ * cuando el usuario cambia el filtro.
  *
- * Las 4 métricas clave + chart de canales + recent leads se cargan en
- * paralelo con `Promise.all`. Cualquier error en una query rompe la
- * página entera (try/catch envolvente → ErrorState con el message
- * exacto). Aceptable porque las 4 son críticas para que el dashboard
- * sea útil.
+ * Filtros vía searchParams (bookmarkable):
+ *   - `mes`  (1-12, default = mes actual UTC)
+ *   - `anio` (año de 4 dígitos, default = año actual UTC)
  *
- * Ventana "hoy" se calcula en UTC en el server: `[startOfDay, endOfDay)`
- * en TZ del usuario produciría off-by-one para usuarios en otra zona,
- * pero como El Melaminas opera en es-MX uniformemente y el Vercel runtime
- * está en UTC, la diferencia genera <24h de drift en casos extremos.
- * Si quieres precisión exacta zona horaria de México, parametriza la TZ.
+ * Métricas que respetan el rango de mes seleccionado:
+ *   - Leads del mes              (`leads.sale_date` ∈ [start, nextStart))
+ *   - Cobrado en el mes          (`payments.paid_at` ∈ [start, nextStart))
+ *   - Efectivo validado del mes  (`cash_transfers.admin_validated_at`)
+ *
+ * Métricas que NO respetan el rango (siempre estado actual):
+ *   - Entregas pendientes (operativo: lo que hay AHORA por entregar)
+ *   - Stock bajo          (operativo: lo que hay AHORA bajo el mínimo)
+ *
+ * Chart de canales: últimos 7 días (independiente del filtro mensual,
+ * intencionalmente — es una vista de tendencia corta, no histórica).
+ *
+ * Política de errores: try/catch envolvente + ErrorState con el mensaje
+ * preciso, mismo patrón que el resto del proyecto.
+ *
+ * Ventanas en UTC. Para precisión exacta TZ MX -06:00, parametriza la
+ * zona horaria al construir las fechas.
  */
 export const dynamic = 'force-dynamic';
 
@@ -62,8 +76,57 @@ const CHANNEL_BAR_META: Record<string, { label: string; color: string }> = {
   tienda: { label: 'Tienda', color: '#EA580C' },
 };
 
-export default async function DashboardPage() {
+type RawSearchParams = {
+  mes?: string | string[];
+  anio?: string | string[];
+};
+
+function pickStr(v: string | string[] | undefined): string {
+  if (Array.isArray(v)) return v[0] ?? '';
+  return v ?? '';
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<RawSearchParams>;
+}) {
   try {
+    const raw = await searchParams;
+    const now = new Date();
+
+    // Validación + defaults para mes/anio. Si el usuario manipula la URL
+    // a `?mes=99&anio=abc`, caemos al actual silenciosamente.
+    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
+    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
+    const mes =
+      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12
+        ? mesRaw
+        : now.getUTCMonth() + 1;
+    const anio =
+      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
+        ? anioRaw
+        : now.getUTCFullYear();
+
+    // Rango UTC del mes seleccionado: [start, startNextMonth).
+    // Date.UTC con month=12 normaliza correctamente a Enero del año + 1.
+    const startOfMonthIso = new Date(Date.UTC(anio, mes - 1, 1)).toISOString();
+    const startOfNextMonthIso = new Date(Date.UTC(anio, mes, 1)).toISOString();
+    // Para columnas DATE (sale_date), comparamos como YYYY-MM-DD.
+    const startOfMonthDate = startOfMonthIso.slice(0, 10);
+    const startOfNextMonthDate = startOfNextMonthIso.slice(0, 10);
+
+    // Ventana de últimos 7 días para el chart (independiente del filtro).
+    const sevenDaysAgo = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate() - 6,
+      ),
+    )
+      .toISOString()
+      .slice(0, 10);
+
     const userClient = await supabaseServer();
     const {
       data: { user },
@@ -71,80 +134,54 @@ export default async function DashboardPage() {
 
     const admin = supabaseAdmin();
 
-    // Ventana de hoy en UTC. sale_date es DATE (no timestamp), lo
-    // comparamos como string YYYY-MM-DD.
-    const now = new Date();
-    const todayIso = now.toISOString().slice(0, 10);
-    const startOfDay = new Date(`${todayIso}T00:00:00.000Z`).toISOString();
-    const startOfTomorrow = new Date(
-      Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate() + 1,
-        0,
-        0,
-        0,
-        0,
-      ),
-    ).toISOString();
-
-    // Ventana de últimos 7 días para el chart.
-    const sevenDaysAgo = new Date(
-      Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate() - 6,
-        0,
-        0,
-        0,
-        0,
-      ),
-    )
-      .toISOString()
-      .slice(0, 10);
-
-    // 6 queries en paralelo: 4 métricas + chart + recent leads + (perfil
-    // del usuario para el greeting si pudimos auth-earlo).
     const [
-      leadsTodayResult,
-      paymentsTodayResult,
+      leadsMonthResult,
+      paymentsMonthResult,
       deliveriesPendingResult,
       stockResult,
+      cashValidatedResult,
       channelChartResult,
       recentLeadsResult,
       profileResult,
     ] = await Promise.all([
-      // 1. Leads hoy (sale_date = todayIso)
+      // 1. Leads del mes (sale_date ∈ [start, nextStart))
       admin
         .from('leads')
         .select('id', { count: 'exact', head: true })
-        .eq('sale_date', todayIso)
+        .gte('sale_date', startOfMonthDate)
+        .lt('sale_date', startOfNextMonthDate)
         .is('deleted_at', null),
-      // 2. Pagos exitosos en la ventana [startOfDay, startOfTomorrow)
+      // 2. Pagos exitosos del mes (paid_at ∈ [start, nextStart))
       admin
         .from('payments')
         .select('amount')
         .eq('status', 'exitoso')
-        .gte('paid_at', startOfDay)
-        .lt('paid_at', startOfTomorrow),
-      // 3. Entregas pendientes
+        .gte('paid_at', startOfMonthIso)
+        .lt('paid_at', startOfNextMonthIso),
+      // 3. Entregas pendientes (NO filtra por mes — operativo actual)
       admin
         .from('leads')
         .select('id', { count: 'exact', head: true })
         .in('delivery_status', ['pendiente', 'en_transito'])
         .is('deleted_at', null),
-      // 4. Inventory para detectar stock bajo (filtrar en JS porque
-      //    PostgREST no soporta `(stock_total - stock_committed) <= min`).
+      // 4. Inventory para stock bajo (NO filtra por mes)
       admin
         .from('inventory')
         .select('stock_total, stock_committed, stock_minimum'),
-      // 5. Chart por canal de los últimos 7 días
+      // 5. Efectivo validado del mes (cash_transfers.admin_validated_at ∈ rango)
+      admin
+        .from('cash_transfers')
+        .select('amount')
+        .eq('status', 'validado')
+        .gte('admin_validated_at', startOfMonthIso)
+        .lt('admin_validated_at', startOfNextMonthIso),
+      // 6. Chart por canal (últimos 7 días — independiente)
       admin
         .from('leads')
         .select('channel')
         .gte('sale_date', sevenDaysAgo)
         .is('deleted_at', null),
-      // 6. Recent leads (5 más recientes)
+      // 7. Recent leads (5 más recientes — independiente)
       admin
         .from('leads')
         .select(
@@ -154,7 +191,7 @@ export default async function DashboardPage() {
         .is('deleted_at', null)
         .order('created_at', { ascending: false })
         .limit(5),
-      // 7. Profile del usuario para el greeting (best-effort)
+      // 8. Profile del usuario para el greeting (best-effort)
       user
         ? admin
             .from('profiles')
@@ -164,17 +201,24 @@ export default async function DashboardPage() {
         : Promise.resolve({ data: null, error: null }),
     ]);
 
-    if (leadsTodayResult.error) {
-      return <ErrorState message={`Error leyendo leads hoy: ${leadsTodayResult.error.message}`} />;
+    if (leadsMonthResult.error) {
+      return <ErrorState message={`Error leyendo leads del mes: ${leadsMonthResult.error.message}`} />;
     }
-    if (paymentsTodayResult.error) {
-      return <ErrorState message={`Error leyendo pagos hoy: ${paymentsTodayResult.error.message}`} />;
+    if (paymentsMonthResult.error) {
+      return <ErrorState message={`Error leyendo pagos del mes: ${paymentsMonthResult.error.message}`} />;
     }
     if (deliveriesPendingResult.error) {
       return <ErrorState message={`Error leyendo entregas: ${deliveriesPendingResult.error.message}`} />;
     }
     if (stockResult.error) {
       return <ErrorState message={`Error leyendo inventario: ${stockResult.error.message}`} />;
+    }
+    // cashValidated: no fatal — si la tabla no existe o falla, mostramos $0.
+    if (cashValidatedResult.error) {
+      console.error(
+        '[DashboardPage] cash_transfers select falló (no fatal):',
+        cashValidatedResult.error,
+      );
     }
     if (channelChartResult.error) {
       return <ErrorState message={`Error leyendo chart: ${channelChartResult.error.message}`} />;
@@ -183,8 +227,8 @@ export default async function DashboardPage() {
       return <ErrorState message={`Error leyendo recientes: ${recentLeadsResult.error.message}`} />;
     }
 
-    const leadsToday = leadsTodayResult.count ?? 0;
-    const paidToday = (paymentsTodayResult.data ?? []).reduce(
+    const leadsMonth = leadsMonthResult.count ?? 0;
+    const paidMonth = (paymentsMonthResult.data ?? []).reduce(
       (s, p) => s + Number(p.amount ?? 0),
       0,
     );
@@ -196,8 +240,12 @@ export default async function DashboardPage() {
       const available = Math.max(0, total - committed);
       return available <= minimum ? c + 1 : c;
     }, 0);
+    const cashValidatedMonth = (cashValidatedResult.data ?? []).reduce(
+      (s, t) => s + Number(t.amount ?? 0),
+      0,
+    );
 
-    // Aggregar el chart de canales — count por channel.
+    // Chart por canal
     const channelCount = new Map<string, number>();
     for (const row of channelChartResult.data ?? []) {
       const ch = (row.channel as string) ?? '';
@@ -230,7 +278,6 @@ export default async function DashboardPage() {
         return {
           id: l.id,
           client_name: l.client_name,
-          // Mismo mapeo que /leads: DB lowercase → Channel uppercase.
           channel: ((l.channel as string) ?? '').toUpperCase() as Channel,
           seller_name: sellerObj?.name ?? '—',
           total_amount: Number(l.total_amount ?? 0),
@@ -246,43 +293,51 @@ export default async function DashboardPage() {
       profileResult.data?.full_name ?? user?.email ?? 'Bienvenido';
     const firstName = fullName.split(' ')[0];
 
+    const monthLabel = MES_LABEL[mes] ?? '—';
+
     return (
       <div className="flex flex-col gap-6">
-        {/* Title */}
-        <div>
-          <h1
-            className="text-2xl font-bold tracking-tight"
-            style={{ color: 'var(--text-primary)' }}
-          >
-            Buen día, {firstName} 👋
-          </h1>
-          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-            Resumen operativo del día —{' '}
-            {now.toLocaleDateString('es-MX', {
-              weekday: 'long',
-              day: 'numeric',
-              month: 'long',
-            })}
-          </p>
+        {/* Title + filter */}
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1
+              className="text-2xl font-bold tracking-tight"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              Buen día, {firstName} 👋
+            </h1>
+            <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+              Métricas de {monthLabel} {anio}
+            </p>
+          </div>
+          <MonthYearFilter mes={mes} anio={anio} />
         </div>
 
-        {/* Metric cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        {/* Metric cards (5) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
           <MetricCard
             icon={<ClipboardList size={20} />}
             iconBg="#DBEAFE"
             iconColor="#1E40AF"
-            label="Leads hoy"
-            value={leadsToday.toString()}
-            unit={leadsToday === 1 ? 'lead registrado' : 'leads registrados'}
+            label="Leads del mes"
+            value={leadsMonth.toString()}
+            unit={leadsMonth === 1 ? 'lead registrado' : 'leads registrados'}
           />
           <MetricCard
             icon={<DollarSign size={20} />}
             iconBg="#DCFCE7"
             iconColor="#15803D"
-            label="Cobrado hoy"
-            value={formatMXN(paidToday)}
-            unit="pagos exitosos del día"
+            label="Cobrado en el mes"
+            value={formatMXN(paidMonth)}
+            unit="pagos exitosos del mes"
+          />
+          <MetricCard
+            icon={<Wallet size={20} />}
+            iconBg="#E0E7FF"
+            iconColor="#1E3A8A"
+            label="Efectivo validado"
+            value={formatMXN(cashValidatedMonth)}
+            unit="entregado y conciliado en el mes"
           />
           <MetricCard
             icon={<Truck size={20} />}
@@ -290,7 +345,7 @@ export default async function DashboardPage() {
             iconColor="#92400E"
             label="Entregas pendientes"
             value={deliveriesPending.toString()}
-            unit="por entregar o en tránsito"
+            unit="por entregar o en tránsito (actual)"
           />
           <MetricCard
             icon={<TriangleAlert size={20} />}
@@ -298,7 +353,7 @@ export default async function DashboardPage() {
             iconColor="#B91C1C"
             label="Stock bajo"
             value={lowStock.toString()}
-            unit="materiales por debajo del mínimo"
+            unit="materiales bajo mínimo (actual)"
           />
         </div>
 

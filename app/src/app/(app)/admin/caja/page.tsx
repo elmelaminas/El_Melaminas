@@ -5,37 +5,91 @@ import { CajaClient, type TransferRow } from './caja-client';
  * Página /admin/caja — el admin valida el efectivo que el contador
  * recibió de los choferes.
  *
- * Server Component: SELECT cash_transfers WHERE status='recibido' (los
- * que esperan validación) + nombres de chofer y contador resueltos en
- * memoria con un segundo SELECT a profiles. Hacemos esto en lugar de
- * un PostgREST embed múltiple porque cash_transfers tiene 3 FKs a
- * profiles (driver_id, contador_id, admin_id) y eso causa "embedding
- * ambiguity" si uno trata de joinear todo en un solo select.
+ * Server Component con DOS secciones (tabs) controladas por searchParam:
+ *   ?tab=por-validar (default) — cash_transfers.status='recibido'
+ *                                con botón de acción "Validar pago".
+ *   ?tab=validados             — cash_transfers.status='validado'
+ *                                con info del admin validador y total
+ *                                acumulado del mes calendario actual.
+ *
+ * Names resolución: cash_transfers tiene 3 FKs a profiles
+ * (driver_id, contador_id, admin_id). PostgREST no puede embedirlas
+ * todas en un solo select sin ambigüedad, así que cargamos el conjunto
+ * único de user_ids y resolvemos full_name en una query separada.
  *
  * Sólo accesible para role=admin (RBAC del middleware).
  */
 export const dynamic = 'force-dynamic';
 
-export default async function CajaPage() {
+type RawSearchParams = {
+  tab?: string | string[];
+};
+
+function pickStr(v: string | string[] | undefined): string {
+  if (Array.isArray(v)) return v[0] ?? '';
+  return v ?? '';
+}
+
+type TabKey = 'por-validar' | 'validados';
+
+const ALLOWED_TABS: readonly TabKey[] = ['por-validar', 'validados'];
+
+export default async function CajaPage({
+  searchParams,
+}: {
+  searchParams: Promise<RawSearchParams>;
+}) {
   try {
+    const raw = await searchParams;
+    const tabParam = pickStr(raw.tab);
+    const tab: TabKey = (ALLOWED_TABS as readonly string[]).includes(tabParam)
+      ? (tabParam as TabKey)
+      : 'por-validar';
+
     const admin = supabaseAdmin();
 
-    const { data: transfers, error: tErr } = await admin
-      .from('cash_transfers')
-      .select(
-        'id, driver_id, contador_id, amount, status, created_at, notes',
-      )
-      .eq('status', 'recibido')
-      .order('created_at', { ascending: false });
-    if (tErr) {
-      return <ErrorState message={`Error leyendo caja: ${tErr.message}`} />;
+    // Dos SELECTs en paralelo: por validar (status=recibido) y validados.
+    // En el listado de validados limitamos a 200 para evitar render gigante;
+    // si hay más historia, agregamos paginación luego.
+    const [pendingResult, validatedResult] = await Promise.all([
+      admin
+        .from('cash_transfers')
+        .select(
+          'id, driver_id, contador_id, amount, status, created_at, notes',
+        )
+        .eq('status', 'recibido')
+        .order('created_at', { ascending: false }),
+      admin
+        .from('cash_transfers')
+        .select(
+          'id, driver_id, contador_id, admin_id, amount, status, created_at, admin_validated_at, notes',
+        )
+        .eq('status', 'validado')
+        .order('admin_validated_at', { ascending: false })
+        .limit(200),
+    ]);
+
+    if (pendingResult.error) {
+      return <ErrorState message={`Error leyendo pendientes: ${pendingResult.error.message}`} />;
+    }
+    if (validatedResult.error) {
+      return <ErrorState message={`Error leyendo validados: ${validatedResult.error.message}`} />;
     }
 
+    const pendingRaw = pendingResult.data ?? [];
+    const validatedRaw = validatedResult.data ?? [];
+
+    // Conjunto único de IDs de profiles a resolver (driver, contador, admin).
     const userIds = Array.from(
       new Set(
-        (transfers ?? [])
-          .flatMap((t) => [t.driver_id, t.contador_id])
-          .filter((x): x is string => !!x),
+        [
+          ...pendingRaw.flatMap((t) => [t.driver_id, t.contador_id]),
+          ...validatedRaw.flatMap((t) => [
+            t.driver_id,
+            t.contador_id,
+            t.admin_id,
+          ]),
+        ].filter((x): x is string => !!x),
       ),
     );
     let nameById = new Map<string, string>();
@@ -52,18 +106,64 @@ export default async function CajaPage() {
       }
     }
 
-    const rows: TransferRow[] = (transfers ?? []).map((t) => ({
+    const pendingTransfers: TransferRow[] = pendingRaw.map((t) => ({
       id: t.id,
       driver_name: t.driver_id ? nameById.get(t.driver_id) ?? '—' : '—',
       contador_name: t.contador_id ? nameById.get(t.contador_id) ?? '—' : '—',
+      admin_name: '—',
       amount: Number(t.amount ?? 0),
       created_at: t.created_at,
+      admin_validated_at: null,
       notes: t.notes ?? null,
     }));
 
-    const grandTotal = rows.reduce((s, r) => s + r.amount, 0);
+    const validatedTransfers: TransferRow[] = validatedRaw.map((t) => ({
+      id: t.id,
+      driver_name: t.driver_id ? nameById.get(t.driver_id) ?? '—' : '—',
+      contador_name: t.contador_id ? nameById.get(t.contador_id) ?? '—' : '—',
+      admin_name: t.admin_id ? nameById.get(t.admin_id) ?? '—' : '—',
+      amount: Number(t.amount ?? 0),
+      created_at: t.created_at,
+      admin_validated_at: t.admin_validated_at,
+      notes: t.notes ?? null,
+    }));
 
-    return <CajaClient transfers={rows} grandTotal={grandTotal} />;
+    // Total validado del MES CALENDARIO ACTUAL (independiente del listado).
+    // Esto es una métrica operativa que el admin quiere ver siempre del
+    // mes en curso, no de un mes arbitrario seleccionado en otra pantalla.
+    const now = new Date();
+    const startOfCurrentMonthIso = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+    ).toISOString();
+    const startOfNextMonthIso = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+    ).toISOString();
+    const validatedThisMonthTotal = validatedRaw.reduce((s, t) => {
+      const validatedAt = t.admin_validated_at;
+      if (
+        validatedAt &&
+        validatedAt >= startOfCurrentMonthIso &&
+        validatedAt < startOfNextMonthIso
+      ) {
+        return s + Number(t.amount ?? 0);
+      }
+      return s;
+    }, 0);
+
+    const pendingGrandTotal = pendingTransfers.reduce(
+      (s, r) => s + r.amount,
+      0,
+    );
+
+    return (
+      <CajaClient
+        tab={tab}
+        pendingTransfers={pendingTransfers}
+        validatedTransfers={validatedTransfers}
+        pendingGrandTotal={pendingGrandTotal}
+        validatedThisMonthTotal={validatedThisMonthTotal}
+      />
+    );
   } catch (err) {
     const message =
       err instanceof Error ? err.message : 'Error desconocido al cargar caja';
