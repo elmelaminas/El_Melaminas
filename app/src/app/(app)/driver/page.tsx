@@ -1,5 +1,6 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
+import { signEvidenceUrls } from '@/lib/supabase/storage';
 import {
   DriverClient,
   type DeliveryCardData,
@@ -229,6 +230,18 @@ export default async function DriverPage() {
     }));
 
     const driverName = profileResult.data?.full_name ?? user.email ?? 'Chofer';
+
+    // El bucket `driver-evidence` es PRIVADO. Las URLs públicas
+    // guardadas al subir las fotos de fallas devuelven 404 cuando
+    // el chofer las abre. Firmamos signed URLs (1h TTL) en bulk
+    // antes de mandar al cliente. Mismo patrón que /admin/entregas.
+    const signedFailedPhotos = await signEvidenceUrls(
+      deliveries.map((d) => d.failed_delivery_photo_url),
+      'driver-evidence',
+    );
+    for (let i = 0; i < deliveries.length; i++) {
+      deliveries[i].failed_delivery_photo_url = signedFailedPhotos[i];
+    }
 
     return (
       <DriverClient

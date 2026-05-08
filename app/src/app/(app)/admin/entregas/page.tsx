@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { signEvidenceUrl, signEvidenceUrls } from '@/lib/supabase/storage';
 import {
   EntregasClient,
   type EntregaRow,
@@ -474,6 +475,62 @@ export default async function EntregasPage({
         '[EntregasPage] route candidates excepción (no fatal):',
         e,
       );
+    }
+
+    // El bucket `driver-evidence` es PRIVADO. Las URLs públicas que se
+    // guardaron al subir devuelven 404 en el navegador (admin se
+    // autentica contra Next, no contra Supabase Storage). Firmamos
+    // signed URLs (1h TTL) en TRES lugares antes de mandar al cliente:
+    //   - rows[].failed_delivery_photo_url (lead-level, bulk)
+    //   - evidenceByLead[*].url (driver_deliveries, uno por lead)
+    //   - issuesByLead[*][*].photo_url (delivery_issues, bulk)
+    //
+    // Todo en paralelo para minimizar latencia. Si alguna firma
+    // falla, signEvidenceUrl devuelve la URL original (best-effort).
+    const evidenceLeadIds = Object.keys(evidenceByLead);
+    const issuesFlat: { leadId: string; idx: number; url: string | null }[] = [];
+    for (const leadId of Object.keys(issuesByLead)) {
+      const list = issuesByLead[leadId];
+      for (let i = 0; i < list.length; i++) {
+        issuesFlat.push({
+          leadId,
+          idx: i,
+          url: list[i].photo_url,
+        });
+      }
+    }
+    const [signedFailed, signedEvidenceList, signedIssues] = await Promise.all([
+      signEvidenceUrls(
+        rows.map((r) => r.failed_delivery_photo_url),
+        'driver-evidence',
+      ),
+      Promise.all(
+        evidenceLeadIds.map((id) =>
+          signEvidenceUrl(evidenceByLead[id].url, 'driver-evidence'),
+        ),
+      ),
+      signEvidenceUrls(
+        issuesFlat.map((f) => f.url),
+        'driver-evidence',
+      ),
+    ]);
+    for (let i = 0; i < rows.length; i++) {
+      rows[i].failed_delivery_photo_url = signedFailed[i];
+    }
+    for (let i = 0; i < evidenceLeadIds.length; i++) {
+      const id = evidenceLeadIds[i];
+      const signed = signedEvidenceList[i];
+      // signEvidenceUrl puede devolver null si la URL era null, pero
+      // acá filtramos antes (evidenceByLead solo tiene URLs no-null);
+      // el ?? deja la original si la firma fue null por error.
+      evidenceByLead[id] = {
+        ...evidenceByLead[id],
+        url: signed ?? evidenceByLead[id].url,
+      };
+    }
+    for (let i = 0; i < issuesFlat.length; i++) {
+      const { leadId, idx } = issuesFlat[i];
+      issuesByLead[leadId][idx].photo_url = signedIssues[i];
     }
 
     return (

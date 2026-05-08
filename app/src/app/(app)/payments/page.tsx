@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { signEvidenceUrls } from '@/lib/supabase/storage';
 import { PaymentsClient, type PaymentRow } from './payments-client';
 
 /**
@@ -183,6 +184,20 @@ export default async function PaymentsPage({
         deductibles: dedByPaymentId.get(r.id) ?? [],
       };
     });
+
+    // El bucket `payments-evidence` es PRIVADO en Supabase. La
+    // `pub.publicUrl` que se guardó al subir devuelve 404 en el
+    // navegador porque el path /object/public/ requiere bucket
+    // público. Firmamos signed URLs (1h TTL) en bulk antes de
+    // pasarlas al cliente. Si la URL es de otro bucket o no parsea,
+    // signEvidenceUrl la deja como está (best-effort).
+    const signedEvidence = await signEvidenceUrls(
+      rows.map((r) => r.evidence_photo_url),
+      'payments-evidence',
+    );
+    for (let i = 0; i < rows.length; i++) {
+      rows[i].evidence_photo_url = signedEvidence[i];
+    }
 
     const total = count ?? 0;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
