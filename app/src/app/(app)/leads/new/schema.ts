@@ -57,6 +57,47 @@ export const PRODUCT_TYPE_OPTIONS: { value: (typeof PRODUCT_TYPE_VALUES)[number]
   { value: 'sin_corte', label: 'Sin corte' },
 ];
 
+// Costo por hoja: tres tarifas vigentes. La DB tiene un CHECK constraint
+// sobre `leads.cost_per_sheet IN (350, 600, 2200)` (ver migración en
+// Supabase). Al editar esta lista, recordar:
+//   1) actualizar el CHECK constraint con un ALTER TABLE manual,
+//   2) los leads viejos con valores fuera (ej. 750/650/600 históricos)
+//      siguen siendo válidos en la DB pero NO se pueden re-guardar con
+//      ese valor desde este formulario.
+export const COST_PER_SHEET_VALUES = [350, 600, 2200] as const;
+export const COST_PER_SHEET_OPTIONS: {
+  value: (typeof COST_PER_SHEET_VALUES)[number];
+  label: string;
+}[] = [
+  { value: 350, label: '$350' },
+  { value: 600, label: '$600' },
+  { value: 2200, label: '$2,200' },
+];
+
+// Cubrecanto: el viejo campo `edge_banding` (text libre) se reemplaza por
+// un par estructurado `(edge_banding_type, edge_banding_meters)` con
+// total derivado `meters * EDGE_BANDING_RATE[type]`. La columna `edge_banding`
+// se mantiene en DB para compatibilidad con leads históricos pero los
+// nuevos NO la llenan.
+export const EDGE_BANDING_VALUES = ['19mm', '3.5mm'] as const;
+export const EDGE_BANDING_OPTIONS: {
+  value: (typeof EDGE_BANDING_VALUES)[number];
+  label: string;
+}[] = [
+  { value: '19mm', label: '19 mm' },
+  { value: '3.5mm', label: '3.5 mm' },
+];
+/** Tarifa por metro lineal según tipo de cubrecanto. */
+export const EDGE_BANDING_RATE: Readonly<
+  Record<(typeof EDGE_BANDING_VALUES)[number], number>
+> = {
+  '19mm': 5,
+  '3.5mm': 8,
+};
+
+/** Tarifa por corte cuando product_type='con_corte'. */
+export const CUT_RATE = 5;
+
 // ─── Color rows (UI) ────────────────────────────────────────────────────
 
 /**
@@ -144,20 +185,88 @@ export const LeadCreateSchema = z.object({
   cost_per_sheet: z
     .number({ invalid_type_error: 'Costo por hoja inválido' })
     .int('Costo debe ser entero')
-    .positive('Costo debe ser > 0'),
-  edge_banding: z
-    .string()
-    .trim()
-    .max(120, 'Cubrecanto demasiado largo')
+    .refine(
+      (v) => (COST_PER_SHEET_VALUES as readonly number[]).includes(v),
+      { message: 'Costo por hoja debe ser uno de los valores permitidos' },
+    ),
+
+  // Cortes — solo aplica cuando product_type='con_corte'.
+  // `cuts_total` lo recalcula el server desde `cuts_count * CUT_RATE`;
+  // lo dejamos en el schema para que el form pueda enviarlo y el server
+  // tenga defensa en profundidad, pero el cliente NO debe confiar en él
+  // (lo computamos en JS para mostrar en pantalla).
+  cuts_count: z
+    .number({ invalid_type_error: 'Número de cortes inválido' })
+    .int('Cortes debe ser entero')
+    .min(1, 'Mínimo 1 corte')
     .optional()
-    .or(z.literal('')),
+    .nullable(),
+  cuts_total: z.number().optional().nullable(),
+
+  // Cubrecanto estructurado. `edge_banding_type=''` (literal vacío del
+  // dropdown "Sin cubrecanto") se trata como ausente; el server lo
+  // convierte a null. Si hay tipo, los metros son requeridos (validado
+  // con .refine cross-field abajo).
+  //
+  // NB: usamos `z.string().refine(...)` en lugar de
+  // `z.enum(EDGE_BANDING_VALUES).or(z.literal(''))` porque el segundo
+  // patrón no produce un union útil en Zod 3.25 (TS narrowea al enum
+  // sin incluir '' en el inferred type, rompiendo refines abajo).
+  edge_banding_type: z
+    .string()
+    .refine(
+      (v) =>
+        v === '' ||
+        (EDGE_BANDING_VALUES as readonly string[]).includes(v),
+      { message: 'Tipo de cubrecanto inválido' },
+    )
+    .optional()
+    .nullable(),
+  edge_banding_meters: z
+    .number({ invalid_type_error: 'Metros inválidos' })
+    .min(0, 'Metros debe ser ≥ 0')
+    .optional()
+    .nullable(),
+  edge_banding_total: z.number().optional().nullable(),
+
   product_type: z.enum(PRODUCT_TYPE_VALUES, { message: 'Tipo de producto inválido' }),
   purchase_type: z.enum(PURCHASE_TYPE_VALUES, { message: 'Tipo de compra inválido' }),
   sale_place: z.enum(SALE_PLACE_VALUES, { message: 'Lugar de venta inválido' }),
 
   // Colores
   colors: z.array(ColorRowSchema).min(1, 'Agrega al menos un color al pedido'),
-});
+})
+.refine(
+  // Si el producto es "Con corte", cuts_count es obligatorio ≥ 1.
+  (d) => {
+    if (d.product_type === 'con_corte') {
+      return typeof d.cuts_count === 'number' && d.cuts_count >= 1;
+    }
+    return true;
+  },
+  {
+    message: 'El número de cortes es requerido cuando el producto es "Con corte"',
+    path: ['cuts_count'],
+  },
+)
+.refine(
+  // Si se eligió un tipo de cubrecanto (no vacío/null), los metros
+  // deben venir definidos y > 0.
+  (d) => {
+    const typeIsSet = d.edge_banding_type && d.edge_banding_type !== '';
+    if (typeIsSet) {
+      return (
+        typeof d.edge_banding_meters === 'number' &&
+        d.edge_banding_meters > 0
+      );
+    }
+    return true;
+  },
+  {
+    message: 'Los metros son requeridos cuando seleccionas cubrecanto',
+    path: ['edge_banding_meters'],
+  },
+);
 
 export type LeadCreateInput = z.infer<typeof LeadCreateSchema>;
 

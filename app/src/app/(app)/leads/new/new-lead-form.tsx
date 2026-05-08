@@ -19,6 +19,10 @@ import {
   SALE_PLACE_OPTIONS,
   PURCHASE_TYPE_OPTIONS,
   PRODUCT_TYPE_OPTIONS,
+  COST_PER_SHEET_OPTIONS,
+  EDGE_BANDING_OPTIONS,
+  EDGE_BANDING_RATE,
+  CUT_RATE,
   NEW_COLOR_SENTINEL,
   type LeadCreateInput,
 } from './schema';
@@ -28,8 +32,6 @@ import { formatMXN } from '@/data/mock';
 export type SellerOption = { id: string; name: string };
 export type ColorOption = { id: string; name: string };
 export type DriverOption = { id: string; name: string };
-
-const COST_PER_SHEET_OPTIONS = [750, 650, 600] as const;
 
 /**
  * Formulario de nuevo lead.
@@ -79,8 +81,15 @@ export function NewLeadForm({
       phone: '',
       address: '',
       maps_url: '',
-      cost_per_sheet: 750,
-      edge_banding: '',
+      cost_per_sheet: COST_PER_SHEET_OPTIONS[0]?.value ?? 350,
+      // Cortes: como product_type default es 'con_corte', vamos a pedirlo
+      // visible desde el inicio. Si el user cambia a sin_corte se resetea.
+      cuts_count: null,
+      cuts_total: null,
+      // Cubrecanto: '' = "Sin cubrecanto" (no requiere metros).
+      edge_banding_type: '',
+      edge_banding_meters: null,
+      edge_banding_total: null,
       product_type: 'con_corte',
       purchase_type: 'domicilio',
       sale_place: 'online',
@@ -95,9 +104,13 @@ export function NewLeadForm({
     name: 'colors',
   });
 
-  // Valores observados para el resumen sticky (re-render solo aquí).
+  // Valores observados para reactividad de campos condicionales y resumen.
   const watchedColors = watch('colors');
   const watchedCostPerSheet = watch('cost_per_sheet');
+  const watchedProductType = watch('product_type');
+  const watchedCutsCount = watch('cuts_count');
+  const watchedEdgeType = watch('edge_banding_type');
+  const watchedEdgeMeters = watch('edge_banding_meters');
 
   const totalSheets = useMemo(
     () =>
@@ -107,7 +120,23 @@ export function NewLeadForm({
       ),
     [watchedColors],
   );
-  const total = totalSheets * (Number(watchedCostPerSheet) || 0);
+
+  // Cálculos auxiliares para mostrar en pantalla (el server recalcula).
+  const cutsTotal =
+    watchedProductType === 'con_corte' &&
+    typeof watchedCutsCount === 'number' &&
+    watchedCutsCount > 0
+      ? watchedCutsCount * CUT_RATE
+      : 0;
+  const edgeTotal =
+    watchedEdgeType === '19mm' || watchedEdgeType === '3.5mm'
+      ? (typeof watchedEdgeMeters === 'number' ? watchedEdgeMeters : 0) *
+        EDGE_BANDING_RATE[watchedEdgeType]
+      : 0;
+
+  // El total a cobrar suma hojas + cortes + cubrecanto.
+  const total =
+    totalSheets * (Number(watchedCostPerSheet) || 0) + cutsTotal + edgeTotal;
 
   const onValidSubmit = (values: LeadCreateInput) => {
     clearErrors('root.serverError');
@@ -345,8 +374,8 @@ export function NewLeadForm({
                   disabled={pending}
                 >
                   {COST_PER_SHEET_OPTIONS.map((c) => (
-                    <option key={c} value={c}>
-                      {formatMXN(c)}
+                    <option key={c.value} value={c.value}>
+                      {c.label}
                     </option>
                   ))}
                 </select>
@@ -418,18 +447,92 @@ export function NewLeadForm({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+            {/* Cubrecanto (estructurado): tipo + metros, total derivado */}
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
               <Field
-                label="Cubrecanto (opcional)"
-                error={errors.edge_banding?.message}
+                label="Cubrecanto"
+                error={errors.edge_banding_type?.message}
               >
-                <input
-                  {...register('edge_banding')}
-                  className="input"
-                  placeholder="Ej. 4 m linosa 19 mm"
+                <select
+                  {...register('edge_banding_type')}
+                  className="select"
                   disabled={pending}
-                />
+                >
+                  <option value="">Sin cubrecanto</option>
+                  {EDGE_BANDING_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
               </Field>
+              {(watchedEdgeType === '19mm' || watchedEdgeType === '3.5mm') && (
+                <Field
+                  label="Metros lineales"
+                  error={errors.edge_banding_meters?.message}
+                >
+                  <input
+                    type="number"
+                    min={0}
+                    step="0.5"
+                    className="input"
+                    placeholder="Ej. 4"
+                    disabled={pending}
+                    {...register('edge_banding_meters', {
+                      // Mapeo "" → null para que Zod nullable lo acepte;
+                      // valueAsNumber daría NaN sino.
+                      setValueAs: (v) => {
+                        if (v === '' || v == null) return null;
+                        const n = Number(v);
+                        return Number.isFinite(n) ? n : null;
+                      },
+                    })}
+                  />
+                  <div
+                    className="text-[11px] mt-1"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Tarifa: {formatMXN(EDGE_BANDING_RATE[watchedEdgeType])}/m ·
+                    Total: <strong>{formatMXN(edgeTotal)}</strong>
+                  </div>
+                </Field>
+              )}
+            </div>
+
+            {/* Cortes — solo cuando product_type='con_corte' */}
+            {watchedProductType === 'con_corte' && (
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Field
+                  label="Número de cortes"
+                  error={errors.cuts_count?.message}
+                >
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    className="input"
+                    placeholder="Ej. 12"
+                    disabled={pending}
+                    {...register('cuts_count', {
+                      setValueAs: (v) => {
+                        if (v === '' || v == null) return null;
+                        const n = Number(v);
+                        return Number.isFinite(n) ? n : null;
+                      },
+                    })}
+                  />
+                  <div
+                    className="text-[11px] mt-1"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Tarifa: {formatMXN(CUT_RATE)}/corte ·
+                    Total: <strong>{formatMXN(cutsTotal)}</strong>
+                  </div>
+                </Field>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
               <Field label="Tipo de producto" error={errors.product_type?.message}>
                 <select
                   {...register('product_type')}

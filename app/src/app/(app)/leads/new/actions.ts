@@ -6,6 +6,8 @@ import { supabaseServer } from '@/lib/supabase/server';
 import {
   LeadCreateSchema,
   NEW_COLOR_SENTINEL,
+  CUT_RATE,
+  EDGE_BANDING_RATE,
   type LeadCreateInput,
   type LeadFormState,
   normalizeName,
@@ -241,7 +243,42 @@ export async function saveLeadAction(
 
     // ── 5. INSERT lead
     const sheets_count = resolvedColors.reduce((s, c) => s + c.quantity, 0);
-    const total_amount = sheets_count * data.cost_per_sheet;
+
+    // Recalcular cuts_total y edge_banding_total en el server (NUNCA
+    // confiar en los valores que mande el cliente). Reglas:
+    //   * cuts_total = cuts_count * CUT_RATE  (solo si con_corte)
+    //   * edge_banding_total = meters * RATE[type]  (solo si type definido)
+    const cutsCount =
+      data.product_type === 'con_corte' &&
+      typeof data.cuts_count === 'number' &&
+      data.cuts_count > 0
+        ? data.cuts_count
+        : null;
+    const cutsTotal =
+      cutsCount != null ? cutsCount * CUT_RATE : null;
+
+    const edgeType =
+      data.edge_banding_type === '19mm' || data.edge_banding_type === '3.5mm'
+        ? data.edge_banding_type
+        : null;
+    const edgeMeters =
+      edgeType !== null &&
+      typeof data.edge_banding_meters === 'number' &&
+      data.edge_banding_meters > 0
+        ? data.edge_banding_meters
+        : null;
+    const edgeTotal =
+      edgeType !== null && edgeMeters != null
+        ? edgeMeters * EDGE_BANDING_RATE[edgeType]
+        : null;
+
+    // total_amount = hojas + cortes + cubrecanto. Coherente con lo que
+    // muestra el resumen sticky del form para que el usuario y la DB
+    // coincidan.
+    const total_amount =
+      sheets_count * data.cost_per_sheet +
+      (cutsTotal ?? 0) +
+      (edgeTotal ?? 0);
 
     const { data: leadRow, error: leadErr } = await admin
       .from('leads')
@@ -258,7 +295,15 @@ export async function saveLeadAction(
         purchase_type: data.purchase_type,
         product_type: data.product_type,
         cost_per_sheet: data.cost_per_sheet,
-        edge_banding: emptyToNull(data.edge_banding),
+        // Cortes (solo si con_corte):
+        cuts_count: cutsCount,
+        cuts_total: cutsTotal,
+        // Cubrecanto estructurado. La columna `edge_banding` (text libre)
+        // se deja en NULL en nuevos leads; los viejos conservan su valor
+        // para reportes históricos.
+        edge_banding_type: edgeType,
+        edge_banding_meters: edgeMeters,
+        edge_banding_total: edgeTotal,
         sheets_count,
         total_amount,
         // driver_id se asigna aquí (antes vivía en /payments/new). Si el
