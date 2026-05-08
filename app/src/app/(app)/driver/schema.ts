@@ -10,6 +10,12 @@
  *     evidence_url (text nullable), confirmed_at, created_at.
  * Si los nombres difieren, el INSERT fallará con un mensaje preciso
  * que aparecerá en el banner del card.
+ *
+ * Tabla `delivery_issues` (creada en migración manual, ver SQL en commit
+ * de la feature): id, lead_id, driver_id, issue_type ('faltante'|'detalle'),
+ * description, photo_url, resolved, created_at. Permite al chofer
+ * reportar problemas durante la entrega — admin los ve en
+ * /admin/entregas y los resuelve.
  */
 
 import { z } from 'zod';
@@ -33,3 +39,43 @@ export type ConfirmDeliveryState =
 export const initialConfirmDeliveryState: ConfirmDeliveryState = {
   status: 'idle',
 };
+
+// ─── Issue reporting (faltantes / detalles) ──────────────────────────
+
+export const ISSUE_TYPE_VALUES = ['faltante', 'detalle'] as const;
+export const ISSUE_TYPE_OPTIONS: {
+  value: (typeof ISSUE_TYPE_VALUES)[number];
+  label: string;
+}[] = [
+  { value: 'faltante', label: 'Faltante' },
+  { value: 'detalle', label: 'Detalle' },
+];
+
+/**
+ * El chofer reporta un problema durante la entrega: una pieza faltante
+ * o un detalle (rayón, golpe, color equivocado, etc.). La foto es
+ * opcional pero altamente recomendada para que el admin pueda valorar
+ * sin volver a la dirección.
+ */
+export const ReportIssueSchema = z.object({
+  lead_id: z.string().uuid('lead_id inválido'),
+  issue_type: z.enum(ISSUE_TYPE_VALUES, { message: 'Tipo inválido' }),
+  description: z
+    .string()
+    .trim()
+    .min(3, 'Descripción requerida (mín. 3 caracteres)')
+    .max(500, 'Descripción demasiado larga'),
+});
+
+export type ReportIssueInput = z.infer<typeof ReportIssueSchema>;
+
+export type ReportIssueState =
+  | { status: 'idle' }
+  | { status: 'success' }
+  | {
+      status: 'error';
+      message: string;
+      fieldErrors?: Record<string, string[]>;
+    };
+
+export const initialReportIssueState: ReportIssueState = { status: 'idle' };

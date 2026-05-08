@@ -3,7 +3,12 @@
 import { revalidatePath } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
-import { ConfirmDeliverySchema, type ConfirmDeliveryState } from './schema';
+import {
+  ConfirmDeliverySchema,
+  ReportIssueSchema,
+  type ConfirmDeliveryState,
+  type ReportIssueState,
+} from './schema';
 
 // NB: 'use server' file — solo async functions. Schemas/types en ./schema.
 
@@ -373,6 +378,169 @@ export async function confirmDeliveryAction(
       err instanceof Error ? err.message : 'Error desconocido al confirmar entrega';
     console.error('[confirmDeliveryAction] excepción no controlada:', err);
     await txn.rollback('excepción no controlada');
+    return { status: 'error', message };
+  }
+}
+
+/**
+ * `reportIssueAction(_prev, formData)` — el chofer reporta un faltante
+ * o detalle durante la entrega. El INSERT a `delivery_issues` se hace
+ * con supabaseAdmin (bypass RLS); igual validamos ownership del lead
+ * (driver_id == auth.uid()) para que un chofer no pueda reportar
+ * problemas en entregas de otro.
+ *
+ * La foto es opcional. Si llega, sube a `driver-evidence` (mismo bucket
+ * que la evidencia de entrega) y guarda la URL pública.
+ *
+ * Notif a admins es non-fatal: si falla, el issue ya está registrado.
+ */
+export async function reportIssueAction(
+  _prev: ReportIssueState,
+  formData: FormData,
+): Promise<ReportIssueState> {
+  try {
+    const parsed = ReportIssueSchema.safeParse({
+      lead_id: formData.get('lead_id'),
+      issue_type: formData.get('issue_type'),
+      description: formData.get('description'),
+    });
+    if (!parsed.success) {
+      return {
+        status: 'error',
+        message: 'Datos inválidos',
+        fieldErrors: parsed.error.flatten().fieldErrors as Record<string, string[]>,
+      };
+    }
+    const data = parsed.data;
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return { status: 'error', message: 'Sesión no válida.' };
+    }
+    const driverId = user.id;
+
+    const admin = supabaseAdmin();
+
+    // Ownership: solo el chofer asignado al lead puede reportar issues.
+    const { data: leadRow, error: leadErr } = await admin
+      .from('leads')
+      .select('id, driver_id, client_name')
+      .eq('id', data.lead_id)
+      .maybeSingle();
+    if (leadErr) {
+      return {
+        status: 'error',
+        message: `No se pudo verificar el lead: ${leadErr.message}`,
+      };
+    }
+    if (!leadRow || leadRow.driver_id !== driverId) {
+      return {
+        status: 'error',
+        message: 'Esta entrega no está asignada a ti.',
+      };
+    }
+
+    // Foto opcional al mismo bucket que la evidencia de entrega.
+    let photoUrl: string | null = null;
+    const photo = formData.get('photo');
+    if (photo instanceof File && photo.size > 0) {
+      if (photo.size > MAX_EVIDENCE_BYTES) {
+        return { status: 'error', message: 'La imagen excede 5 MB.' };
+      }
+      const ext = (photo.name.split('.').pop() ?? 'bin').toLowerCase();
+      if (!(ALLOWED_EXTS as readonly string[]).includes(ext)) {
+        return {
+          status: 'error',
+          message: 'Formato no soportado. Usa PNG, JPG o WEBP.',
+        };
+      }
+      const path = `${data.lead_id}/issues/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const { error: upErr } = await admin.storage
+        .from(STORAGE_BUCKET)
+        .upload(path, photo, {
+          contentType: photo.type || `image/${ext}`,
+          upsert: false,
+        });
+      if (upErr) {
+        return {
+          status: 'error',
+          message: `No se pudo subir la foto: ${upErr.message}`,
+        };
+      }
+      const { data: pub } = admin.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+      photoUrl = pub.publicUrl;
+    }
+
+    // INSERT delivery_issues
+    const { error: insErr } = await admin.from('delivery_issues').insert({
+      lead_id: data.lead_id,
+      driver_id: driverId,
+      issue_type: data.issue_type,
+      description: data.description,
+      photo_url: photoUrl,
+      resolved: false,
+    });
+    if (insErr) {
+      return {
+        status: 'error',
+        message: `No se pudo registrar el reporte: ${insErr.message}`,
+      };
+    }
+
+    // Notif a admins (non-fatal). El message tiene un emoji inicial
+    // para que destaque visualmente en el panel de notifs.
+    try {
+      const { data: dp } = await admin
+        .from('profiles')
+        .select('full_name')
+        .eq('id', driverId)
+        .maybeSingle();
+      const driverName = dp?.full_name ?? 'Chofer';
+      const clientName = leadRow.client_name ?? '(sin nombre)';
+      const typeLabel = data.issue_type === 'faltante' ? 'faltante' : 'detalle';
+
+      const { data: admins } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('role', 'admin')
+        .eq('is_active', true);
+      if (admins && admins.length > 0) {
+        const message = `⚠️ ${driverName} reportó un ${typeLabel} en entrega de ${clientName}: ${data.description}`;
+        const inserts = admins.map((a) => ({
+          recipient_id: a.id,
+          // type='issue_reported' — nuevo valor de notification.type;
+          // como `notifications.type` es text en DB, no requiere ALTER.
+          type: 'issue_reported',
+          message,
+        }));
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifErr) {
+          console.error(
+            '[reportIssueAction] notif insert falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[reportIssueAction] notif lookup/insert excepción (no fatal):',
+        e,
+      );
+    }
+
+    revalidatePath('/driver');
+    revalidatePath('/admin/entregas');
+    return { status: 'success' };
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Error desconocido al reportar';
+    console.error('[reportIssueAction] excepción no controlada:', err);
     return { status: 'error', message };
   }
 }

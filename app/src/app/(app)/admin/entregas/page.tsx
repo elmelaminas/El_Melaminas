@@ -3,6 +3,7 @@ import {
   EntregasClient,
   type EntregaRow,
   type DriverOption,
+  type IssueRow,
 } from './entregas-client';
 
 /**
@@ -247,11 +248,52 @@ export default async function EntregasPage({
       name: d.full_name ?? '(sin nombre)',
     }));
 
+    // Cargar delivery_issues (sin resolver) para los leads visibles.
+    // El admin necesita ver el badge ⚠️ N en cada fila + abrirlas en
+    // modal para resolver. Si la tabla no existe (migración pendiente)
+    // el catch loguea y seguimos con issues vacíos — la página sigue
+    // funcionando sin la feature.
+    const issuesByLead: Record<string, IssueRow[]> = {};
+    if (leadIds.length > 0) {
+      try {
+        const { data: issues, error: issuesErr } = await admin
+          .from('delivery_issues')
+          .select(
+            'id, lead_id, issue_type, description, photo_url, resolved, created_at',
+          )
+          .in('lead_id', leadIds)
+          .eq('resolved', false)
+          .order('created_at', { ascending: false });
+        if (issuesErr) {
+          console.error(
+            '[EntregasPage] delivery_issues select falló (no fatal):',
+            issuesErr,
+          );
+        }
+        for (const i of issues ?? []) {
+          if (!i.lead_id) continue;
+          const list = issuesByLead[i.lead_id] ?? [];
+          list.push({
+            id: i.id,
+            issue_type: (i.issue_type as 'faltante' | 'detalle') ?? 'detalle',
+            description: i.description ?? '',
+            photo_url: i.photo_url ?? null,
+            resolved: i.resolved ?? false,
+            created_at: i.created_at ?? null,
+          });
+          issuesByLead[i.lead_id] = list;
+        }
+      } catch (e) {
+        console.error('[EntregasPage] issues lookup excepción (no fatal):', e);
+      }
+    }
+
     return (
       <EntregasClient
         rows={rows}
         drivers={drivers}
         filters={{ driver: validDriver, status: statusFilter }}
+        issuesByLead={issuesByLead}
       />
     );
   } catch (err) {

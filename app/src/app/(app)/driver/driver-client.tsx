@@ -10,10 +10,13 @@ import {
   Layers,
   Loader,
   DollarSign,
+  TriangleAlert,
+  X,
 } from 'lucide-react';
 import { formatMXN } from '@/data/mock';
 import { DeliveryBadge } from '@/components/ui/Badges';
-import { confirmDeliveryAction } from './actions';
+import { confirmDeliveryAction, reportIssueAction } from './actions';
+import { ISSUE_TYPE_OPTIONS } from './schema';
 
 export type DeliveryCardData = {
   id: string;
@@ -370,6 +373,16 @@ function DeliveryCard({
 
       <hr style={{ border: 0, borderTop: '1px solid var(--border)' }} />
 
+      {/* Reportar problema — visible siempre, expandible. Va ANTES de
+          "Confirmar entrega" para que el chofer pueda reportar
+          incidencias mientras evalúa la entrega y antes de cerrarla. */}
+      <ReportIssueBlock leadId={delivery.id} clientName={delivery.client_name} />
+
+      <hr
+        className="mt-4"
+        style={{ border: 0, borderTop: '1px solid var(--border)' }}
+      />
+
       <div className="mt-4">
         <div className="font-semibold mb-3">Confirmar entrega</div>
 
@@ -475,6 +488,249 @@ function DeliveryCard({
           )}
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Bloque expandible "Reportar problema" dentro de cada card de entrega.
+ * Estados:
+ *   - colapsado: solo el botón ⚠️ "Reportar faltante o detalle".
+ *   - expandido: select tipo + textarea + opcional foto + Enviar /
+ *     Cancelar.
+ *   - tras success: mensaje de confirmación que desaparece al
+ *     `router.refresh` (1.2s después).
+ *
+ * State local por card para que cada mini-form sea independiente.
+ */
+function ReportIssueBlock({
+  leadId,
+  clientName,
+}: {
+  leadId: string;
+  clientName: string;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [open, setOpen] = useState(false);
+  const [issueType, setIssueType] =
+    useState<typeof ISSUE_TYPE_OPTIONS[number]['value']>('faltante');
+  const [description, setDescription] = useState('');
+  const [photo, setPhoto] = useState<File | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  function reset() {
+    setDescription('');
+    setPhoto(null);
+    setError(null);
+    setSuccess(false);
+    setIssueType('faltante');
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  function handleSubmit() {
+    setError(null);
+    if (description.trim().length < 3) {
+      setError('Describe el problema (mínimo 3 caracteres).');
+      return;
+    }
+    const fd = new FormData();
+    fd.set('lead_id', leadId);
+    fd.set('issue_type', issueType);
+    fd.set('description', description.trim());
+    if (photo && photo.size > 0) fd.set('photo', photo);
+
+    startTransition(async () => {
+      try {
+        const r = await reportIssueAction({ status: 'idle' }, fd);
+        if (r.status === 'success') {
+          setSuccess(true);
+          setTimeout(() => {
+            setOpen(false);
+            reset();
+            router.refresh();
+          }, 1200);
+        } else if (r.status === 'error') {
+          setError(r.message);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de red';
+        setError(message);
+      }
+    });
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          reset();
+          setOpen(true);
+        }}
+        className="btn btn-outline w-full mt-4"
+        style={{
+          height: 44,
+          color: '#92400E',
+          borderColor: '#FEF3C7',
+          background: '#FFFBEB',
+        }}
+        aria-label={`Reportar problema en entrega de ${clientName}`}
+      >
+        <TriangleAlert size={16} /> Reportar faltante o detalle
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className="mt-4 p-4 rounded-lg"
+      style={{
+        background: '#FFFBEB',
+        border: '1px solid #FEF3C7',
+      }}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <div
+          className="font-semibold flex items-center gap-2"
+          style={{ color: '#92400E' }}
+        >
+          <TriangleAlert size={16} /> Reportar problema
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            reset();
+          }}
+          className="btn btn-ghost"
+          style={{ padding: '4px' }}
+          disabled={pending}
+          aria-label="Cancelar reporte"
+        >
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="mb-3">
+        <label className="label">Tipo</label>
+        <select
+          className="select"
+          value={issueType}
+          onChange={(e) => setIssueType(e.target.value as typeof issueType)}
+          disabled={pending}
+          style={{ height: 48, fontSize: '1rem' }}
+        >
+          {ISSUE_TYPE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="mb-3">
+        <label className="label">Descripción</label>
+        <textarea
+          className="textarea"
+          rows={3}
+          placeholder="Describe el problema (qué falta, qué detalle, dónde está…)"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          disabled={pending}
+          style={{ fontSize: '1rem' }}
+          maxLength={500}
+        />
+        <div
+          className="text-[11px] mt-1"
+          style={{ color: 'var(--text-tertiary)' }}
+        >
+          {description.length}/500
+        </div>
+      </div>
+
+      <div
+        className="dropzone mb-3"
+        onClick={() => !pending && fileRef.current?.click()}
+        style={{ cursor: pending ? 'not-allowed' : 'pointer' }}
+      >
+        <Camera
+          size={20}
+          style={{ color: 'var(--text-tertiary)' }}
+          className="mx-auto mb-1"
+        />
+        <div
+          className="text-sm font-medium"
+          style={{ color: 'var(--text-primary)' }}
+        >
+          {photo ? photo.name : 'Foto del problema (opcional)'}
+        </div>
+        <div className="text-[11px]">
+          PNG, JPG o WEBP — recomendado para que el admin vea
+        </div>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
+          style={{ display: 'none' }}
+          disabled={pending}
+        />
+      </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="text-sm mb-3"
+          style={{
+            color: 'var(--danger, #dc2626)',
+            background: 'var(--danger-bg, rgba(220,38,38,0.08))',
+            border: '1px solid rgba(220,38,38,0.25)',
+            padding: '8px 12px',
+            borderRadius: 6,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      {success && (
+        <div
+          role="status"
+          className="text-sm mb-3 flex items-center gap-2"
+          style={{
+            color: '#15803D',
+            background: 'rgba(22,163,74,0.08)',
+            border: '1px solid rgba(22,163,74,0.25)',
+            padding: '8px 12px',
+            borderRadius: 6,
+          }}
+        >
+          <CircleCheckBig size={16} />
+          <span>Reporte enviado al admin.</span>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={handleSubmit}
+        className="btn btn-primary w-full"
+        style={{ height: 48, fontSize: '1rem', fontWeight: 600 }}
+        disabled={pending || success}
+        aria-busy={pending}
+      >
+        {pending ? (
+          <>
+            <Loader size={18} className="animate-spin" />
+            <span style={{ marginLeft: 6 }}>Enviando…</span>
+          </>
+        ) : (
+          'Enviar reporte'
+        )}
+      </button>
     </div>
   );
 }
