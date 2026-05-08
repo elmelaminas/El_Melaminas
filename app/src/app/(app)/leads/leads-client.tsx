@@ -432,7 +432,29 @@ export function LeadsClient({
                       <PaymentBadge status={l.payment_status} />
                     </td>
                     <td>
-                      <div className="flex justify-end">
+                      <div className="flex justify-end gap-1">
+                        {l.document_url && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              // window.open en lugar de <a target="_blank">
+                              // por petición explícita del usuario;
+                              // ambos producen el mismo efecto de
+                              // abrir en nueva pestaña (rel="noopener"
+                              // ya es default en navegadores modernos).
+                              window.open(l.document_url!, '_blank')
+                            }
+                            className="btn btn-ghost"
+                            style={{
+                              padding: '6px',
+                              color: 'var(--brand-secondary)',
+                            }}
+                            aria-label={`Ver PDF adjunto de ${l.client_name}`}
+                            title="Ver PDF adjunto"
+                          >
+                            <FileText size={16} />
+                          </button>
+                        )}
                         <Link
                           href={`/leads/${l.id}/edit`}
                           className="btn btn-ghost"
