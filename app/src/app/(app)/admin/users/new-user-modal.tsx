@@ -12,12 +12,18 @@ import {
 import { createUserAction } from './actions';
 import type { Role } from '@/data/mock';
 
+// NB: este array es DISTINTO de `ROLES` en `./schema.ts`. Aquel es la
+// tupla literal que Zod usa para validar el enum; éste es el array de
+// `{value, label}` que renderiza el dropdown. Si agregas un nuevo rol,
+// hay que tocar AMBOS — TypeScript no obliga exhaustividad sobre arrays
+// (a diferencia de `Record<Role, …>` que sí cazaría el faltante).
 const ROLES: { value: Role; label: string }[] = [
   { value: 'admin', label: 'Administrador' },
   { value: 'seller', label: 'Vendedor' },
   { value: 'driver', label: 'Chofer' },
   { value: 'warehouse', label: 'Almacén' },
   { value: 'supervisor', label: 'Supervisor' },
+  { value: 'contador', label: 'Contador' },
 ];
 
 /**
