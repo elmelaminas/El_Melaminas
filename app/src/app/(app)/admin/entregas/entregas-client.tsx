@@ -1,8 +1,9 @@
 'use client';
 
+import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
 import { useMemo, useTransition } from 'react';
-import { Loader, MapPin } from 'lucide-react';
+import { Loader, MapPin, Pencil } from 'lucide-react';
 import {
   DeliveryBadge,
   PaymentBadge,
@@ -169,13 +170,14 @@ export function EntregasClient({
                 <th>Entrega</th>
                 <th>Pago</th>
                 <th>Fecha</th>
+                <th className="text-right">Acciones</th>
               </tr>
             </thead>
             <tbody>
               {rows.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={9}
+                    colSpan={10}
                     className="text-center py-8 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -270,6 +272,19 @@ function Row({ entrega: r }: { entrega: EntregaRow }) {
       </td>
       <td className="text-sm" style={{ color: 'var(--text-secondary)' }}>
         {formatDate(r.sale_date)}
+      </td>
+      <td>
+        <div className="flex justify-end">
+          <Link
+            href={`/leads/${r.id}/edit`}
+            className="btn btn-ghost"
+            style={{ padding: '6px' }}
+            aria-label={`Editar entrega de ${r.client_name}`}
+            title="Editar fecha y chofer"
+          >
+            <Pencil size={16} />
+          </Link>
+        </div>
       </td>
     </tr>
   );

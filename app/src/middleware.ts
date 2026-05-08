@@ -66,6 +66,10 @@ function rolesAllowed(pathname: string): readonly Role[] | null {
   // se evalúa primero, así no hay que listar /admin/caja explícitamente.
   if (pathname.startsWith('/admin')) return ['admin'];
   if (pathname === '/leads/new' || pathname.startsWith('/leads/new/')) return ['admin', 'seller'];
+  // Editar un lead (`/leads/<uuid>/edit`) es exclusivo de admin.
+  // Probamos ANTES de la regla genérica /leads/* porque ésta abriría
+  // edit a supervisor. Match: /leads/<algo>/edit (con o sin trailing).
+  if (/^\/leads\/[^/]+\/edit(\/|$)/.test(pathname)) return ['admin'];
   if (pathname === '/leads' || pathname.startsWith('/leads/')) return ['admin', 'supervisor'];
   if (pathname === '/payments' || pathname.startsWith('/payments/')) return ['admin', 'supervisor'];
   if (pathname === '/dashboard') return ['admin', 'supervisor'];

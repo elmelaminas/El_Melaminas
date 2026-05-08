@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader,
+  Pencil,
 } from 'lucide-react';
 import {
   ChannelBadge,
@@ -351,13 +352,14 @@ export function LeadsClient({
                 <th>Fecha</th>
                 <th>Entrega</th>
                 <th>Pago</th>
+                <th className="text-right">Acciones</th>
               </tr>
             </thead>
             <tbody>
               {leads.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={8}
+                    colSpan={9}
                     className="text-center py-8 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -402,6 +404,19 @@ export function LeadsClient({
                     </td>
                     <td>
                       <PaymentBadge status={l.payment_status} />
+                    </td>
+                    <td>
+                      <div className="flex justify-end">
+                        <Link
+                          href={`/leads/${l.id}/edit`}
+                          className="btn btn-ghost"
+                          style={{ padding: '6px' }}
+                          aria-label={`Editar lead de ${l.client_name}`}
+                          title="Editar fecha y chofer (admin)"
+                        >
+                          <Pencil size={16} />
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 ))
