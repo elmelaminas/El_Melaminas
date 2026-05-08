@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Eye, EyeOff, Layers, Lock, Mail, Loader } from 'lucide-react';
 import { supabaseClient } from '@/lib/supabase/client';
 import { useDemo } from '@/context/DemoContext';
@@ -59,12 +59,24 @@ const ALLOWED_ROLES: readonly Role[] = [
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { setUser } = useDemo();
   const [showPwd, setShowPwd] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  // Si llegamos aquí con `?reason=disabled` el middleware nos kickeó
+  // por tener `is_active=false` en profiles. Mostramos el banner desde
+  // el primer render para que el usuario sepa por qué fue expulsado.
+  // Cualquier intento de login subsiguiente limpia este estado
+  // (setError(null) al inicio del onSubmit).
+  const reason = searchParams?.get('reason') ?? null;
+  const [error, setError] = useState<string | null>(
+    reason === 'disabled'
+      ? 'Tu cuenta ha sido desactivada. Contacta al administrador.'
+      : null,
+  );
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

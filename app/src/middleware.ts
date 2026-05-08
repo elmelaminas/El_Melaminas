@@ -145,8 +145,9 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(loginUrl);
   }
 
-  // ── Caso 2: autenticado, leer rol
+  // ── Caso 2: autenticado, leer rol + estado de la cuenta
   let role: Role | null = null;
+  let isActive: boolean | null = null;
   if (serviceKey) {
     try {
       const admin = createClient(url, serviceKey, {
@@ -154,20 +155,72 @@ export async function middleware(request: NextRequest) {
       });
       const { data: profile } = await admin
         .from('profiles')
-        .select('role')
+        .select('role, is_active')
         .eq('id', user.id)
         .maybeSingle();
       if (profile?.role && (ROLES as readonly string[]).includes(profile.role)) {
         role = profile.role as Role;
       }
+      // `is_active` es nullable en DB pero por defecto true. Solo bloqueamos
+      // cuando es explícitamente `false` — null/undefined se interpreta como
+      // activo, que es el comportamiento conservador (no expulsa cuentas
+      // viejas creadas antes de que la columna existiera).
+      if (profile && profile.is_active === false) {
+        isActive = false;
+      } else {
+        isActive = true;
+      }
     } catch (err) {
-      console.error('[middleware] no se pudo leer profile.role:', err);
-      // Si falla la lectura, dejamos `role = null` y el flujo de RBAC abajo
-      // tratará al usuario como sin rol asignado (lo manda a /login).
+      console.error('[middleware] no se pudo leer profile:', err);
+      // Si falla la lectura, dejamos `role=null` (cae al flujo de "sin rol"
+      // abajo). NO asumimos isActive=false en el catch para evitar
+      // bloquear masivamente a todos los usuarios si la red a Supabase
+      // falla — preferimos dejarlos pasar y que la query del page falle
+      // visiblemente con su propio mensaje.
     }
   }
 
-  // ── Caso 2a: autenticado pero sin rol válido en profiles
+  // ── Caso 2a: cuenta desactivada (is_active=false en profiles)
+  //    El admin puede desactivar usuarios desde /admin/users → toggle.
+  //    Cuando eso pasa, el usuario debe quedar bloqueado en su próxima
+  //    request, no esperar a que su token expire (que puede ser horas).
+  //
+  //    `auth.signOut()` desde el middleware tiene contexto de cookies
+  //    pero puede fallar (network/timeout) y el usuario se quedaría en
+  //    el sistema. Estrategia robusta: limpiamos NOSOTROS las cookies
+  //    de auth en el response de redirect — el browser las borra
+  //    inmediatamente y la siguiente request llega sin sesión.
+  //
+  //    Las cookies de `@supabase/ssr` tienen el prefijo `sb-` (con el
+  //    project-ref incrustado: `sb-<ref>-auth-token`, `sb-<ref>-auth-token-code-verifier`,
+  //    etc.). Iteramos las cookies de la request y borramos las que
+  //    matcheen ese prefijo. No tocamos otras cookies (analítica, etc.).
+  if (isActive === false) {
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = '/login';
+    loginUrl.search = '?reason=disabled';
+    const redirectResponse = NextResponse.redirect(loginUrl);
+    for (const c of request.cookies.getAll()) {
+      if (c.name.startsWith('sb-')) {
+        redirectResponse.cookies.set({
+          name: c.name,
+          value: '',
+          maxAge: 0,
+          path: '/',
+        });
+      }
+    }
+    // Best-effort signOut server-side para invalidar el token (si el
+    // user tiene esta cookie cacheada en otro device/tab, el siguiente
+    // refresh fallará). Si falla, el redirect+clear cookies igual
+    // protege la sesión del browser actual.
+    await supabase.auth.signOut().catch((e) => {
+      console.error('[middleware] signOut tras desactivación falló:', e);
+    });
+    return redirectResponse;
+  }
+
+  // ── Caso 2b: autenticado pero sin rol válido en profiles
   //    (RLS bloqueando service_role no aplica porque usamos service_role,
   //     pero puede ser que el profile no exista o tenga role no soportado)
   if (!role) {
