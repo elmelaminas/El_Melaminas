@@ -76,7 +76,7 @@ export default async function MovementsPage({
     let query = admin
       .from('inventory_movements')
       .select(
-        `id, movement_type, quantity, reference, unit_cost, created_at, registered_by, color_id,
+        `id, movement_type, quantity, reference, unit_cost, created_at, registered_by, color_id, lead_id,
          colors ( name )`,
         { count: 'exact' },
       )
@@ -103,10 +103,16 @@ export default async function MovementsPage({
       created_at: string | null;
       registered_by: string | null;
       color_id: string | null;
+      lead_id: string | null;
       colors: { name: string } | { name: string }[] | null;
     };
 
     const rawRows = (data ?? []) as RawRow[];
+
+    // Lookups paralelos: profiles para registered_by, leads para lead_id
+    // (mostrar client_name en la tabla). Mismo patrón que warehouse/page.tsx
+    // y /admin/caja: dos queries separadas en lugar de embedding múltiple
+    // para evitar embedding ambiguity de PostgREST.
     const userIds = Array.from(
       new Set(
         rawRows
@@ -114,15 +120,28 @@ export default async function MovementsPage({
           .filter((id): id is string => !!id),
       ),
     );
-    let nameById = new Map<string, string>();
-    if (userIds.length > 0) {
-      const { data: users } = await admin
-        .from('profiles')
-        .select('id, full_name')
-        .in('id', userIds);
-      for (const u of users ?? []) {
-        nameById.set(u.id, u.full_name ?? '(sin nombre)');
-      }
+    const leadIds = Array.from(
+      new Set(
+        rawRows
+          .map((r) => r.lead_id)
+          .filter((id): id is string => !!id),
+      ),
+    );
+    const [usersLookup, leadsLookup] = await Promise.all([
+      userIds.length > 0
+        ? admin.from('profiles').select('id, full_name').in('id', userIds)
+        : Promise.resolve({ data: [], error: null }),
+      leadIds.length > 0
+        ? admin.from('leads').select('id, client_name').in('id', leadIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    const userNameById = new Map<string, string>();
+    for (const u of usersLookup.data ?? []) {
+      userNameById.set(u.id, u.full_name ?? '(sin nombre)');
+    }
+    const clientNameByLead = new Map<string, string>();
+    for (const l of leadsLookup.data ?? []) {
+      clientNameByLead.set(l.id, l.client_name ?? '(sin nombre)');
     }
 
     const rows: MovementsRow[] = rawRows.map((r) => {
@@ -136,9 +155,12 @@ export default async function MovementsPage({
         reference: r.reference,
         unit_cost: r.unit_cost == null ? null : Number(r.unit_cost),
         color_name: colorObj?.name ?? '(sin color)',
+        client_name: r.lead_id
+          ? clientNameByLead.get(r.lead_id) ?? null
+          : null,
         created_at: r.created_at,
         registered_by_name: r.registered_by
-          ? nameById.get(r.registered_by) ?? '—'
+          ? userNameById.get(r.registered_by) ?? '—'
           : '—',
       };
     });

@@ -15,10 +15,12 @@ import {
   ArrowLeftRight,
   Settings2,
   Loader,
+  CircleCheckBig,
+  Truck,
 } from 'lucide-react';
 import { StockBadge } from '@/components/ui/Badges';
 import { supabaseClient } from '@/lib/supabase/client';
-import { registerEntryAction } from './actions';
+import { registerEntryAction, markStockExitAction } from './actions';
 import type { MovementType } from './schema';
 
 export type StockRow = {
@@ -39,6 +41,9 @@ export type MovementRow = {
   quantity: number;
   reference: string | null;
   color_name: string;
+  /** Nombre del cliente del lead asociado (vía lead_id). null si el
+   *  movimiento no tiene lead_id (entrada manual de stock). */
+  client_name: string | null;
   created_at: string | null;
   registered_by: string | null;
   registered_by_name: string;
@@ -47,6 +52,20 @@ export type MovementRow = {
 export type ColorOption = {
   id: string;
   name: string;
+};
+
+/**
+ * Lead con stock comprometido pendiente de marcar como salida física.
+ * El almacenista presiona "Mercancía lista" y el server descuenta del
+ * stock_total + stock_committed e inserta movement de tipo 'salida'.
+ */
+export type LeadReadyToExit = {
+  id: string;
+  client_name: string;
+  sale_date: string | null;
+  delivery_status: 'pendiente' | 'en_transito';
+  driver_name: string | null;
+  colors: { color_name: string; quantity: number }[];
 };
 
 const TYPE_BADGE: Record<MovementType, string> = {
@@ -83,10 +102,12 @@ export function WarehouseClient({
   initialStock,
   initialMovements,
   activeColors,
+  leadsReadyToExit,
 }: {
   initialStock: StockRow[];
   initialMovements: MovementRow[];
   activeColors: ColorOption[];
+  leadsReadyToExit: LeadReadyToExit[];
 }) {
   const router = useRouter();
   const [showEntry, setShowEntry] = useState(false);
@@ -295,6 +316,55 @@ export function WarehouseClient({
         </div>
       </div>
 
+      {/* Entregas listas para salir — sección nueva. El almacenista
+          confirma que la mercancía está físicamente preparada y el
+          server hace el "salida" definitivo (stock_total -= qty,
+          stock_committed -= qty, inserta movement type='salida'). */}
+      <div className="tbl-wrap">
+        <div
+          className="px-6 py-4 border-b flex items-center justify-between"
+          style={{ borderColor: 'var(--border)' }}
+        >
+          <h3 className="font-semibold flex items-center gap-2">
+            <Truck size={16} /> Entregas listas para salir
+          </h3>
+          <span className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+            {leadsReadyToExit.length}{' '}
+            {leadsReadyToExit.length === 1 ? 'pendiente' : 'pendientes'}
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>Materiales</th>
+                <th>Fecha</th>
+                <th>Chofer</th>
+                <th className="text-right">Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leadsReadyToExit.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="text-center py-8 text-sm"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Ninguna entrega esperando preparación.
+                  </td>
+                </tr>
+              ) : (
+                leadsReadyToExit.map((l) => (
+                  <ExitRow key={l.id} lead={l} />
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       {/* Movements (últimos N) */}
       <div className="tbl-wrap">
         <div
@@ -317,6 +387,7 @@ export function WarehouseClient({
                 <th>Fecha</th>
                 <th>Tipo</th>
                 <th>Material</th>
+                <th>Cliente</th>
                 <th className="text-center">Cantidad</th>
                 <th>Referencia</th>
                 <th>Usuario</th>
@@ -326,7 +397,7 @@ export function WarehouseClient({
               {initialMovements.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="text-center py-8 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -350,6 +421,12 @@ export function WarehouseClient({
                       </span>
                     </td>
                     <td>{m.color_name}</td>
+                    <td
+                      className="text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {m.client_name ?? '—'}
+                    </td>
                     <td
                       className="text-center font-semibold"
                       style={{
@@ -387,6 +464,110 @@ export function WarehouseClient({
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Una fila del listado "Entregas listas para salir". Cada fila lleva
+ * su propio state pending/error/done para que el almacenista pueda
+ * marcar varias en paralelo sin bloquear toda la tabla. Tras success
+ * la fila se atenúa y `router.refresh()` la quita del listado.
+ */
+function ExitRow({ lead }: { lead: LeadReadyToExit }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  const handleExit = () => {
+    setError(null);
+    const fd = new FormData();
+    fd.set('lead_id', lead.id);
+
+    startTransition(async () => {
+      try {
+        const r = await markStockExitAction({ status: 'idle' }, fd);
+        if (r.status === 'success') {
+          setDone(true);
+          router.refresh();
+        } else if (r.status === 'error') {
+          setError(r.message);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de red';
+        setError(message);
+      }
+    });
+  };
+
+  const colorsLabel =
+    lead.colors.length === 0
+      ? '—'
+      : lead.colors
+          .map((c) => `${c.quantity}× ${c.color_name}`)
+          .join(', ');
+
+  return (
+    <tr
+      style={{
+        opacity: done ? 0.4 : 1,
+        transition: 'opacity 200ms ease',
+      }}
+    >
+      <td className="font-medium">{lead.client_name}</td>
+      <td
+        className="text-sm"
+        style={{ color: 'var(--text-secondary)', maxWidth: 240 }}
+      >
+        <div className="truncate" title={colorsLabel}>
+          {colorsLabel}
+        </div>
+      </td>
+      <td className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+        {lead.sale_date ?? '—'}
+      </td>
+      <td className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+        {lead.driver_name ?? (
+          <span style={{ color: 'var(--danger)' }}>Sin asignar</span>
+        )}
+      </td>
+      <td>
+        <div className="flex justify-end items-center gap-2">
+          {error && (
+            <span
+              className="text-xs"
+              style={{ color: 'var(--danger, #dc2626)' }}
+              role="alert"
+            >
+              {error}
+            </span>
+          )}
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ padding: '6px 14px', fontSize: '0.875rem' }}
+            onClick={handleExit}
+            disabled={pending || done}
+            aria-busy={pending}
+          >
+            {pending ? (
+              <>
+                <Loader size={14} className="animate-spin" />
+                <span style={{ marginLeft: 6 }}>Procesando…</span>
+              </>
+            ) : done ? (
+              <>
+                <CircleCheckBig size={14} /> Listo
+              </>
+            ) : (
+              <>
+                <CircleCheckBig size={14} /> Mercancía lista
+              </>
+            )}
+          </button>
+        </div>
+      </td>
+    </tr>
   );
 }
 

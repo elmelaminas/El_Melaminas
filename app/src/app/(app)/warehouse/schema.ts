@@ -40,6 +40,24 @@ export type RegisterEntryState =
 export const initialRegisterEntryState: RegisterEntryState = { status: 'idle' };
 
 /**
+ * Schema de "marcar salida" — solo necesita lead_id. El almacenista
+ * confirma que la mercancía está físicamente lista; el server lee
+ * lead_colors y descuenta de inventory por cada color.
+ */
+export const MarkStockExitSchema = z.object({
+  lead_id: z.string().uuid('lead_id inválido'),
+});
+
+export type MarkStockExitInput = z.infer<typeof MarkStockExitSchema>;
+
+export type MarkStockExitState =
+  | { status: 'idle' }
+  | { status: 'success'; message: string }
+  | { status: 'error'; message: string };
+
+export const initialMarkStockExitState: MarkStockExitState = { status: 'idle' };
+
+/**
  * Movement types soportados por la DB. Los confirmamos del DDL del usuario:
  * entrada, salida, compromiso, liberacion, ajuste.
  */

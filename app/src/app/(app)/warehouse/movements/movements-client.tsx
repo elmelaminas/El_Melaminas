@@ -28,6 +28,9 @@ export type MovementsRow = {
   reference: string | null;
   unit_cost: number | null;
   color_name: string;
+  /** Nombre del cliente del lead asociado (vía lead_id). null si el
+   *  movimiento no tiene lead_id (entrada manual de stock o ajuste). */
+  client_name: string | null;
   created_at: string | null;
   registered_by_name: string;
 };
@@ -180,6 +183,7 @@ export function MovementsClient({
                 <th>Fecha</th>
                 <th>Tipo</th>
                 <th>Material</th>
+                <th>Cliente</th>
                 <th className="text-center">Cantidad</th>
                 <th className="text-right">Costo unit.</th>
                 <th>Referencia</th>
@@ -190,7 +194,7 @@ export function MovementsClient({
               {movements.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     className="text-center py-8 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -216,6 +220,12 @@ export function MovementsClient({
                       </span>
                     </td>
                     <td>{m.color_name}</td>
+                    <td
+                      className="text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {m.client_name ?? '—'}
+                    </td>
                     <td
                       className="text-center font-semibold"
                       style={{

@@ -5,7 +5,9 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import {
   RegisterEntrySchema,
+  MarkStockExitSchema,
   type RegisterEntryState,
+  type MarkStockExitState,
 } from './schema';
 
 // NB: 'use server' file — solo async functions. Schemas/types en ./schema.
@@ -199,6 +201,240 @@ export async function registerEntryAction(
     const message =
       err instanceof Error ? err.message : 'Error desconocido al registrar entrada';
     console.error('[registerEntryAction] excepción no controlada:', err);
+    return { status: 'error', message };
+  }
+}
+
+/**
+ * `markStockExitAction` — el almacenista marca la mercancía de un lead
+ * como físicamente lista para entrega. Convierte el "compromiso" en
+ * "salida" definitiva: descuenta de stock_total Y de stock_committed.
+ *
+ * Reemplaza la Edge Function `commit-stock-delivery` que se invocaba
+ * desde el chofer al confirmar entrega — la responsabilidad ahora es
+ * del almacenista (más temprano en el flujo, antes de que el chofer
+ * salga).
+ *
+ * Flujo:
+ *   1. Validar (Zod).
+ *   2. Auth: registered_by = uid del usuario logueado.
+ *   3. SELECT lead (verificar que existe y está pendiente/en_transito;
+ *      si ya está entregado/cancelado, no hace nada — idempotencia).
+ *   4. SELECT lead_colors WHERE lead_id = lead_id.
+ *   5. Por cada lead_color:
+ *        - SELECT inventory.stock_total + stock_committed para ese color.
+ *        - UPDATE inventory: stock_total -= qty, stock_committed -= qty.
+ *        - INSERT inventory_movements: movement_type='salida',
+ *          quantity, lead_id, color_id, registered_by,
+ *          reference='Salida confirmada por almacén'.
+ *   6. UPDATE leads.delivery_status = 'en_transito'.
+ *   7. Notif al chofer (si tiene driver_id) — non-fatal.
+ *
+ * Política de errores: rollback manual con TxnLog igual que
+ * saveLeadAction. Si paso 5 falla a la mitad (n de N colores), revertimos
+ * los UPDATEs de inventory previos. INSERTs de inventory_movements
+ * también se rolan.
+ */
+type Undo = () => Promise<void>;
+class TxnLog {
+  private stack: Undo[] = [];
+  push(fn: Undo) {
+    this.stack.push(fn);
+  }
+  async rollback(reason: string): Promise<void> {
+    console.error(`[markStockExitAction] iniciando rollback: ${reason}`);
+    while (this.stack.length > 0) {
+      const fn = this.stack.pop()!;
+      try {
+        await fn();
+      } catch (e) {
+        console.error('[markStockExitAction] paso de rollback falló:', e);
+      }
+    }
+  }
+}
+
+export async function markStockExitAction(
+  _prev: MarkStockExitState,
+  formData: FormData,
+): Promise<MarkStockExitState> {
+  const txn = new TxnLog();
+  try {
+    const parsed = MarkStockExitSchema.safeParse({
+      lead_id: formData.get('lead_id'),
+    });
+    if (!parsed.success) {
+      return { status: 'error', message: 'lead_id inválido.' };
+    }
+    const { lead_id } = parsed.data;
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return { status: 'error', message: 'Sesión no válida.' };
+    }
+    const userId = user.id;
+
+    const admin = supabaseAdmin();
+
+    // Verificar lead existe y está en un estado que permite salida.
+    const { data: leadRow, error: leadErr } = await admin
+      .from('leads')
+      .select('id, delivery_status, client_name, driver_id')
+      .eq('id', lead_id)
+      .maybeSingle();
+    if (leadErr) {
+      return { status: 'error', message: `No se pudo leer el lead: ${leadErr.message}` };
+    }
+    if (!leadRow) {
+      return { status: 'error', message: 'Lead no encontrado.' };
+    }
+    if (
+      leadRow.delivery_status !== 'pendiente' &&
+      leadRow.delivery_status !== 'en_transito'
+    ) {
+      return {
+        status: 'error',
+        message: `El lead está en estado "${leadRow.delivery_status}" — no se puede marcar salida.`,
+      };
+    }
+
+    // Cargar lead_colors.
+    const { data: leadColors, error: lcErr } = await admin
+      .from('lead_colors')
+      .select('color_id, quantity')
+      .eq('lead_id', lead_id);
+    if (lcErr) {
+      return { status: 'error', message: `No se pudieron leer materiales: ${lcErr.message}` };
+    }
+    if (!leadColors || leadColors.length === 0) {
+      return { status: 'error', message: 'El lead no tiene materiales registrados.' };
+    }
+
+    // Por cada lead_color: read inventory → update -= qty → insert movement.
+    for (const lc of leadColors) {
+      if (!lc.color_id) continue;
+      const qty = Number(lc.quantity ?? 0);
+      if (qty <= 0) continue;
+
+      const { data: invRow, error: invSelErr } = await admin
+        .from('inventory')
+        .select('id, stock_total, stock_committed')
+        .eq('color_id', lc.color_id)
+        .maybeSingle();
+      if (invSelErr) {
+        await txn.rollback('select inventory falló');
+        return { status: 'error', message: `No se pudo leer inventario: ${invSelErr.message}` };
+      }
+      if (!invRow) {
+        await txn.rollback('falta fila de inventory');
+        return {
+          status: 'error',
+          message: `No existe fila de inventory para color_id=${lc.color_id}.`,
+        };
+      }
+
+      const previousTotal = Number(invRow.stock_total ?? 0);
+      const previousCommitted = Number(invRow.stock_committed ?? 0);
+      const newTotal = Math.max(0, previousTotal - qty);
+      // Si stock_committed < qty (incongruencia histórica), bajamos a 0.
+      const newCommitted = Math.max(0, previousCommitted - qty);
+
+      const { error: updErr } = await admin
+        .from('inventory')
+        .update({ stock_total: newTotal, stock_committed: newCommitted })
+        .eq('id', invRow.id);
+      if (updErr) {
+        await txn.rollback('update inventory falló');
+        return { status: 'error', message: `No se pudo actualizar inventario: ${updErr.message}` };
+      }
+      txn.push(async () => {
+        await admin
+          .from('inventory')
+          .update({
+            stock_total: previousTotal,
+            stock_committed: previousCommitted,
+          })
+          .eq('id', invRow.id);
+      });
+
+      // INSERT movement de salida.
+      const { data: mvRow, error: mvErr } = await admin
+        .from('inventory_movements')
+        .insert({
+          color_id: lc.color_id,
+          movement_type: 'salida',
+          quantity: qty,
+          lead_id,
+          registered_by: userId,
+          reference: 'Salida confirmada por almacén',
+        })
+        .select('id')
+        .single();
+      if (mvErr || !mvRow) {
+        await txn.rollback('insert movement salida falló');
+        return {
+          status: 'error',
+          message: `No se pudo registrar movimiento: ${mvErr?.message ?? 'sin datos'}`,
+        };
+      }
+      const movementId: string = mvRow.id;
+      txn.push(async () => {
+        await admin.from('inventory_movements').delete().eq('id', movementId);
+      });
+    }
+
+    // UPDATE leads.delivery_status='en_transito'.
+    const { error: leadUpdErr } = await admin
+      .from('leads')
+      .update({ delivery_status: 'en_transito' })
+      .eq('id', lead_id);
+    if (leadUpdErr) {
+      await txn.rollback('update lead.delivery_status falló');
+      return {
+        status: 'error',
+        message: `No se pudo actualizar el lead: ${leadUpdErr.message}`,
+      };
+    }
+
+    // Notif al chofer (non-fatal).
+    if (leadRow.driver_id) {
+      try {
+        const message = `La mercancía de ${leadRow.client_name ?? 'la entrega'} está lista para entrega`;
+        const { error: notifErr } = await admin.from('notifications').insert({
+          recipient_id: leadRow.driver_id,
+          type: 'mercancia_lista',
+          message,
+        });
+        if (notifErr) {
+          console.error(
+            '[markStockExitAction] notif al chofer falló (no fatal):',
+            notifErr,
+          );
+        }
+      } catch (e) {
+        console.error(
+          '[markStockExitAction] notif al chofer excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
+    revalidatePath('/warehouse');
+    revalidatePath('/warehouse/movements');
+    revalidatePath('/admin/entregas');
+    return {
+      status: 'success',
+      message: 'Salida registrada — mercancía lista para entrega.',
+    };
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Error desconocido al registrar salida';
+    console.error('[markStockExitAction] excepción no controlada:', err);
+    await txn.rollback('excepción no controlada');
     return { status: 'error', message };
   }
 }

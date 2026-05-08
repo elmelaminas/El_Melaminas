@@ -4,6 +4,7 @@ import {
   type StockRow,
   type MovementRow,
   type ColorOption,
+  type LeadReadyToExit,
 } from './warehouse-client';
 import { MOVEMENT_TYPE_LABEL, type MovementType } from './schema';
 
@@ -28,7 +29,7 @@ export default async function WarehousePage() {
   try {
     const admin = supabaseAdmin();
 
-    const [invResult, mvResult] = await Promise.all([
+    const [invResult, mvResult, leadsExitResult] = await Promise.all([
       admin
         .from('inventory')
         .select(
@@ -39,10 +40,29 @@ export default async function WarehousePage() {
         .from('inventory_movements')
         .select(
           `id, movement_type, quantity, reference, created_at, registered_by,
+           lead_id,
            colors ( name )`,
         )
         .order('created_at', { ascending: false })
         .limit(RECENT_MOVEMENTS),
+      // Leads con stock comprometido en estado pendiente — el almacenista
+      // los marca como "salida" cuando físicamente prepara la mercancía.
+      // Filtros:
+      //   - delivery_status pendiente o en_transito (todavía no entregado).
+      //   - stock_committed=true (el INSERT de leads/new ya pasó por el
+      //     commit-stock que reserva el inventario).
+      //   - deleted_at IS NULL.
+      admin
+        .from('leads')
+        .select(
+          `id, client_name, sale_date, delivery_status, driver_id,
+           lead_colors ( quantity, colors ( name ) )`,
+        )
+        .in('delivery_status', ['pendiente', 'en_transito'])
+        .eq('stock_committed', true)
+        .is('deleted_at', null)
+        .order('sale_date', { ascending: true })
+        .limit(50),
     ]);
 
     if (invResult.error) {
@@ -50,6 +70,14 @@ export default async function WarehousePage() {
     }
     if (mvResult.error) {
       return <ErrorState message={`Error leyendo movimientos: ${mvResult.error.message}`} />;
+    }
+    if (leadsExitResult.error) {
+      // No fatal — la página renderiza sin la sección "listos para salir"
+      // si esto falla. Loguamos.
+      console.error(
+        '[WarehousePage] leads listos para salir falló (no fatal):',
+        leadsExitResult.error,
+      );
     }
 
     type RawInv = {
@@ -96,12 +124,13 @@ export default async function WarehousePage() {
       reference: string | null;
       created_at: string | null;
       registered_by: string | null;
+      lead_id: string | null;
       colors: { name: string } | { name: string }[] | null;
     };
 
-    const movRows: Omit<MovementRow, 'registered_by_name'>[] = (
-      (mvResult.data ?? []) as RawMv[]
-    ).map((m) => {
+    const movRows: (Omit<MovementRow, 'registered_by_name' | 'client_name'> & {
+      lead_id: string | null;
+    })[] = ((mvResult.data ?? []) as RawMv[]).map((m) => {
       const colorObj = Array.isArray(m.colors) ? m.colors[0] : m.colors;
       const mt = (m.movement_type ?? 'ajuste') as MovementType;
       return {
@@ -113,10 +142,15 @@ export default async function WarehousePage() {
         color_name: colorObj?.name ?? '(sin color)',
         created_at: m.created_at,
         registered_by: m.registered_by,
+        lead_id: m.lead_id,
       };
     });
 
-    // Resolver nombres de los registered_by en una sola query.
+    // Resolver nombres de los registered_by + client_names de los leads
+    // referenciados, en dos queries paralelas. Mismo patrón que
+    // /admin/caja: cuando hay múltiples FKs a la misma tabla (acá
+    // profiles + leads) hacemos lookups separados en lugar de embedding
+    // múltiple para evitar embedding ambiguity de PostgREST.
     const userIds = Array.from(
       new Set(
         movRows
@@ -124,22 +158,43 @@ export default async function WarehousePage() {
           .filter((id): id is string => !!id),
       ),
     );
-    let nameById = new Map<string, string>();
-    if (userIds.length > 0) {
-      const { data: users } = await admin
-        .from('profiles')
-        .select('id, full_name')
-        .in('id', userIds);
-      for (const u of users ?? []) {
-        nameById.set(u.id, u.full_name ?? '(sin nombre)');
-      }
+    const leadIds = Array.from(
+      new Set(
+        movRows
+          .map((m) => m.lead_id)
+          .filter((id): id is string => !!id),
+      ),
+    );
+    const [usersLookup, leadsLookup] = await Promise.all([
+      userIds.length > 0
+        ? admin.from('profiles').select('id, full_name').in('id', userIds)
+        : Promise.resolve({ data: [], error: null }),
+      leadIds.length > 0
+        ? admin.from('leads').select('id, client_name').in('id', leadIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    const userNameById = new Map<string, string>();
+    for (const u of usersLookup.data ?? []) {
+      userNameById.set(u.id, u.full_name ?? '(sin nombre)');
+    }
+    const clientNameByLead = new Map<string, string>();
+    for (const l of leadsLookup.data ?? []) {
+      clientNameByLead.set(l.id, l.client_name ?? '(sin nombre)');
     }
 
     const movements: MovementRow[] = movRows.map((m) => ({
-      ...m,
+      id: m.id,
+      movement_type: m.movement_type,
+      movement_type_label: m.movement_type_label,
+      quantity: m.quantity,
+      reference: m.reference,
+      color_name: m.color_name,
+      created_at: m.created_at,
+      registered_by: m.registered_by,
       registered_by_name: m.registered_by
-        ? nameById.get(m.registered_by) ?? '—'
+        ? userNameById.get(m.registered_by) ?? '—'
         : '—',
+      client_name: m.lead_id ? clientNameByLead.get(m.lead_id) ?? null : null,
     }));
 
     // Lista de colores activos para el drawer de "Registrar Entrada"
@@ -148,11 +203,66 @@ export default async function WarehousePage() {
       .filter((r) => r.is_active)
       .map((r) => ({ id: r.color_id, name: r.color_name }));
 
+    // Construir lista de leads listos para salir.
+    type RawLeadExit = {
+      id: string;
+      client_name: string | null;
+      sale_date: string | null;
+      delivery_status: string | null;
+      driver_id: string | null;
+      lead_colors:
+        | {
+            quantity: number | null;
+            colors: { name: string } | { name: string }[] | null;
+          }[]
+        | null;
+    };
+    const leadsExitRaw = (leadsExitResult.data ?? []) as RawLeadExit[];
+    // Resolver nombres de chofer en una query (los que tengan driver_id).
+    const exitDriverIds = Array.from(
+      new Set(
+        leadsExitRaw
+          .map((l) => l.driver_id)
+          .filter((id): id is string => !!id),
+      ),
+    );
+    const driverNameByLead = new Map<string, string>();
+    if (exitDriverIds.length > 0) {
+      const { data: drivers } = await admin
+        .from('profiles')
+        .select('id, full_name')
+        .in('id', exitDriverIds);
+      for (const d of drivers ?? []) {
+        driverNameByLead.set(d.id, d.full_name ?? '(sin nombre)');
+      }
+    }
+
+    const leadsReadyToExit: LeadReadyToExit[] = leadsExitRaw.map((l) => ({
+      id: l.id,
+      client_name: l.client_name ?? '(sin nombre)',
+      sale_date: l.sale_date,
+      delivery_status:
+        (l.delivery_status as 'pendiente' | 'en_transito') ?? 'pendiente',
+      driver_name: l.driver_id
+        ? driverNameByLead.get(l.driver_id) ?? null
+        : null,
+      colors: (l.lead_colors ?? [])
+        .map((lc) => {
+          const colorObj = Array.isArray(lc.colors) ? lc.colors[0] : lc.colors;
+          return {
+            color_name: colorObj?.name ?? '(sin nombre)',
+            quantity: Number(lc.quantity ?? 0),
+          };
+        })
+        .filter((c) => c.quantity > 0),
+    }));
+
     return (
       <WarehouseClient
         initialStock={stockRows}
         initialMovements={movements}
         activeColors={activeColors}
+        leadsReadyToExit={leadsReadyToExit}
       />
     );
   } catch (err) {
