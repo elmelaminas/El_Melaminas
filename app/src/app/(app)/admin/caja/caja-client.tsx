@@ -1,6 +1,6 @@
 'use client';
 
-import { useRouter, usePathname } from 'next/navigation';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { CircleCheckBig, Loader, Wallet, ClipboardList } from 'lucide-react';
 import { formatMXN } from '@/data/mock';
@@ -44,20 +44,37 @@ export function CajaClient({
   validatedTransfers,
   pendingGrandTotal,
   validatedThisMonthTotal,
+  validatedTotalLabel,
+  monthFilterActive,
 }: {
   tab: TabKey;
   pendingTransfers: TransferRow[];
   validatedTransfers: TransferRow[];
   pendingGrandTotal: number;
   validatedThisMonthTotal: number;
+  /** Label dinámico del card del tab validados — varía si hay filtro
+   *  mes/anio activo ("...en Mayo 2026") vs default ("...este mes"). */
+  validatedTotalLabel: string;
+  /** True cuando el page recibió `?mes=N&anio=N` válidos. Lo usamos
+   *  para mostrar el sub-texto del card y la lista en consecuencia. */
+  monthFilterActive: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [, startTransition] = useTransition();
 
   function selectTab(next: TabKey) {
-    const params = new URLSearchParams();
-    if (next !== 'por-validar') params.set('tab', next);
+    // Preservamos cualquier otro searchParam (mes, anio) para que el
+    // filtro mes/anio sobreviva el cambio de tab. Sólo modificamos
+    // `tab`. Si el tab destino es el default (por-validar), removemos
+    // el param para tener una URL más limpia (?mes=...&anio=...).
+    const params = new URLSearchParams(searchParams?.toString() ?? '');
+    if (next === 'por-validar') {
+      params.delete('tab');
+    } else {
+      params.set('tab', next);
+    }
     const qs = params.toString();
     startTransition(() => {
       router.push(qs ? `${pathname}?${qs}` : pathname);
@@ -124,6 +141,8 @@ export function CajaClient({
         <ValidatedTab
           transfers={validatedTransfers}
           monthTotal={validatedThisMonthTotal}
+          totalLabel={validatedTotalLabel}
+          monthFilterActive={monthFilterActive}
         />
       )}
     </div>
@@ -235,9 +254,13 @@ function PendingTab({
 function ValidatedTab({
   transfers,
   monthTotal,
+  totalLabel,
+  monthFilterActive,
 }: {
   transfers: TransferRow[];
   monthTotal: number;
+  totalLabel: string;
+  monthFilterActive: boolean;
 }) {
   return (
     <>
@@ -276,7 +299,7 @@ function ValidatedTab({
               fontWeight: 600,
             }}
           >
-            Total validado este mes
+            {totalLabel}
           </div>
           <div
             className="text-3xl font-bold leading-tight mt-1"
@@ -290,7 +313,9 @@ function ValidatedTab({
             className="text-xs mt-1"
             style={{ color: 'var(--text-tertiary)' }}
           >
-            Mes calendario actual
+            {monthFilterActive
+              ? 'Filtrado por el mes seleccionado'
+              : 'Mes calendario actual'}
           </div>
         </div>
       </div>

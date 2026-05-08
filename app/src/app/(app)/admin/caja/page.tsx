@@ -1,5 +1,6 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { CajaClient, type TransferRow } from './caja-client';
+import { MES_LABEL } from '../../dashboard/constants';
 
 /**
  * Página /admin/caja — el admin valida el efectivo que el contador
@@ -23,6 +24,10 @@ export const dynamic = 'force-dynamic';
 
 type RawSearchParams = {
   tab?: string | string[];
+  /** Mes 1-12 — filtra el listado de validados por `admin_validated_at`. */
+  mes?: string | string[];
+  /** Año 4-dígitos — pareja inseparable con `mes`. */
+  anio?: string | string[];
 };
 
 function pickStr(v: string | string[] | undefined): string {
@@ -46,11 +51,46 @@ export default async function CajaPage({
       ? (tabParam as TabKey)
       : 'por-validar';
 
+    // Filtro mes/anio opcional. Drill-down típico desde el card
+    // "Efectivo validado" del dashboard, que linkea con
+    // `?tab=validados&mes=…&anio=…`. Solo aplica al tab "validados"
+    // — el de "por validar" muestra siempre el estado AHORA sin
+    // importar el rango.
+    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
+    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
+    const mes =
+      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12 ? mesRaw : 0;
+    const anio =
+      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
+        ? anioRaw
+        : 0;
+    const monthFilterActive = mes > 0 && anio > 0;
+    const startOfMonthIso = monthFilterActive
+      ? new Date(Date.UTC(anio, mes - 1, 1)).toISOString()
+      : null;
+    const startOfNextMonthIso = monthFilterActive
+      ? new Date(Date.UTC(anio, mes, 1)).toISOString()
+      : null;
+
     const admin = supabaseAdmin();
 
     // Dos SELECTs en paralelo: por validar (status=recibido) y validados.
     // En el listado de validados limitamos a 200 para evitar render gigante;
     // si hay más historia, agregamos paginación luego.
+    let validatedQuery = admin
+      .from('cash_transfers')
+      .select(
+        'id, driver_id, contador_id, admin_id, amount, status, created_at, admin_validated_at, notes',
+      )
+      .eq('status', 'validado')
+      .order('admin_validated_at', { ascending: false })
+      .limit(200);
+    if (monthFilterActive && startOfMonthIso && startOfNextMonthIso) {
+      validatedQuery = validatedQuery
+        .gte('admin_validated_at', startOfMonthIso)
+        .lt('admin_validated_at', startOfNextMonthIso);
+    }
+
     const [pendingResult, validatedResult] = await Promise.all([
       admin
         .from('cash_transfers')
@@ -59,14 +99,7 @@ export default async function CajaPage({
         )
         .eq('status', 'recibido')
         .order('created_at', { ascending: false }),
-      admin
-        .from('cash_transfers')
-        .select(
-          'id, driver_id, contador_id, admin_id, amount, status, created_at, admin_validated_at, notes',
-        )
-        .eq('status', 'validado')
-        .order('admin_validated_at', { ascending: false })
-        .limit(200),
+      validatedQuery,
     ]);
 
     if (pendingResult.error) {
@@ -128,32 +161,43 @@ export default async function CajaPage({
       notes: t.notes ?? null,
     }));
 
-    // Total validado del MES CALENDARIO ACTUAL (independiente del listado).
-    // Esto es una métrica operativa que el admin quiere ver siempre del
-    // mes en curso, no de un mes arbitrario seleccionado en otra pantalla.
+    // Total validado:
+    //   - Si hay filtro mes/anio activo: suma TODO el listado filtrado
+    //     (que ya viene acotado al rango por la query Supabase).
+    //   - Sin filtro: suma solo los del mes calendario actual,
+    //     comportamiento original.
     const now = new Date();
     const startOfCurrentMonthIso = new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
     ).toISOString();
-    const startOfNextMonthIso = new Date(
+    const startOfNextCurrentMonthIso = new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
     ).toISOString();
-    const validatedThisMonthTotal = validatedRaw.reduce((s, t) => {
-      const validatedAt = t.admin_validated_at;
-      if (
-        validatedAt &&
-        validatedAt >= startOfCurrentMonthIso &&
-        validatedAt < startOfNextMonthIso
-      ) {
-        return s + Number(t.amount ?? 0);
-      }
-      return s;
-    }, 0);
+    const validatedTotal = monthFilterActive
+      ? validatedRaw.reduce((s, t) => s + Number(t.amount ?? 0), 0)
+      : validatedRaw.reduce((s, t) => {
+          const validatedAt = t.admin_validated_at;
+          if (
+            validatedAt &&
+            validatedAt >= startOfCurrentMonthIso &&
+            validatedAt < startOfNextCurrentMonthIso
+          ) {
+            return s + Number(t.amount ?? 0);
+          }
+          return s;
+        }, 0);
 
     const pendingGrandTotal = pendingTransfers.reduce(
       (s, r) => s + r.amount,
       0,
     );
+
+    // Label del total card del tab validados:
+    //   "Total validado este mes" cuando no hay filtro,
+    //   "Total validado en <Mes> <Anio>" cuando sí.
+    const validatedTotalLabel = monthFilterActive
+      ? `Total validado en ${MES_LABEL[mes] ?? mes} ${anio}`
+      : 'Total validado este mes';
 
     return (
       <CajaClient
@@ -161,7 +205,9 @@ export default async function CajaPage({
         pendingTransfers={pendingTransfers}
         validatedTransfers={validatedTransfers}
         pendingGrandTotal={pendingGrandTotal}
-        validatedThisMonthTotal={validatedThisMonthTotal}
+        validatedThisMonthTotal={validatedTotal}
+        validatedTotalLabel={validatedTotalLabel}
+        monthFilterActive={monthFilterActive}
       />
     );
   } catch (err) {

@@ -39,8 +39,16 @@ export type LeadRow = {
 export type FiltersState = {
   q: string;
   channel: '' | 'whatsapp' | 'tiktok' | 'google' | 'tienda';
-  delivery: '' | 'pendiente' | 'en_transito' | 'entregado' | 'cancelado';
+  // `en_transito` salió del UI: el valor `pendiente` cubre ambos
+  // estados ("no entregado") porque ése es el drill-down típico desde
+  // el dashboard. El server traduce `pendiente` a IN(pendiente,
+  // en_transito) automáticamente.
+  delivery: '' | 'pendiente' | 'entregado' | 'cancelado';
   payment: '' | 'pendiente' | 'parcial' | 'pagado' | 'cancelado';
+  /** Mes 1-12; 0 = sin filtro de mes. Pareja inseparable con `anio`. */
+  mes: number;
+  /** Año 4-dígitos; 0 = sin filtro. */
+  anio: number;
 };
 
 const CHANNEL_OPTS: { value: FiltersState['channel']; label: string }[] = [
@@ -53,8 +61,9 @@ const CHANNEL_OPTS: { value: FiltersState['channel']; label: string }[] = [
 
 const DELIVERY_OPTS: { value: FiltersState['delivery']; label: string }[] = [
   { value: '', label: 'Todas las entregas' },
-  { value: 'pendiente', label: 'Pendiente' },
-  { value: 'en_transito', label: 'En tránsito' },
+  // "Pendiente" en el UI engloba pendiente + en tránsito (semántica
+  // de negocio). El server hace la traducción a IN(...).
+  { value: 'pendiente', label: 'Pendientes (incluye en tránsito)' },
   { value: 'entregado', label: 'Entregado' },
   { value: 'cancelado', label: 'Cancelado' },
 ];
@@ -68,6 +77,27 @@ const PAYMENT_OPTS: { value: FiltersState['payment']; label: string }[] = [
 ];
 
 const DEBOUNCE_MS = 300;
+
+/**
+ * Mapa mes-número → label corto para el chip "Mes: ene/2026" cuando hay
+ * filtro de rango activo. Los valores largos viven en
+ * `dashboard/constants.ts` pero acá usamos formas cortas para que el
+ * chip no rompa en mobile.
+ */
+const MES_SHORT: Readonly<Record<number, string>> = {
+  1: 'ene',
+  2: 'feb',
+  3: 'mar',
+  4: 'abr',
+  5: 'may',
+  6: 'jun',
+  7: 'jul',
+  8: 'ago',
+  9: 'sep',
+  10: 'oct',
+  11: 'nov',
+  12: 'dic',
+};
 
 /**
  * Cliente del listado de leads.
@@ -131,6 +161,8 @@ export function LeadsClient({
       delivery: string;
       payment: string;
       page: number;
+      mes: number;
+      anio: number;
     }>,
   ) {
     const merged = {
@@ -139,12 +171,22 @@ export function LeadsClient({
       delivery: next.delivery ?? filters.delivery,
       payment: next.payment ?? filters.payment,
       page: next.page ?? page,
+      // `mes`/`anio` se preservan al navegar entre filtros — un usuario
+      // que entró desde dashboard?mes=4&anio=2026 puede cambiar el
+      // canal sin perder el rango de mes. Para limpiar el rango se
+      // usa el botón "Limpiar filtros".
+      mes: next.mes ?? filters.mes,
+      anio: next.anio ?? filters.anio,
     };
     const params = new URLSearchParams();
     if (merged.q) params.set('q', merged.q);
     if (merged.channel) params.set('channel', merged.channel);
     if (merged.delivery) params.set('delivery', merged.delivery);
     if (merged.payment) params.set('payment', merged.payment);
+    if (merged.mes > 0 && merged.anio > 0) {
+      params.set('mes', String(merged.mes));
+      params.set('anio', String(merged.anio));
+    }
     if (merged.page > 1) params.set('page', String(merged.page));
     const qs = params.toString();
     startTransition(() => {
@@ -155,7 +197,11 @@ export function LeadsClient({
   const hasFilters = useMemo(
     () =>
       Boolean(
-        filters.q || filters.channel || filters.delivery || filters.payment,
+        filters.q ||
+          filters.channel ||
+          filters.delivery ||
+          filters.payment ||
+          (filters.mes > 0 && filters.anio > 0),
       ),
     [filters],
   );
@@ -242,7 +288,21 @@ export function LeadsClient({
         </div>
 
         {hasFilters && (
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            {filters.mes > 0 && filters.anio > 0 && (
+              <span
+                className="text-xs"
+                style={{
+                  background: 'var(--bg-muted)',
+                  color: 'var(--text-secondary)',
+                  padding: '4px 10px',
+                  borderRadius: 9999,
+                  fontWeight: 500,
+                }}
+              >
+                Mes: {MES_SHORT[filters.mes] ?? filters.mes}/{filters.anio}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -252,6 +312,8 @@ export function LeadsClient({
                   channel: '',
                   delivery: '',
                   payment: '',
+                  mes: 0,
+                  anio: 0,
                   page: 1,
                 });
               }}

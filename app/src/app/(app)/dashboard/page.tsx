@@ -15,7 +15,8 @@ import {
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import { formatMXN, type Channel } from '@/data/mock';
-import { MonthYearFilter, MES_LABEL } from './dashboard-client';
+import { MonthYearFilter } from './dashboard-client';
+import { MES_LABEL } from './constants';
 
 /**
  * Dashboard /dashboard.
@@ -313,7 +314,10 @@ export default async function DashboardPage({
           <MonthYearFilter mes={mes} anio={anio} />
         </div>
 
-        {/* Metric cards (5) */}
+        {/* Metric cards (5) — todas clickeables. Cada href incluye los
+            mismos `mes`/`anio` activos para que el drill-down respete el
+            filtro del dashboard, EXCEPTO "Stock bajo" que va a /warehouse
+            sin params (el stock es estado actual, no tiene rango de mes). */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
           <MetricCard
             icon={<ClipboardList size={20} />}
@@ -322,6 +326,7 @@ export default async function DashboardPage({
             label="Leads del mes"
             value={leadsMonth.toString()}
             unit={leadsMonth === 1 ? 'lead registrado' : 'leads registrados'}
+            href={`/leads?mes=${mes}&anio=${anio}`}
           />
           <MetricCard
             icon={<DollarSign size={20} />}
@@ -330,6 +335,7 @@ export default async function DashboardPage({
             label="Cobrado en el mes"
             value={formatMXN(paidMonth)}
             unit="pagos exitosos del mes"
+            href={`/payments?mes=${mes}&anio=${anio}`}
           />
           <MetricCard
             icon={<Wallet size={20} />}
@@ -338,6 +344,7 @@ export default async function DashboardPage({
             label="Efectivo validado"
             value={formatMXN(cashValidatedMonth)}
             unit="entregado y conciliado en el mes"
+            href={`/admin/caja?tab=validados&mes=${mes}&anio=${anio}`}
           />
           <MetricCard
             icon={<Truck size={20} />}
@@ -346,6 +353,7 @@ export default async function DashboardPage({
             label="Entregas pendientes"
             value={deliveriesPending.toString()}
             unit="por entregar o en tránsito (actual)"
+            href={`/leads?delivery=pendiente&mes=${mes}&anio=${anio}`}
           />
           <MetricCard
             icon={<TriangleAlert size={20} />}
@@ -354,6 +362,7 @@ export default async function DashboardPage({
             label="Stock bajo"
             value={lowStock.toString()}
             unit="materiales bajo mínimo (actual)"
+            href="/warehouse"
           />
         </div>
 
@@ -511,6 +520,7 @@ function MetricCard({
   label,
   value,
   unit,
+  href,
 }: {
   icon: React.ReactNode;
   iconBg: string;
@@ -518,9 +528,15 @@ function MetricCard({
   label: string;
   value: string;
   unit: string;
+  /** Si se provee, todo el card se vuelve clickeable y wrapeado en
+   *  `<Link>`. El `:hover` ya está en el CSS de `.stat-card` (sube la
+   *  shadow). Sólo agregamos cursor pointer aquí para señalar
+   *  affordance.
+   */
+  href?: string;
 }) {
-  return (
-    <div className="stat-card">
+  const card = (
+    <div className="stat-card" style={href ? { cursor: 'pointer' } : undefined}>
       <div className="flex items-center justify-between">
         <div
           className="flex items-center justify-center"
@@ -548,6 +564,21 @@ function MetricCard({
         </div>
       </div>
     </div>
+  );
+  if (!href) return card;
+  return (
+    <Link
+      href={href}
+      // Reset del color heredado del <a> default (purple/blue) para que
+      // los textos del card sigan en su variable original.
+      style={{
+        display: 'block',
+        textDecoration: 'none',
+        color: 'inherit',
+      }}
+    >
+      {card}
+    </Link>
   );
 }
 

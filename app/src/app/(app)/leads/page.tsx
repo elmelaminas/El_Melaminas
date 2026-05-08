@@ -31,12 +31,12 @@ const PAGE_SIZE = 20;
 // ignoramos — `.eq('channel', 'xxx')` con un valor no enum reventaría
 // con error de Postgres.
 const CHANNEL_VALUES = ['whatsapp', 'tiktok', 'google', 'tienda'] as const;
-const DELIVERY_VALUES = [
-  'pendiente',
-  'en_transito',
-  'entregado',
-  'cancelado',
-] as const;
+// `en_transito` SÍ existe en el enum DB pero NO se expone como opción
+// del filtro: el dashboard linkea con `?delivery=pendiente` esperando ver
+// ambos `pendiente` y `en_transito` (semántica de negocio: ambos son
+// "no entregado"). El server interpreta `pendiente` como
+// IN ('pendiente', 'en_transito') más abajo.
+const DELIVERY_VALUES = ['pendiente', 'entregado', 'cancelado'] as const;
 const PAYMENT_VALUES = [
   'pendiente',
   'parcial',
@@ -49,6 +49,10 @@ type RawSearchParams = {
   channel?: string | string[];
   delivery?: string | string[];
   payment?: string | string[];
+  /** Mes 1-12 — si presente filtra `sale_date` por la ventana del mes. */
+  mes?: string | string[];
+  /** Año 4-dígitos — pareja de `mes`. Ambos deben venir juntos para filtrar. */
+  anio?: string | string[];
   page?: string | string[];
 };
 
@@ -91,6 +95,25 @@ export default async function LeadsPage({
     const payment = whitelist(pickStr(raw.payment), PAYMENT_VALUES);
     const pageNumber = Math.max(1, Number(pickStr(raw.page)) || 1);
 
+    // Filtro mes/anio (ambos opcionales pero deben venir JUNTOS para
+    // aplicar). Si solo viene uno, ignoramos los dos — evita comparaciones
+    // contra ventanas inválidas. Drill-down típico desde /dashboard.
+    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
+    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
+    const mes =
+      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12 ? mesRaw : 0;
+    const anio =
+      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
+        ? anioRaw
+        : 0;
+    const monthFilterActive = mes > 0 && anio > 0;
+    const startOfMonthDate = monthFilterActive
+      ? new Date(Date.UTC(anio, mes - 1, 1)).toISOString().slice(0, 10)
+      : null;
+    const startOfNextMonthDate = monthFilterActive
+      ? new Date(Date.UTC(anio, mes, 1)).toISOString().slice(0, 10)
+      : null;
+
     const admin = supabaseAdmin();
 
     // Construimos la query con todos los filtros antes del range, para
@@ -109,8 +132,19 @@ export default async function LeadsPage({
       .order('created_at', { ascending: false });
 
     if (channel) query = query.eq('channel', channel);
-    if (delivery) query = query.eq('delivery_status', delivery);
+    // `pendiente` semántico = "no entregado" → mostramos también
+    // `en_transito` (que el filtro UI ya no expone como valor separado).
+    if (delivery === 'pendiente') {
+      query = query.in('delivery_status', ['pendiente', 'en_transito']);
+    } else if (delivery) {
+      query = query.eq('delivery_status', delivery);
+    }
     if (payment) query = query.eq('payment_status', payment);
+    if (monthFilterActive && startOfMonthDate && startOfNextMonthDate) {
+      query = query
+        .gte('sale_date', startOfMonthDate)
+        .lt('sale_date', startOfNextMonthDate);
+    }
 
     if (qInput) {
       // ilike usa `*` o `%` como wildcard; usamos `*` porque no requiere
@@ -177,6 +211,8 @@ export default async function LeadsPage({
       channel,
       delivery,
       payment,
+      mes: monthFilterActive ? mes : 0,
+      anio: monthFilterActive ? anio : 0,
     };
 
     return (

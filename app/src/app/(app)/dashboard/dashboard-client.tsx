@@ -3,6 +3,7 @@
 import { usePathname, useRouter } from 'next/navigation';
 import { useTransition } from 'react';
 import { Loader } from 'lucide-react';
+import { MES_OPTIONS } from './constants';
 
 /**
  * Filtro de mes/año para el dashboard.
@@ -12,31 +13,12 @@ import { Loader } from 'lucide-react';
  * Server Component re-corre con los nuevos params y vuelve a renderizar
  * las métricas con el rango.
  *
- * Decisiones:
- *   - Es un Client Component PEQUEÑO (solo el filter); el resto del
- *     dashboard sigue siendo Server Component. Esto mantiene el
- *     rendering server-side de las queries pesadas.
- *   - useTransition baja la opacidad de los selectores durante el
- *     re-fetch, así el usuario sabe que pasó algo.
- *   - Lista de años: año actual + 2 anteriores (3 opciones). Si quieres
- *     más historia, sube el `historyYears`.
+ * Las constantes (MES_OPTIONS, MES_LABEL) viven en `./constants.ts`
+ * para que page.tsx (Server) también pueda leerlas — un módulo
+ * `'use client'` solo serializa sus exports al bundle del cliente y el
+ * server los ve como referencias opacas.
  */
 const historyYears = 2; // muestra current + 2 anteriores
-
-const MES_OPTIONS: { value: number; label: string }[] = [
-  { value: 1, label: 'Enero' },
-  { value: 2, label: 'Febrero' },
-  { value: 3, label: 'Marzo' },
-  { value: 4, label: 'Abril' },
-  { value: 5, label: 'Mayo' },
-  { value: 6, label: 'Junio' },
-  { value: 7, label: 'Julio' },
-  { value: 8, label: 'Agosto' },
-  { value: 9, label: 'Septiembre' },
-  { value: 10, label: 'Octubre' },
-  { value: 11, label: 'Noviembre' },
-  { value: 12, label: 'Diciembre' },
-];
 
 export function MonthYearFilter({
   mes,
@@ -114,6 +96,3 @@ export function MonthYearFilter({
   );
 }
 
-export const MES_LABEL: Readonly<Record<number, string>> = Object.freeze(
-  Object.fromEntries(MES_OPTIONS.map((m) => [m.value, m.label])),
-);

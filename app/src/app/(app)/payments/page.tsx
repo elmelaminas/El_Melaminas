@@ -29,6 +29,10 @@ type RawSearchParams = {
   q?: string | string[];
   method?: string | string[];
   type?: string | string[];
+  /** Mes 1-12 — si presente filtra `paid_at` por la ventana del mes. */
+  mes?: string | string[];
+  /** Año 4-dígitos — pareja inseparable con `mes`. */
+  anio?: string | string[];
   page?: string | string[];
 };
 
@@ -61,6 +65,25 @@ export default async function PaymentsPage({
     const paymentType = whitelist(pickStr(raw.type), TYPE_VALUES);
     const pageNumber = Math.max(1, Number(pickStr(raw.page)) || 1);
 
+    // Filtro mes/anio (ambos opcionales pero deben venir JUNTOS).
+    // Drill-down típico desde el card "Cobrado en el mes" del dashboard.
+    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
+    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
+    const mes =
+      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12 ? mesRaw : 0;
+    const anio =
+      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
+        ? anioRaw
+        : 0;
+    const monthFilterActive = mes > 0 && anio > 0;
+    // `paid_at` es timestamptz — comparamos con ISO completo.
+    const startOfMonthIso = monthFilterActive
+      ? new Date(Date.UTC(anio, mes - 1, 1)).toISOString()
+      : null;
+    const startOfNextMonthIso = monthFilterActive
+      ? new Date(Date.UTC(anio, mes, 1)).toISOString()
+      : null;
+
     const admin = supabaseAdmin();
 
     // Nombre real de la columna es `payment_method` (no `method`); el
@@ -79,6 +102,11 @@ export default async function PaymentsPage({
 
     if (method) query = query.eq('payment_method', method);
     if (paymentType) query = query.eq('payment_type', paymentType);
+    if (monthFilterActive && startOfMonthIso && startOfNextMonthIso) {
+      query = query
+        .gte('paid_at', startOfMonthIso)
+        .lt('paid_at', startOfNextMonthIso);
+    }
 
     // Búsqueda por nombre del cliente — la sintaxis `leads.client_name.ilike`
     // funciona cuando hay embedding del lead. Si la DB rechaza este filter
@@ -178,6 +206,8 @@ export default async function PaymentsPage({
           q: qInput,
           method,
           type: paymentType,
+          mes: monthFilterActive ? mes : 0,
+          anio: monthFilterActive ? anio : 0,
         }}
         totals={{
           gross: totalGross,

@@ -36,6 +36,16 @@ type FiltersState = {
   q: string;
   method: '' | 'efectivo' | 'transferencia' | 'clip';
   type: '' | 'anticipo' | 'liquidacion';
+  /** Mes 1-12; 0 = sin filtro. Pareja inseparable con `anio`. */
+  mes: number;
+  /** Año 4-dígitos; 0 = sin filtro. */
+  anio: number;
+};
+
+/** Mes corto para el chip — ver leads-client.tsx para racional. */
+const MES_SHORT: Readonly<Record<number, string>> = {
+  1: 'ene', 2: 'feb', 3: 'mar', 4: 'abr', 5: 'may', 6: 'jun',
+  7: 'jul', 8: 'ago', 9: 'sep', 10: 'oct', 11: 'nov', 12: 'dic',
 };
 
 type Totals = {
@@ -112,18 +122,34 @@ export function PaymentsClient({
   }, [qInput, filters.q]);
 
   function pushFilters(
-    next: Partial<{ q: string; method: string; type: string; page: number }>,
+    next: Partial<{
+      q: string;
+      method: string;
+      type: string;
+      page: number;
+      mes: number;
+      anio: number;
+    }>,
   ) {
     const merged = {
       q: next.q ?? filters.q,
       method: next.method ?? filters.method,
       type: next.type ?? filters.type,
       page: next.page ?? page,
+      // mes/anio se preservan al cambiar otros filtros — drill-down
+      // desde dashboard mantiene su rango de mes hasta que el usuario
+      // explícitamente "Limpiar filtros".
+      mes: next.mes ?? filters.mes,
+      anio: next.anio ?? filters.anio,
     };
     const params = new URLSearchParams();
     if (merged.q) params.set('q', merged.q);
     if (merged.method) params.set('method', merged.method);
     if (merged.type) params.set('type', merged.type);
+    if (merged.mes > 0 && merged.anio > 0) {
+      params.set('mes', String(merged.mes));
+      params.set('anio', String(merged.anio));
+    }
     if (merged.page > 1) params.set('page', String(merged.page));
     const qs = params.toString();
     startTransition(() => {
@@ -132,7 +158,13 @@ export function PaymentsClient({
   }
 
   const hasFilters = useMemo(
-    () => Boolean(filters.q || filters.method || filters.type),
+    () =>
+      Boolean(
+        filters.q ||
+          filters.method ||
+          filters.type ||
+          (filters.mes > 0 && filters.anio > 0),
+      ),
     [filters],
   );
 
@@ -209,12 +241,33 @@ export function PaymentsClient({
           </select>
         </div>
         {hasFilters && (
-          <div className="mt-3 flex items-center gap-2">
+          <div className="mt-3 flex items-center gap-2 flex-wrap">
+            {filters.mes > 0 && filters.anio > 0 && (
+              <span
+                className="text-xs"
+                style={{
+                  background: 'var(--bg-muted)',
+                  color: 'var(--text-secondary)',
+                  padding: '4px 10px',
+                  borderRadius: 9999,
+                  fontWeight: 500,
+                }}
+              >
+                Mes: {MES_SHORT[filters.mes] ?? filters.mes}/{filters.anio}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => {
                 setQInput('');
-                pushFilters({ q: '', method: '', type: '', page: 1 });
+                pushFilters({
+                  q: '',
+                  method: '',
+                  type: '',
+                  mes: 0,
+                  anio: 0,
+                  page: 1,
+                });
               }}
               className="btn btn-ghost"
               style={{ padding: '4px 10px', fontSize: '0.75rem' }}
