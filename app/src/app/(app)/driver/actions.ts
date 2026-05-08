@@ -6,8 +6,10 @@ import { supabaseServer } from '@/lib/supabase/server';
 import {
   ConfirmDeliverySchema,
   ReportIssueSchema,
+  MarkFailedDeliverySchema,
   type ConfirmDeliveryState,
   type ReportIssueState,
+  type MarkFailedDeliveryState,
 } from './schema';
 
 // NB: 'use server' file — solo async functions. Schemas/types en ./schema.
@@ -541,6 +543,210 @@ export async function reportIssueAction(
     const message =
       err instanceof Error ? err.message : 'Error desconocido al reportar';
     console.error('[reportIssueAction] excepción no controlada:', err);
+    return { status: 'error', message };
+  }
+}
+
+/**
+ * `markFailedDeliveryAction(_prev, formData)` — el chofer no pudo
+ * completar una entrega. Sube una foto OBLIGATORIA del lugar (cámara
+ * trasera capture) + motivo, deja el lead en `delivery_status='pendiente'`
+ * para que se reintente, y notifica a los admins.
+ *
+ * Diferencia con `reportIssueAction`:
+ *   - `reportIssueAction` documenta un faltante/detalle DURANTE la
+ *     entrega (la entrega se completa igual, solo registra problemas).
+ *   - `markFailedDeliveryAction` registra que la entrega NO se realizó
+ *     (cliente ausente, dirección incorrecta, etc.), bloqueando el
+ *     flujo de cobro y dejando la pieza para reintento.
+ *
+ * Política de errores: la subida de foto es FATAL si falla — sin
+ * evidencia el reporte no es accionable. La notif a admins es
+ * non-fatal (mejor un reporte sin notif que un reporte perdido).
+ */
+export async function markFailedDeliveryAction(
+  _prev: MarkFailedDeliveryState,
+  formData: FormData,
+): Promise<MarkFailedDeliveryState> {
+  try {
+    const parsed = MarkFailedDeliverySchema.safeParse({
+      lead_id: formData.get('lead_id'),
+      reason: formData.get('reason'),
+    });
+    if (!parsed.success) {
+      return {
+        status: 'error',
+        message: 'Datos inválidos',
+        fieldErrors: parsed.error.flatten().fieldErrors as Record<string, string[]>,
+      };
+    }
+    const data = parsed.data;
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return { status: 'error', message: 'Sesión no válida.' };
+    }
+    const driverId = user.id;
+
+    const admin = supabaseAdmin();
+
+    // Ownership: solo el chofer asignado puede reportar falla. Mismo
+    // patrón que reportIssueAction.
+    const { data: leadRow, error: leadErr } = await admin
+      .from('leads')
+      .select('id, driver_id, delivery_status, client_name')
+      .eq('id', data.lead_id)
+      .maybeSingle();
+    if (leadErr) {
+      return {
+        status: 'error',
+        message: `No se pudo verificar el lead: ${leadErr.message}`,
+      };
+    }
+    if (!leadRow || leadRow.driver_id !== driverId) {
+      return {
+        status: 'error',
+        message: 'Esta entrega no está asignada a ti.',
+      };
+    }
+    // No tiene sentido reportar falla en una entrega ya entregada o
+    // cancelada — la idempotencia evita estados absurdos en DB.
+    if (leadRow.delivery_status === 'entregado') {
+      return {
+        status: 'error',
+        message: 'Esta entrega ya está marcada como entregada.',
+      };
+    }
+    if (leadRow.delivery_status === 'cancelado') {
+      return {
+        status: 'error',
+        message: 'Esta entrega está cancelada.',
+      };
+    }
+
+    // Foto OBLIGATORIA. Sin evidencia el reporte no se acepta — el
+    // admin necesita ver el lugar para tomar acción (reagendar,
+    // contactar al cliente, etc.).
+    const photo = formData.get('photo');
+    if (!(photo instanceof File) || photo.size === 0) {
+      return {
+        status: 'error',
+        message: 'La foto del lugar es obligatoria.',
+      };
+    }
+    if (photo.size > MAX_EVIDENCE_BYTES) {
+      return { status: 'error', message: 'La imagen excede 5 MB.' };
+    }
+    const ext = (photo.name.split('.').pop() ?? 'bin').toLowerCase();
+    if (!(ALLOWED_EXTS as readonly string[]).includes(ext)) {
+      return {
+        status: 'error',
+        message: 'Formato no soportado. Usa PNG, JPG o WEBP.',
+      };
+    }
+    // Ruta `failed/{lead_id}/{timestamp}.ext` siguiendo el patrón
+    // sugerido por la spec — separa visualmente las fotos de fallas
+    // de las de cobros (que viven directamente en `{lead_id}/...`).
+    const path = `failed/${data.lead_id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error: upErr } = await admin.storage
+      .from(STORAGE_BUCKET)
+      .upload(path, photo, {
+        contentType: photo.type || `image/${ext}`,
+        upsert: false,
+      });
+    if (upErr) {
+      return {
+        status: 'error',
+        message: `No se pudo subir la foto: ${upErr.message}`,
+      };
+    }
+    const { data: pub } = admin.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+    const photoUrl = pub.publicUrl;
+
+    // UPDATE lead: dejamos el delivery_status en 'pendiente' (no
+    // sobreescribimos en_transito si ya está en tránsito — el chofer
+    // puede haber estado en camino). Solo llenamos las columnas de
+    // falla. Si una falla previa existía, la sobreescribimos con la
+    // nueva (la última falla es la que importa para el admin).
+    const { error: updErr } = await admin
+      .from('leads')
+      .update({
+        failed_delivery_reason: data.reason,
+        failed_delivery_photo_url: photoUrl,
+      })
+      .eq('id', data.lead_id);
+    if (updErr) {
+      // Best-effort: borrar la foto recién subida si el UPDATE falla
+      // (no queremos huérfanos en storage).
+      try {
+        await admin.storage.from(STORAGE_BUCKET).remove([path]);
+      } catch (e) {
+        console.error(
+          '[markFailedDeliveryAction] cleanup foto huérfana falló:',
+          e,
+        );
+      }
+      return {
+        status: 'error',
+        message: `No se pudo registrar la falla: ${updErr.message}`,
+      };
+    }
+
+    // Notif a admins (non-fatal).
+    try {
+      const { data: dp } = await admin
+        .from('profiles')
+        .select('full_name')
+        .eq('id', driverId)
+        .maybeSingle();
+      const driverName = dp?.full_name ?? 'Chofer';
+      const clientName = leadRow.client_name ?? '(sin nombre)';
+
+      const { data: admins } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('role', 'admin')
+        .eq('is_active', true);
+      if (admins && admins.length > 0) {
+        const message = `⚠️ ${driverName} no pudo entregar a ${clientName}: ${data.reason}`;
+        const inserts = admins.map((a) => ({
+          recipient_id: a.id,
+          type: 'delivery_failed',
+          message,
+        }));
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifErr) {
+          console.error(
+            '[markFailedDeliveryAction] notif insert falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[markFailedDeliveryAction] notif lookup/insert excepción (no fatal):',
+        e,
+      );
+    }
+
+    revalidatePath('/driver');
+    revalidatePath('/admin/entregas');
+    return { status: 'success' };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al registrar falla';
+    console.error(
+      '[markFailedDeliveryAction] excepción no controlada:',
+      err,
+    );
     return { status: 'error', message };
   }
 }

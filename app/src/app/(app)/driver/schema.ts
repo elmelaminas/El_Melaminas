@@ -79,3 +79,43 @@ export type ReportIssueState =
     };
 
 export const initialReportIssueState: ReportIssueState = { status: 'idle' };
+
+// ─── Failed delivery (Grupo 2) ───────────────────────────────────────
+
+/**
+ * El chofer no pudo entregar una pieza (cliente ausente, dirección
+ * inaccesible, rechazo, etc.). Registramos el motivo + foto del lugar.
+ *
+ * El lead queda en `delivery_status='pendiente'` (NO 'cancelado'): la
+ * entrega se reintenta en otro día. Las columnas
+ * `failed_delivery_reason` y `failed_delivery_photo_url` se llenan
+ * para que el admin vea el badge naranja "No entregado" en
+ * /admin/entregas.
+ *
+ * Migración manual previa en Supabase:
+ *   ALTER TABLE leads ADD COLUMN IF NOT EXISTS failed_delivery_reason text;
+ *   ALTER TABLE leads ADD COLUMN IF NOT EXISTS failed_delivery_photo_url text;
+ */
+export const MarkFailedDeliverySchema = z.object({
+  lead_id: z.string().uuid('lead_id inválido'),
+  reason: z
+    .string()
+    .trim()
+    .min(10, 'El motivo debe tener al menos 10 caracteres')
+    .max(1000, 'El motivo es demasiado largo'),
+});
+
+export type MarkFailedDeliveryInput = z.infer<typeof MarkFailedDeliverySchema>;
+
+export type MarkFailedDeliveryState =
+  | { status: 'idle' }
+  | { status: 'success' }
+  | {
+      status: 'error';
+      message: string;
+      fieldErrors?: Record<string, string[]>;
+    };
+
+export const initialMarkFailedDeliveryState: MarkFailedDeliveryState = {
+  status: 'idle',
+};

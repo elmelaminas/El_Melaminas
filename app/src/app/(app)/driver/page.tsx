@@ -42,7 +42,7 @@ export default async function DriverPage() {
     // contar entregas programadas para hoy.
     const todayIso = new Date().toISOString().slice(0, 10);
 
-    // SELECTs en paralelo. Cinco queries:
+    // SELECTs en paralelo. Seis queries:
     //   1. Leads activos asignados a este chofer.
     //   2. Profile del chofer (para el saludo).
     //   3. Profiles admin/supervisor (para "Entregar efectivo a").
@@ -55,11 +55,24 @@ export default async function DriverPage() {
     //      `count: 'exact'` y `head: true` para no traer filas, solo
     //      el número. Non-fatal: si la columna `delivery_date` no
     //      existe (migración pendiente) loggeamos y el banner muestra 0.
-    const [leadsResult, profileResult, receiversResult, cashResult, todayCountResult] = await Promise.all([
+    //   6. COUNT de entregas YA COMPLETADAS hoy (delivery_date=hoy
+    //      AND delivery_status='entregado'). Sirve para el contador
+    //      "Entrega N de M" en el modo secuencial del cliente
+    //      (Grupo 2). Non-fatal igual que la #5.
+    //
+    //    NB: el SELECT principal (#1) trae también `delivery_date`,
+    //    `delivery_order`, `failed_delivery_reason` y
+    //    `failed_delivery_photo_url`. Si esas columnas no existen en
+    //    DB todavía, la query entera falla — por eso conservamos los
+    //    nombres exactos del DDL de la migración (Grupos 1 + 2 las
+    //    requieren las dos).
+    const [leadsResult, profileResult, receiversResult, cashResult, todayCountResult, todayCompletedResult] = await Promise.all([
       admin
         .from('leads')
         .select(
           `id, client_name, address, maps_url, total_amount, payment_status, delivery_status,
+           delivery_date, delivery_order,
+           failed_delivery_reason, failed_delivery_photo_url,
            lead_colors (
              quantity,
              colors ( name )
@@ -92,6 +105,13 @@ export default async function DriverPage() {
         .eq('delivery_date', todayIso)
         .in('delivery_status', ['pendiente', 'en_transito'])
         .is('deleted_at', null),
+      admin
+        .from('leads')
+        .select('id', { count: 'exact', head: true })
+        .eq('driver_id', driverId)
+        .eq('delivery_date', todayIso)
+        .eq('delivery_status', 'entregado')
+        .is('deleted_at', null),
     ]);
 
     if (leadsResult.error) {
@@ -110,16 +130,25 @@ export default async function DriverPage() {
       0,
     );
 
-    // todayCountResult: igual que cashResult, non-fatal. Si la columna
-    // `delivery_date` no existe en DB (migración pendiente), el COUNT
-    // falla y mostramos 0 en el banner.
+    // todayCountResult / todayCompletedResult: igual que cashResult,
+    // non-fatal. Si la columna `delivery_date` no existe en DB
+    // (migración pendiente), el COUNT falla y mostramos 0 en el banner
+    // y el contador secuencial. Eso degrada elegantemente al modo
+    // lista del Grupo 0 (todas las pendientes sin orden).
     if (todayCountResult.error) {
       console.error(
         '[DriverPage] today count select falló (no fatal):',
         todayCountResult.error,
       );
     }
+    if (todayCompletedResult.error) {
+      console.error(
+        '[DriverPage] today completed count select falló (no fatal):',
+        todayCompletedResult.error,
+      );
+    }
     const todayDeliveriesCount = todayCountResult.count ?? 0;
+    const todayCompletedCount = todayCompletedResult.count ?? 0;
 
     const leadIds = (leadsResult.data ?? []).map((l) => l.id);
 
@@ -156,6 +185,10 @@ export default async function DriverPage() {
       total_amount: number | string | null;
       payment_status: string | null;
       delivery_status: string | null;
+      delivery_date: string | null;
+      delivery_order: number | null;
+      failed_delivery_reason: string | null;
+      failed_delivery_photo_url: string | null;
       lead_colors: RawLeadColor[] | null;
     };
 
@@ -181,6 +214,10 @@ export default async function DriverPage() {
           total_amount: total,
           adeudo,
           delivery_status: (l.delivery_status as 'pendiente' | 'en_transito') ?? 'pendiente',
+          delivery_date: l.delivery_date,
+          delivery_order: l.delivery_order,
+          failed_delivery_reason: l.failed_delivery_reason,
+          failed_delivery_photo_url: l.failed_delivery_photo_url,
           colors,
         };
       },
@@ -200,6 +237,7 @@ export default async function DriverPage() {
         receivers={receivers}
         cashPending={cashPending}
         todayDeliveriesCount={todayDeliveriesCount}
+        todayCompletedCount={todayCompletedCount}
         todayIso={todayIso}
       />
     );

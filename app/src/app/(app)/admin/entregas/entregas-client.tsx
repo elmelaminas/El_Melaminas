@@ -38,6 +38,12 @@ export type EntregaRow = {
   created_at: string | null;
   driver_id: string | null;
   driver_name: string | null;
+  /** Si el chofer reportó "No pude entregar" en un intento previo,
+   *  estos campos llevan motivo + URL de la foto del lugar. La fila
+   *  muestra un badge naranja "No entregado" y abre un modal con
+   *  el detalle al hacer click. */
+  failed_delivery_reason: string | null;
+  failed_delivery_photo_url: string | null;
   colors: { color_name: string; quantity: number }[];
 };
 
@@ -120,6 +126,10 @@ export function EntregasClient({
   const [pending, startTransition] = useTransition();
   // Lead actualmente abierto en el modal de issues. null = modal cerrado.
   const [openIssuesLead, setOpenIssuesLead] = useState<EntregaRow | null>(null);
+  // Lead actualmente abierto en el modal de "No entregado". Distinto
+  // del de issues — son flujos diferentes (issues = problemas DURANTE
+  // entrega, failed = entrega NO ejecutada).
+  const [openFailedLead, setOpenFailedLead] = useState<EntregaRow | null>(null);
 
   function pushFilters(next: Partial<FiltersState>) {
     const merged = {
@@ -242,6 +252,14 @@ export function EntregasClient({
         />
       )}
 
+      {/* Modal de "No entregado" — muestra motivo + foto del lugar. */}
+      {openFailedLead && (
+        <FailedDeliveryModal
+          entrega={openFailedLead}
+          onClose={() => setOpenFailedLead(null)}
+        />
+      )}
+
       {/* Tabla */}
       <div
         className="tbl-wrap"
@@ -286,6 +304,7 @@ export function EntregasClient({
                     entrega={r}
                     issues={issuesByLead[r.id] ?? []}
                     onOpenIssues={() => setOpenIssuesLead(r)}
+                    onOpenFailed={() => setOpenFailedLead(r)}
                   />
                 ))
               )}
@@ -301,16 +320,19 @@ function Row({
   entrega: r,
   issues,
   onOpenIssues,
+  onOpenFailed,
 }: {
   entrega: EntregaRow;
   issues: IssueRow[];
   onOpenIssues: () => void;
+  onOpenFailed: () => void;
 }) {
   const colorsLabel =
     r.colors.length === 0
       ? '—'
       : r.colors.map((c) => `${c.quantity}× ${c.color_name}`).join(', ');
   const issueCount = issues.length;
+  const hasFailed = Boolean(r.failed_delivery_reason);
 
   return (
     <tr>
@@ -332,6 +354,23 @@ function Row({
               <TriangleAlert size={11} />{' '}
               {issueCount}{' '}
               {issueCount === 1 ? 'reporte' : 'reportes'}
+            </button>
+          )}
+          {hasFailed && (
+            <button
+              type="button"
+              onClick={onOpenFailed}
+              className="badge flex items-center gap-1"
+              style={{
+                cursor: 'pointer',
+                border: 'none',
+                fontSize: '0.6875rem',
+                background: '#FFEDD5',
+                color: '#9A3412',
+              }}
+              title="Ver motivo del intento fallido"
+            >
+              <X size={11} /> No entregado
             </button>
           )}
         </div>
@@ -876,6 +915,108 @@ function RouteSection({
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Modal del badge naranja "No entregado". Muestra motivo + foto del
+ * lugar (link, abre en nueva pestaña). No tiene action — el admin
+ * decide externamente qué hacer (re-asignar fecha, contactar cliente,
+ * etc.). Si la entrega se reintenta y se completa, las columnas
+ * `failed_delivery_*` quedan en DB como histórico (no las limpiamos
+ * automáticamente).
+ */
+function FailedDeliveryModal({
+  entrega,
+  onClose,
+}: {
+  entrega: EntregaRow;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(15,23,42,0.45)' }}
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="failed-modal-title"
+    >
+      <div
+        className="card w-full max-w-xl p-6 animate-fade max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3
+              id="failed-modal-title"
+              className="font-semibold text-lg flex items-center gap-2"
+              style={{ color: '#9A3412' }}
+            >
+              <X size={18} /> Intento fallido
+            </h3>
+            <p
+              className="text-sm mt-1"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              {entrega.client_name} ·{' '}
+              <span style={{ color: 'var(--text-tertiary)' }}>
+                #{entrega.id.slice(0, 8)}
+              </span>
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ padding: '6px' }}
+            onClick={onClose}
+            aria-label="Cerrar"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div
+          className="card p-4"
+          style={{
+            background: '#FFEDD5',
+            border: '1px solid #FED7AA',
+          }}
+        >
+          <div
+            className="text-xs uppercase tracking-wide mb-2"
+            style={{ color: '#9A3412', fontWeight: 600 }}
+          >
+            Motivo
+          </div>
+          <p
+            className="text-sm"
+            style={{ color: '#7C2D12', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}
+          >
+            {entrega.failed_delivery_reason ?? '(sin motivo registrado)'}
+          </p>
+          {entrega.failed_delivery_photo_url && (
+            <a
+              href={entrega.failed_delivery_photo_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm hover:underline inline-flex items-center gap-1 mt-3"
+              style={{ color: '#C2410C', fontWeight: 500 }}
+            >
+              📷 Ver foto del lugar
+            </a>
+          )}
+        </div>
+
+        <p
+          className="text-xs mt-4"
+          style={{ color: 'var(--text-tertiary)' }}
+        >
+          La entrega sigue pendiente. Reagenda la ruta o contacta al
+          cliente para reintentar.
+        </p>
+      </div>
     </div>
   );
 }

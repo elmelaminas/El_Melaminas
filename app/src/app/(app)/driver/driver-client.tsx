@@ -16,7 +16,11 @@ import {
 } from 'lucide-react';
 import { formatMXN } from '@/data/mock';
 import { DeliveryBadge } from '@/components/ui/Badges';
-import { confirmDeliveryAction, reportIssueAction } from './actions';
+import {
+  confirmDeliveryAction,
+  reportIssueAction,
+  markFailedDeliveryAction,
+} from './actions';
 import { ISSUE_TYPE_OPTIONS } from './schema';
 
 export type DeliveryCardData = {
@@ -27,6 +31,18 @@ export type DeliveryCardData = {
   total_amount: number;
   adeudo: number;
   delivery_status: 'pendiente' | 'en_transito';
+  /** YYYY-MM-DD; null si el lead aún no tiene fecha de entrega
+   *  asignada por admin. Usado para el modo secuencial — solo se
+   *  consideran "ruta del día" las que tienen delivery_date=hoy. */
+  delivery_date: string | null;
+  /** Orden 1..N dentro de la ruta del día. null si no asignado. */
+  delivery_order: number | null;
+  /** Si el chofer reportó previamente que no pudo entregar este lead,
+   *  el motivo queda guardado aquí. La card lo muestra como banner
+   *  naranja "intento previo: …" para que el chofer (o un compañero
+   *  que retoma) sepa qué pasó. */
+  failed_delivery_reason: string | null;
+  failed_delivery_photo_url: string | null;
   colors: { color_name: string; quantity: number }[];
 };
 
@@ -52,6 +68,7 @@ export function DriverClient({
   receivers,
   cashPending,
   todayDeliveriesCount,
+  todayCompletedCount,
   todayIso,
 }: {
   driverName: string;
@@ -60,13 +77,41 @@ export function DriverClient({
   /** Suma de cash_transfers WHERE driver_id=uid AND status='pendiente'.
    *  Es el efectivo físico que el chofer trae y debe entregar al contador. */
   cashPending: number;
-  /** Cantidad de entregas con delivery_date=hoy asignadas a este chofer.
-   *  Usado para el banner "📦 Tienes N entregas programadas para hoy". */
+  /** Cantidad de entregas con delivery_date=hoy asignadas a este chofer
+   *  AÚN ACTIVAS (pendiente/en_transito). Usado para el banner
+   *  "📦 Tienes N entregas programadas para hoy". */
   todayDeliveriesCount: number;
+  /** Cantidad de entregas con delivery_date=hoy ya entregadas. Sumado
+   *  al todayDeliveriesCount da el total del día; usado para el
+   *  contador "Entrega N de M" del modo secuencial. */
+  todayCompletedCount: number;
   /** Hoy en YYYY-MM-DD (UTC) — viene del server para que el formato del
    *  banner sea consistente con lo que se SELECTeó. */
   todayIso: string;
 }) {
+  // Modo secuencial vs lista (Grupo 2):
+  //   - Si hay deliveries activas con delivery_date=hoy, mostramos
+  //     SOLO la primera en orden (delivery_order ASC) y el contador
+  //     "Entrega N de M" prominente.
+  //   - Si no, mantenemos el comportamiento previo (lista de todas
+  //     las activas, sin orden particular).
+  // Política: leads sin delivery_order entre los del día (ej: el
+  // admin agregó uno manualmente sin especificar orden) se ordenan
+  // al final, manteniendo estabilidad por client_name.
+  const todaysDeliveries = deliveries
+    .filter((d) => d.delivery_date === todayIso)
+    .sort((a, b) => {
+      const oa = a.delivery_order ?? 9999;
+      const ob = b.delivery_order ?? 9999;
+      if (oa !== ob) return oa - ob;
+      return a.client_name.localeCompare(b.client_name, 'es-MX');
+    });
+  const isSequentialMode = todaysDeliveries.length > 0;
+  const currentDelivery = isSequentialMode ? todaysDeliveries[0] : null;
+  // M = activas hoy + ya entregadas hoy (total programado para el día).
+  // N = entregadas hoy + 1 (la siguiente activa).
+  const totalToday = todayDeliveriesCount + todayCompletedCount;
+  const currentIndex = todayCompletedCount + 1;
   return (
     <div className="mx-auto" style={{ maxWidth: 420, width: '100%' }}>
       {/* Header card */}
@@ -173,23 +218,59 @@ export function DriverClient({
 
       {/* Active deliveries */}
       <div className="flex flex-col gap-4">
-        <div
-          className="px-1 text-sm font-semibold"
-          style={{ color: 'var(--text-secondary)' }}
-        >
-          Entregas activas
-        </div>
-        {deliveries.length === 0 ? (
-          <div
-            className="card p-6 text-center text-sm"
-            style={{ color: 'var(--text-tertiary)' }}
-          >
-            No tienes entregas pendientes asignadas.
-          </div>
+        {isSequentialMode && currentDelivery ? (
+          <>
+            {/* Modo secuencial: mostramos SOLO la entrega actual + un
+                contador prominente de progreso del día. Las demás del
+                día quedan invisibles hasta que ésta se complete o se
+                marque falla, momento en que el server refresca y la
+                siguiente toma su lugar. */}
+            <div
+              className="rounded-xl p-4 text-center"
+              style={{
+                background: 'var(--brand-primary)',
+                color: '#fff',
+              }}
+            >
+              <div className="text-xs uppercase tracking-wide opacity-80">
+                Progreso del día
+              </div>
+              <div className="text-3xl font-bold mt-1">
+                Entrega {currentIndex}{' '}
+                <span style={{ opacity: 0.7, fontSize: '1.5rem' }}>
+                  de {totalToday}
+                </span>
+              </div>
+              <div className="text-xs opacity-80 mt-1">
+                Completa esta entrega para avanzar a la siguiente
+              </div>
+            </div>
+            <DeliveryCard
+              delivery={currentDelivery}
+              receivers={receivers}
+            />
+          </>
         ) : (
-          deliveries.map((d) => (
-            <DeliveryCard key={d.id} delivery={d} receivers={receivers} />
-          ))
+          <>
+            <div
+              className="px-1 text-sm font-semibold"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              Entregas activas
+            </div>
+            {deliveries.length === 0 ? (
+              <div
+                className="card p-6 text-center text-sm"
+                style={{ color: 'var(--text-tertiary)' }}
+              >
+                No tienes entregas pendientes asignadas.
+              </div>
+            ) : (
+              deliveries.map((d) => (
+                <DeliveryCard key={d.id} delivery={d} receivers={receivers} />
+              ))
+            )}
+          </>
         )}
       </div>
     </div>
@@ -475,12 +556,67 @@ function DeliveryCard({
         </div>
       </div>
 
-      <hr style={{ border: 0, borderTop: '1px solid var(--border)' }} />
+      {/* Banner de intento previo fallido (solo si existe). Visible
+          arriba de los CTAs para que el chofer/compañero que retoma
+          la entrega vea el contexto antes de actuar. */}
+      {delivery.failed_delivery_reason && (
+        <div
+          className="mt-3 p-3 rounded-lg flex items-start gap-2"
+          style={{
+            background: '#FFEDD5',
+            border: '1px solid #FED7AA',
+          }}
+        >
+          <TriangleAlert
+            size={16}
+            style={{ color: '#C2410C', flexShrink: 0, marginTop: 2 }}
+          />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              className="text-xs font-semibold"
+              style={{ color: '#9A3412' }}
+            >
+              Intento previo fallido
+            </div>
+            <p
+              className="text-sm mt-1"
+              style={{ color: '#7C2D12', whiteSpace: 'pre-wrap' }}
+            >
+              {delivery.failed_delivery_reason}
+            </p>
+            {delivery.failed_delivery_photo_url && (
+              <a
+                href={delivery.failed_delivery_photo_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs hover:underline inline-flex items-center gap-1 mt-1"
+                style={{ color: '#C2410C' }}
+              >
+                📷 Ver foto del intento
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+
+      <hr
+        className="mt-3"
+        style={{ border: 0, borderTop: '1px solid var(--border)' }}
+      />
 
       {/* Reportar problema — visible siempre, expandible. Va ANTES de
           "Confirmar entrega" para que el chofer pueda reportar
           incidencias mientras evalúa la entrega y antes de cerrarla. */}
       <ReportIssueBlock leadId={delivery.id} clientName={delivery.client_name} />
+
+      {/* "No pude entregar" — bloque rojo, separado de reportar
+          problema porque cambia el flujo: tras enviar este reporte la
+          entrega NO se completa, queda como pendiente con la falla
+          registrada. Mismo patrón expandible/colapsado. */}
+      <FailedDeliveryBlock
+        leadId={delivery.id}
+        clientName={delivery.client_name}
+      />
 
       <hr
         className="mt-4"
@@ -833,6 +969,262 @@ function ReportIssueBlock({
           </>
         ) : (
           'Enviar reporte'
+        )}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Bloque "No pude entregar" — botón rojo expandible. Distinto de
+ * `ReportIssueBlock` (que es para faltantes/detalles SIN bloquear la
+ * entrega): este flujo NO completa la entrega, deja el lead como
+ * pendiente con `failed_delivery_reason` + foto del lugar registrados.
+ *
+ * Diferencias con ReportIssueBlock:
+ *   - `description` es OBLIGATORIO con mín. 10 chars (vs 3 en issues).
+ *   - La foto es OBLIGATORIA (vs opcional en issues).
+ *   - El input file usa `capture="environment"` para abrir cámara
+ *     trasera directamente en mobile (en desktop cae al picker normal).
+ *
+ * State local por card. Tras success el server hace
+ * revalidatePath('/driver') y router.refresh() actualiza la card.
+ */
+function FailedDeliveryBlock({
+  leadId,
+  clientName,
+}: {
+  leadId: string;
+  clientName: string;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [photo, setPhoto] = useState<File | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  function reset() {
+    setReason('');
+    setPhoto(null);
+    setError(null);
+    setSuccess(false);
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  function handleSubmit() {
+    setError(null);
+    if (reason.trim().length < 10) {
+      setError('El motivo debe tener al menos 10 caracteres.');
+      return;
+    }
+    if (!photo || photo.size === 0) {
+      setError('La foto del lugar es obligatoria.');
+      return;
+    }
+    const fd = new FormData();
+    fd.set('lead_id', leadId);
+    fd.set('reason', reason.trim());
+    fd.set('photo', photo);
+
+    startTransition(async () => {
+      try {
+        const r = await markFailedDeliveryAction({ status: 'idle' }, fd);
+        if (r.status === 'success') {
+          setSuccess(true);
+          // Refresh inmediato — la card debe salir del modo
+          // secuencial / pasar a la siguiente en cuanto el server
+          // confirme. El delay corto evita un flash visual.
+          setTimeout(() => {
+            setOpen(false);
+            reset();
+            router.refresh();
+          }, 800);
+        } else if (r.status === 'error') {
+          setError(r.message);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de red';
+        setError(message);
+      }
+    });
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          reset();
+          setOpen(true);
+        }}
+        className="btn btn-outline w-full mt-3"
+        style={{
+          height: 44,
+          color: '#B91C1C',
+          borderColor: '#FECACA',
+          background: '#FEF2F2',
+        }}
+        aria-label={`Marcar entrega como fallida para ${clientName}`}
+      >
+        <X size={16} /> No pude entregar
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className="mt-3 p-4 rounded-lg"
+      style={{
+        background: '#FEF2F2',
+        border: '1px solid #FECACA',
+      }}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <div
+          className="font-semibold flex items-center gap-2"
+          style={{ color: '#B91C1C' }}
+        >
+          <X size={16} /> Marcar como no entregada
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false);
+            reset();
+          }}
+          className="btn btn-ghost"
+          style={{ padding: '4px' }}
+          disabled={pending}
+          aria-label="Cancelar"
+        >
+          <X size={16} />
+        </button>
+      </div>
+
+      <div className="mb-3">
+        <label className="label">
+          Motivo <span style={{ color: '#B91C1C' }}>*</span>
+        </label>
+        <textarea
+          className="textarea"
+          rows={3}
+          placeholder="Describe por qué no pudiste entregar (cliente ausente, dirección incorrecta, rechazo…)"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          disabled={pending}
+          style={{ fontSize: '1rem' }}
+          maxLength={1000}
+        />
+        <div
+          className="text-[11px] mt-1"
+          style={{
+            color:
+              reason.trim().length < 10
+                ? 'var(--danger, #dc2626)'
+                : 'var(--text-tertiary)',
+          }}
+        >
+          {reason.trim().length < 10
+            ? `Mínimo 10 caracteres (${reason.trim().length}/10)`
+            : `${reason.length}/1000`}
+        </div>
+      </div>
+
+      <div
+        className="dropzone mb-3"
+        onClick={() => !pending && fileRef.current?.click()}
+        style={{
+          cursor: pending ? 'not-allowed' : 'pointer',
+          // Borde rojo si la foto aún no se subió — refuerzo visual
+          // de que es obligatoria.
+          borderColor: photo ? undefined : '#FCA5A5',
+        }}
+      >
+        <Camera
+          size={22}
+          style={{ color: photo ? '#B91C1C' : '#DC2626' }}
+          className="mx-auto mb-1"
+        />
+        <div
+          className="text-sm font-medium"
+          style={{ color: 'var(--text-primary)' }}
+        >
+          {photo ? photo.name : 'Toma foto del lugar'}
+        </div>
+        <div className="text-[11px]" style={{ color: '#B91C1C' }}>
+          Obligatoria · cámara trasera en mobile
+        </div>
+        <input
+          ref={fileRef}
+          type="file"
+          // capture="environment" abre la cámara trasera en mobile
+          // (Android/iOS). En desktop cae al picker normal.
+          accept="image/*"
+          capture="environment"
+          onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
+          style={{ display: 'none' }}
+          disabled={pending}
+        />
+      </div>
+
+      {error && (
+        <div
+          role="alert"
+          className="text-sm mb-3"
+          style={{
+            color: 'var(--danger, #dc2626)',
+            background: 'var(--danger-bg, rgba(220,38,38,0.08))',
+            border: '1px solid rgba(220,38,38,0.25)',
+            padding: '8px 12px',
+            borderRadius: 6,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      {success && (
+        <div
+          role="status"
+          className="text-sm mb-3 flex items-center gap-2"
+          style={{
+            color: '#15803D',
+            background: 'rgba(22,163,74,0.08)',
+            border: '1px solid rgba(22,163,74,0.25)',
+            padding: '8px 12px',
+            borderRadius: 6,
+          }}
+        >
+          <CircleCheckBig size={16} />
+          <span>Falla registrada. Avanzando a la siguiente…</span>
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={handleSubmit}
+        className="btn w-full"
+        style={{
+          height: 48,
+          fontSize: '1rem',
+          fontWeight: 600,
+          background: '#DC2626',
+          color: '#fff',
+        }}
+        disabled={pending || success}
+        aria-busy={pending}
+      >
+        {pending ? (
+          <>
+            <Loader size={18} className="animate-spin" />
+            <span style={{ marginLeft: 6 }}>Registrando…</span>
+          </>
+        ) : (
+          'Registrar falla y continuar'
         )}
       </button>
     </div>
