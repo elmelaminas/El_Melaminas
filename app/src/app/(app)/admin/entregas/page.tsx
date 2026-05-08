@@ -272,6 +272,71 @@ export default async function EntregasPage({
       name: d.full_name ?? '(sin nombre)',
     }));
 
+    // Cargar driver_deliveries (Grupo 4) — evidencia del cobro hecho
+    // por el chofer. Bulk SELECT para los leads visibles, mismo
+    // patrón que los otros bulk-lookups arriba. Si la tabla no
+    // existe / RLS bloquea, el catch loguea y la columna
+    // "Evidencia cobro" queda vacía.
+    const evidenceByLead: Record<
+      string,
+      { url: string; amount: number; delivered_at: string | null }
+    > = {};
+    if (leadIds.length > 0) {
+      try {
+        const { data: deliveriesData, error: delErr } = await admin
+          .from('driver_deliveries')
+          .select('lead_id, evidence_photo_url, amount_collected, delivered_at')
+          .in('lead_id', leadIds)
+          .not('evidence_photo_url', 'is', null);
+        if (delErr) {
+          console.error(
+            '[EntregasPage] driver_deliveries select falló (no fatal):',
+            delErr,
+          );
+        } else {
+          // Si un lead tiene múltiples driver_deliveries (re-entrega
+          // tras falla, etc.), nos quedamos con el más reciente —
+          // ordenamos in-memory por delivered_at DESC y tomamos el
+          // primero.
+          const byLead = new Map<
+            string,
+            {
+              url: string;
+              amount: number;
+              delivered_at: string | null;
+            }[]
+          >();
+          for (const d of deliveriesData ?? []) {
+            if (!d.lead_id || !d.evidence_photo_url) continue;
+            const list = byLead.get(d.lead_id) ?? [];
+            list.push({
+              url: d.evidence_photo_url,
+              amount: Number(d.amount_collected ?? 0),
+              delivered_at: d.delivered_at ?? null,
+            });
+            byLead.set(d.lead_id, list);
+          }
+          for (const [leadId, list] of byLead.entries()) {
+            list.sort((a, b) => {
+              const ta = a.delivered_at
+                ? new Date(a.delivered_at).getTime()
+                : 0;
+              const tb = b.delivered_at
+                ? new Date(b.delivered_at).getTime()
+                : 0;
+              return tb - ta;
+            });
+            evidenceByLead[leadId] = list[0];
+          }
+        }
+      } catch (e) {
+        console.error(
+          '[EntregasPage] driver_deliveries lookup excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
     // Cargar delivery_issues (sin resolver) para los leads visibles.
     // El admin necesita ver el badge ⚠️ N en cada fila + abrirlas en
     // modal para resolver. Si la tabla no existe (migración pendiente)
@@ -419,6 +484,7 @@ export default async function EntregasPage({
         issuesByLead={issuesByLead}
         routeDate={routeDate}
         routeCandidates={routeCandidates}
+        evidenceByLead={evidenceByLead}
       />
     );
   } catch (err) {

@@ -12,6 +12,7 @@ import {
   CircleCheckBig,
   Route,
   Calendar,
+  Camera,
 } from 'lucide-react';
 import {
   DeliveryBadge,
@@ -22,6 +23,7 @@ import {
   type DeliveryStatus,
   type PaymentStatus,
 } from '@/data/mock';
+import { ImageLightbox } from '@/components/ui/ImageLightbox';
 import { resolveIssueAction, assignDeliveryRouteAction } from './actions';
 
 export type EntregaRow = {
@@ -48,6 +50,17 @@ export type EntregaRow = {
 };
 
 export type DriverOption = { id: string; name: string };
+
+/**
+ * Evidencia de cobro hecho por el chofer (Grupo 4). Una entrada por
+ * lead — si hubo múltiples driver_deliveries (re-entrega, etc.) la
+ * página servirá la más reciente.
+ */
+export type DeliveryEvidence = {
+  url: string;
+  amount: number;
+  delivered_at: string | null;
+};
 
 /**
  * Candidato a entrar en la ruta del día. Llega con `delivery_order`
@@ -108,6 +121,7 @@ export function EntregasClient({
   issuesByLead,
   routeDate,
   routeCandidates,
+  evidenceByLead,
 }: {
   rows: EntregaRow[];
   drivers: DriverOption[];
@@ -120,6 +134,9 @@ export function EntregasClient({
   /** Leads candidatos a la ruta del día (ya asignados a esa fecha o
    *  sin fecha asignada). */
   routeCandidates: RouteCandidate[];
+  /** Evidencia de cobro del chofer por lead_id (Grupo 4). null/missing
+   *  cuando el chofer no subió foto en su confirmDeliveryAction. */
+  evidenceByLead: Record<string, DeliveryEvidence>;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -130,6 +147,10 @@ export function EntregasClient({
   // del de issues — son flujos diferentes (issues = problemas DURANTE
   // entrega, failed = entrega NO ejecutada).
   const [openFailedLead, setOpenFailedLead] = useState<EntregaRow | null>(null);
+  // Lightbox de evidencia. Guardamos {src, alt} para mostrar; null = cerrado.
+  const [lightbox, setLightbox] = useState<
+    { src: string; alt: string } | null
+  >(null);
 
   function pushFilters(next: Partial<FiltersState>) {
     const merged = {
@@ -260,6 +281,15 @@ export function EntregasClient({
         />
       )}
 
+      {/* Lightbox de evidencia de cobro. */}
+      {lightbox && (
+        <ImageLightbox
+          src={lightbox.src}
+          alt={lightbox.alt}
+          onClose={() => setLightbox(null)}
+        />
+      )}
+
       {/* Tabla */}
       <div
         className="tbl-wrap"
@@ -281,6 +311,7 @@ export function EntregasClient({
                 <th>Entrega</th>
                 <th>Pago</th>
                 <th>Fecha</th>
+                <th className="text-center">Evidencia cobro</th>
                 <th className="text-right">Acciones</th>
               </tr>
             </thead>
@@ -288,7 +319,7 @@ export function EntregasClient({
               {rows.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={10}
+                    colSpan={11}
                     className="text-center py-8 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -303,8 +334,15 @@ export function EntregasClient({
                     key={r.id}
                     entrega={r}
                     issues={issuesByLead[r.id] ?? []}
+                    evidence={evidenceByLead[r.id] ?? null}
                     onOpenIssues={() => setOpenIssuesLead(r)}
                     onOpenFailed={() => setOpenFailedLead(r)}
+                    onOpenEvidence={(ev) =>
+                      setLightbox({
+                        src: ev.url,
+                        alt: `Evidencia de cobro de ${r.client_name}`,
+                      })
+                    }
                   />
                 ))
               )}
@@ -319,13 +357,17 @@ export function EntregasClient({
 function Row({
   entrega: r,
   issues,
+  evidence,
   onOpenIssues,
   onOpenFailed,
+  onOpenEvidence,
 }: {
   entrega: EntregaRow;
   issues: IssueRow[];
+  evidence: DeliveryEvidence | null;
   onOpenIssues: () => void;
   onOpenFailed: () => void;
+  onOpenEvidence: (ev: DeliveryEvidence) => void;
 }) {
   const colorsLabel =
     r.colors.length === 0
@@ -439,6 +481,27 @@ function Row({
       </td>
       <td className="text-sm" style={{ color: 'var(--text-secondary)' }}>
         {formatDate(r.sale_date)}
+      </td>
+      <td className="text-center">
+        {evidence ? (
+          <button
+            type="button"
+            onClick={() => onOpenEvidence(evidence)}
+            className="btn btn-ghost"
+            style={{ padding: 6, color: 'var(--brand-secondary)' }}
+            aria-label={`Ver evidencia de cobro de ${r.client_name}`}
+            title={`Ver foto del cobro · ${formatMXN(evidence.amount)}`}
+          >
+            <Camera size={16} />
+          </button>
+        ) : (
+          <span
+            className="text-xs"
+            style={{ color: 'var(--text-tertiary)' }}
+          >
+            —
+          </span>
+        )}
       </td>
       <td>
         <div className="flex justify-end">

@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Loader,
   Search,
+  Camera,
 } from 'lucide-react';
 import { MethodBadge, TypeBadge } from '@/components/ui/Badges';
 import {
@@ -16,6 +17,7 @@ import {
   type PaymentMethod,
   type PaymentType,
 } from '@/data/mock';
+import { ImageLightbox } from '@/components/ui/ImageLightbox';
 
 export type PaymentRow = {
   id: string;
@@ -26,6 +28,10 @@ export type PaymentRow = {
   payment_type: 'anticipo' | 'liquidacion' | 'contra_entrega';
   status: 'exitoso' | 'pendiente' | 'rechazado';
   paid_at: string | null;
+  /** URL de la foto del comprobante (transferencia, ticket, etc.).
+   *  null si el pago no tiene evidencia adjunta. Cuando hay foto, la
+   *  fila muestra un ícono de cámara que abre el ImageLightbox. */
+  evidence_photo_url: string | null;
   // Nota: la columna "chofer" se eliminó del listado. El chofer asignado
   // ahora vive en `leads.driver_id` (asignado al crear el lead). Para
   // mostrarlo aquí habría que JOIN payments → leads → profiles.
@@ -107,6 +113,12 @@ export function PaymentsClient({
   const router = useRouter();
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
+
+  // Lightbox de evidencia abierto. Guardamos {src, alt} para mostrar
+  // en el modal; null = cerrado.
+  const [lightbox, setLightbox] = useState<
+    { src: string; alt: string } | null
+  >(null);
 
   const [qInput, setQInput] = useState<string>(filters.q);
 
@@ -288,6 +300,17 @@ export function PaymentsClient({
         )}
       </div>
 
+      {/* Lightbox de evidencia (overlay fullscreen). Se monta solo
+          cuando lightbox != null para no afectar accesibilidad
+          cuando está cerrado. */}
+      {lightbox && (
+        <ImageLightbox
+          src={lightbox.src}
+          alt={lightbox.alt}
+          onClose={() => setLightbox(null)}
+        />
+      )}
+
       {/* Tabla */}
       <div
         className="tbl-wrap"
@@ -307,13 +330,14 @@ export function PaymentsClient({
                 <th>Método</th>
                 <th>Tipo</th>
                 <th>Fecha</th>
+                <th className="text-center">Evidencia</th>
               </tr>
             </thead>
             <tbody>
               {payments.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
+                    colSpan={8}
                     className="text-center py-8 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -376,6 +400,35 @@ export function PaymentsClient({
                         style={{ color: 'var(--text-secondary)' }}
                       >
                         {formatDate(p.paid_at)}
+                      </td>
+                      <td className="text-center">
+                        {p.evidence_photo_url ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLightbox({
+                                src: p.evidence_photo_url!,
+                                alt: `Evidencia del pago de ${p.client_name}`,
+                              })
+                            }
+                            className="btn btn-ghost"
+                            style={{
+                              padding: 6,
+                              color: 'var(--brand-secondary)',
+                            }}
+                            aria-label={`Ver evidencia del pago de ${p.client_name}`}
+                            title="Ver foto del cobro"
+                          >
+                            <Camera size={16} />
+                          </button>
+                        ) : (
+                          <span
+                            className="text-xs"
+                            style={{ color: 'var(--text-tertiary)' }}
+                          >
+                            —
+                          </span>
+                        )}
                       </td>
                     </tr>
                   );

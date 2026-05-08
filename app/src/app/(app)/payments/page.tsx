@@ -95,6 +95,7 @@ export default async function PaymentsPage({
       .from('payments')
       .select(
         `id, amount, net_amount, payment_method, payment_type, status, paid_at,
+         evidence_photo_url,
          leads ( client_name )`,
         { count: 'exact' },
       )
@@ -133,6 +134,7 @@ export default async function PaymentsPage({
       payment_type: string | null;
       status: string | null;
       paid_at: string | null;
+      evidence_photo_url: string | null;
       leads: { client_name: string } | { client_name: string }[] | null;
     };
 
@@ -177,6 +179,7 @@ export default async function PaymentsPage({
           | 'contra_entrega',
         status: (r.status ?? 'exitoso') as 'exitoso' | 'pendiente' | 'rechazado',
         paid_at: r.paid_at,
+        evidence_photo_url: r.evidence_photo_url,
         deductibles: dedByPaymentId.get(r.id) ?? [],
       };
     });
