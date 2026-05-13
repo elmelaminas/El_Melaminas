@@ -24,6 +24,10 @@ import {
   type PaymentStatus,
 } from '@/data/mock';
 import { ImageLightbox } from '@/components/ui/ImageLightbox';
+import {
+  getLeadRowColor,
+  LeadRowLegend,
+} from '@/components/ui/lead-row-color';
 import { resolveIssueAction, assignDeliveryRouteAction } from './actions';
 
 export type EntregaRow = {
@@ -40,6 +44,11 @@ export type EntregaRow = {
   created_at: string | null;
   driver_id: string | null;
   driver_name: string | null;
+  /** Tipo de venta — feed para regla de color de fila ('venta_empleado'
+   *  → rosa). */
+  sale_type: string | null;
+  /** Tipo de producto — feed para regla de color ('con_corte' → azul). */
+  product_type: string | null;
   /** Si el chofer reportó "No pude entregar" en un intento previo,
    *  estos campos llevan motivo + URL de la foto del lugar. La fila
    *  muestra un badge naranja "No entregado" y abre un modal con
@@ -122,6 +131,7 @@ export function EntregasClient({
   routeDate,
   routeCandidates,
   evidenceByLead,
+  contraEntregaLeadIds,
 }: {
   rows: EntregaRow[];
   drivers: DriverOption[];
@@ -137,7 +147,13 @@ export function EntregasClient({
   /** Evidencia de cobro del chofer por lead_id (Grupo 4). null/missing
    *  cuando el chofer no subió foto en su confirmDeliveryAction. */
   evidenceByLead: Record<string, DeliveryEvidence>;
+  /** lead_ids con al menos un pago contra_entrega — fila naranja. */
+  contraEntregaLeadIds: string[];
 }) {
+  const contraEntregaSet = useMemo(
+    () => new Set(contraEntregaLeadIds),
+    [contraEntregaLeadIds],
+  );
   const router = useRouter();
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
@@ -250,6 +266,12 @@ export function EntregasClient({
             )}
           </div>
         )}
+
+        {/* Leyenda discreta de los códigos de color de fila. Mismas
+            reglas que /leads para consistencia visual entre módulos. */}
+        <div className="mt-3">
+          <LeadRowLegend />
+        </div>
       </div>
 
       {/* Sección "Ruta del día" — selector de fecha + lista de
@@ -333,6 +355,7 @@ export function EntregasClient({
                   <Row
                     key={r.id}
                     entrega={r}
+                    rowColor={getLeadRowColor(r, contraEntregaSet)}
                     issues={issuesByLead[r.id] ?? []}
                     evidence={evidenceByLead[r.id] ?? null}
                     onOpenIssues={() => setOpenIssuesLead(r)}
@@ -356,6 +379,7 @@ export function EntregasClient({
 
 function Row({
   entrega: r,
+  rowColor,
   issues,
   evidence,
   onOpenIssues,
@@ -363,6 +387,9 @@ function Row({
   onOpenEvidence,
 }: {
   entrega: EntregaRow;
+  /** Color de fondo de la fila por reglas de negocio. undefined = sin
+   *  color (fondo normal). Computado en el parent con getLeadRowColor. */
+  rowColor: string | undefined;
   issues: IssueRow[];
   evidence: DeliveryEvidence | null;
   onOpenIssues: () => void;
@@ -377,7 +404,7 @@ function Row({
   const hasFailed = Boolean(r.failed_delivery_reason);
 
   return (
-    <tr>
+    <tr style={{ background: rowColor }}>
       <td>
         <div className="flex items-center gap-2 flex-wrap">
           <div className="font-medium">{r.client_name}</div>

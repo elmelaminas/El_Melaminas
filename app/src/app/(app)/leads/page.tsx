@@ -125,7 +125,7 @@ export default async function LeadsPage({
       .select(
         `id, client_name, phone, channel, sheets_count, total_amount,
          sale_date, created_at, delivery_status, payment_status,
-         document_url,
+         sale_type, product_type, document_url,
          sellers ( name )`,
         { count: 'exact' },
       )
@@ -180,6 +180,8 @@ export default async function LeadsPage({
       created_at: string | null;
       delivery_status: string | null;
       payment_status: string | null;
+      sale_type: string | null;
+      product_type: string | null;
       document_url: string | null;
       sellers: { name: string } | { name: string }[] | null;
     };
@@ -203,8 +205,39 @@ export default async function LeadsPage({
       created_at: r.created_at,
       delivery_status: (r.delivery_status as DeliveryStatus) ?? 'pendiente',
       payment_status: (r.payment_status as PaymentStatus) ?? 'pendiente',
+      sale_type: r.sale_type,
+      product_type: r.product_type,
       document_url: r.document_url,
     }));
+
+    // Detección de "contra_entrega": un lead se marca naranja si AL MENOS
+    // un pago suyo tiene payment_type='contra_entrega'. Hacemos una sola
+    // query bulk para los lead_ids visibles en esta página (no toda la
+    // tabla) — costo O(rows). Si la query falla, loguamos y dejamos el
+    // Set vacío (fail-soft: la fila simplemente no pintará naranja).
+    const visibleLeadIds = rows.map((r) => r.id);
+    const contraEntregaSet = new Set<string>();
+    if (visibleLeadIds.length > 0) {
+      const { data: ceData, error: ceErr } = await admin
+        .from('payments')
+        .select('lead_id')
+        .eq('payment_type', 'contra_entrega')
+        .in('lead_id', visibleLeadIds);
+      if (ceErr) {
+        console.error(
+          '[LeadsPage] contra_entrega lookup falló (no fatal):',
+          ceErr,
+        );
+      } else {
+        for (const p of ceData ?? []) {
+          if (p.lead_id) contraEntregaSet.add(p.lead_id);
+        }
+      }
+    }
+    // Pasamos un array al cliente (Sets serializan con RSC en React 19
+    // pero array es más portable y consistente con otros bulk-lookups
+    // del proyecto). El cliente reconstruye el Set con useMemo.
+    const contraEntregaLeadIds = Array.from(contraEntregaSet);
 
     const total = count ?? 0;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -226,6 +259,7 @@ export default async function LeadsPage({
         pageSize={PAGE_SIZE}
         totalPages={totalPages}
         filters={filters}
+        contraEntregaLeadIds={contraEntregaLeadIds}
       />
     );
   } catch (err) {

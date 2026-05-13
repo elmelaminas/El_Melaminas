@@ -23,6 +23,10 @@ import {
   type DeliveryStatus,
   type PaymentStatus,
 } from '@/data/mock';
+import {
+  getLeadRowColor,
+  LeadRowLegend,
+} from '@/components/ui/lead-row-color';
 
 export type LeadRow = {
   id: string;
@@ -36,6 +40,11 @@ export type LeadRow = {
   created_at: string | null;
   delivery_status: DeliveryStatus;
   payment_status: PaymentStatus;
+  /** Tipo de venta del enum DB (lowercase). Usado por las reglas de
+   *  color: `'venta_empleado'` → fila rosa. */
+  sale_type: string | null;
+  /** Tipo de producto del enum DB. `'con_corte'` → fila azul. */
+  product_type: string | null;
   /** URL del PDF adjunto al lead (Grupo 3). null si no hay documento.
    *  Se muestra como ícono FileText clicable en la columna Cliente. */
   document_url: string | null;
@@ -126,6 +135,7 @@ export function LeadsClient({
   pageSize,
   totalPages,
   filters,
+  contraEntregaLeadIds,
 }: {
   leads: LeadRow[];
   total: number;
@@ -133,7 +143,15 @@ export function LeadsClient({
   pageSize: number;
   totalPages: number;
   filters: FiltersState;
+  /** lead_ids que tienen al menos un pago contra_entrega — pintan
+   *  la fila naranja. Pasado como array; lo convertimos a Set para
+   *  lookup O(1) por fila. */
+  contraEntregaLeadIds: string[];
 }) {
+  const contraEntregaSet = useMemo(
+    () => new Set(contraEntregaLeadIds),
+    [contraEntregaLeadIds],
+  );
   const router = useRouter();
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
@@ -337,6 +355,11 @@ export function LeadsClient({
             )}
           </div>
         )}
+
+        {/* Leyenda discreta de los códigos de color de fila. */}
+        <div className="mt-3">
+          <LeadRowLegend />
+        </div>
       </div>
 
       {/* Tabla */}
@@ -374,7 +397,12 @@ export function LeadsClient({
                 </tr>
               ) : (
                 leads.map((l) => (
-                  <tr key={l.id}>
+                  <tr
+                    key={l.id}
+                    style={{
+                      background: getLeadRowColor(l, contraEntregaSet),
+                    }}
+                  >
                     <td>
                       <div className="flex items-center gap-2 flex-wrap">
                         <div className="font-medium">{l.client_name}</div>

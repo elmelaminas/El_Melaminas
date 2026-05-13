@@ -122,7 +122,7 @@ export default async function EntregasPage({
       .select(
         `id, client_name, address, maps_url, total_amount,
          delivery_status, payment_status, sale_date, created_at,
-         driver_id,
+         driver_id, sale_type, product_type,
          failed_delivery_reason, failed_delivery_photo_url,
          lead_colors ( quantity, colors ( name ) )`,
       )
@@ -205,6 +205,8 @@ export default async function EntregasPage({
       sale_date: string | null;
       created_at: string | null;
       driver_id: string | null;
+      sale_type: string | null;
+      product_type: string | null;
       failed_delivery_reason: string | null;
       failed_delivery_photo_url: string | null;
       lead_colors:
@@ -245,11 +247,36 @@ export default async function EntregasPage({
         driver_name: l.driver_id
           ? driverNameById.get(l.driver_id) ?? null
           : null,
+        sale_type: l.sale_type,
+        product_type: l.product_type,
         failed_delivery_reason: l.failed_delivery_reason,
         failed_delivery_photo_url: l.failed_delivery_photo_url,
         colors,
       };
     });
+
+    // Lookup bulk de pagos contra_entrega para los leads visibles.
+    // Mismo patrón que /leads. Un lead con AL MENOS un payment
+    // contra_entrega se marca naranja por las reglas de color de fila.
+    const contraEntregaSet = new Set<string>();
+    if (leadIds.length > 0) {
+      const { data: ceData, error: ceErr } = await admin
+        .from('payments')
+        .select('lead_id')
+        .eq('payment_type', 'contra_entrega')
+        .in('lead_id', leadIds);
+      if (ceErr) {
+        console.error(
+          '[EntregasPage] contra_entrega lookup falló (no fatal):',
+          ceErr,
+        );
+      } else {
+        for (const p of ceData ?? []) {
+          if (p.lead_id) contraEntregaSet.add(p.lead_id);
+        }
+      }
+    }
+    const contraEntregaLeadIds = Array.from(contraEntregaSet);
 
     // Orden: pendientes (incluye en tránsito) primero, luego entregados,
     // luego cancelados. Dentro de cada grupo, created_at DESC.
@@ -542,6 +569,7 @@ export default async function EntregasPage({
         routeDate={routeDate}
         routeCandidates={routeCandidates}
         evidenceByLead={evidenceByLead}
+        contraEntregaLeadIds={contraEntregaLeadIds}
       />
     );
   } catch (err) {
