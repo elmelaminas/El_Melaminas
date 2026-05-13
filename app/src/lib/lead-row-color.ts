@@ -67,24 +67,27 @@ export function parseRowColor(v: unknown): RowColorValue | null {
 }
 
 /**
- * Colores con transparencia para fondo de fila. Las opacidades se
- * eligieron empíricamente:
- *   - rosa/azul/verde/morado (tonos claros): 0.75 — bastante saturados
- *     pero aún dejan leer el texto sobre fondo blanco.
- *   - naranja/amarillo (tonos altamente luminosos): 0.55 — más fuerte
- *     que eso compite con el texto y satura.
+ * Colores con transparencia para fondo de fila.
+ *
+ * Iteración: empezamos con tonos pasteles claros + opacidades por
+ * tono (0.45–0.75) pero rosa/azul se veían fuertes y amarillo/naranja/
+ * morado se "perdían" contra el fondo blanco — diferencia perceptual
+ * inconsistente entre los 6 colores. Solución: usar tonos MÁS
+ * SATURADOS en el RGB base y una opacidad uniforme de 0.85 para los
+ * 6, así el peso visual queda parejo y todos se ven como "tarjetas
+ * coloreadas".
  *
  * `sin_color` → undefined → la fila vuelve al fondo normal.
  */
 export const LEAD_ROW_COLORS: Readonly<
   Record<Exclude<RowColorValue, 'sin_color'>, string>
 > = {
-  rosa: 'rgba(255, 182, 193, 0.75)',
-  naranja: 'rgba(255, 165, 0, 0.55)',
-  amarillo: 'rgba(255, 255, 0, 0.55)',
-  azul: 'rgba(173, 216, 230, 0.75)',
-  verde: 'rgba(144, 238, 144, 0.75)',
-  morado: 'rgba(216, 191, 216, 0.75)',
+  rosa: 'rgba(255, 105, 180, 0.85)',
+  naranja: 'rgba(255, 140, 0, 0.85)',
+  amarillo: 'rgba(255, 215, 0, 0.85)',
+  azul: 'rgba(135, 206, 235, 0.85)',
+  verde: 'rgba(50, 205, 50, 0.85)',
+  morado: 'rgba(147, 112, 219, 0.85)',
 };
 
 /**
@@ -97,11 +100,11 @@ export const LEAD_ROW_BORDERS: Readonly<
   Record<Exclude<RowColorValue, 'sin_color'>, string>
 > = {
   rosa: '#FF69B4',
-  naranja: '#FFA500',
+  naranja: '#FF8C00',
   amarillo: '#FFD700',
   azul: '#87CEEB',
-  verde: '#90EE90',
-  morado: '#D8BFD8',
+  verde: '#32CD32',
+  morado: '#9370DB',
 };
 
 /** Color de fondo asociado a un RowColorValue, o undefined si
