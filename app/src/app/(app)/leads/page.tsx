@@ -125,7 +125,7 @@ export default async function LeadsPage({
       .select(
         `id, client_name, phone, channel, sheets_count, total_amount,
          sale_date, created_at, delivery_status, payment_status,
-         sale_type, product_type, document_url,
+         sale_type, product_type, document_url, row_color,
          sellers ( name )`,
         { count: 'exact' },
       )
@@ -183,6 +183,7 @@ export default async function LeadsPage({
       sale_type: string | null;
       product_type: string | null;
       document_url: string | null;
+      row_color: string | null;
       sellers: { name: string } | { name: string }[] | null;
     };
 
@@ -208,6 +209,7 @@ export default async function LeadsPage({
       sale_type: r.sale_type,
       product_type: r.product_type,
       document_url: r.document_url,
+      row_color: r.row_color,
     }));
 
     // Detección de "contra_entrega": un lead se marca naranja si AL MENOS

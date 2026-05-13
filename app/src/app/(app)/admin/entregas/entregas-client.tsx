@@ -27,8 +27,16 @@ import { ImageLightbox } from '@/components/ui/ImageLightbox';
 import {
   getLeadRowColor,
   LeadRowLegend,
+  RowColorPickerCell,
 } from '@/components/ui/lead-row-color';
+import { updateLeadColorAction } from '../../leads/actions';
 import { resolveIssueAction, assignDeliveryRouteAction } from './actions';
+
+/** Adaptador de la Server Action al shape (formData) → result que pide
+ *  RowColorPickerCell. */
+async function colorActionAdapter(formData: FormData) {
+  return updateLeadColorAction({ status: 'idle' }, formData);
+}
 
 export type EntregaRow = {
   id: string;
@@ -49,6 +57,10 @@ export type EntregaRow = {
   sale_type: string | null;
   /** Tipo de producto — feed para regla de color ('con_corte' → azul). */
   product_type: string | null;
+  /** Override manual de color de fila (admin lo asigna desde el
+   *  selector inline en la columna Acciones). null o 'sin_color'
+   *  significan "sin override" → cae a reglas automáticas. */
+  row_color: string | null;
   /** Si el chofer reportó "No pude entregar" en un intento previo,
    *  estos campos llevan motivo + URL de la foto del lugar. La fila
    *  muestra un badge naranja "No entregado" y abre un modal con
@@ -531,7 +543,12 @@ function Row({
         )}
       </td>
       <td>
-        <div className="flex justify-end">
+        <div className="flex justify-end items-center gap-1">
+          <RowColorPickerCell
+            leadId={r.id}
+            value={r.row_color}
+            action={colorActionAdapter}
+          />
           <Link
             href={`/leads/${r.id}/edit`}
             className="btn btn-ghost"

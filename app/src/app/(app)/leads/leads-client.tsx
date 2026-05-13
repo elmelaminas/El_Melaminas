@@ -26,7 +26,9 @@ import {
 import {
   getLeadRowColor,
   LeadRowLegend,
+  RowColorPickerCell,
 } from '@/components/ui/lead-row-color';
+import { updateLeadColorAction } from './actions';
 
 export type LeadRow = {
   id: string;
@@ -45,10 +47,26 @@ export type LeadRow = {
   sale_type: string | null;
   /** Tipo de producto del enum DB. `'con_corte'` → fila azul. */
   product_type: string | null;
+  /** Override manual de color de fila (admin lo asigna desde el
+   *  selector inline). Valor del CHECK constraint en DB: 'rosa',
+   *  'naranja', 'amarillo', 'azul', 'verde', 'morado', 'sin_color'.
+   *  null o 'sin_color' → cae a reglas automáticas. */
+  row_color: string | null;
   /** URL del PDF adjunto al lead (Grupo 3). null si no hay documento.
    *  Se muestra como ícono FileText clicable en la columna Cliente. */
   document_url: string | null;
 };
+
+/**
+ * Adaptador de la Server Action al shape que pide RowColorPickerCell.
+ * `updateLeadColorAction` recibe `(_prev, formData)` como cualquier
+ * action de useActionState; el wrapper del picker solo manda
+ * `formData`, así que aplicamos `idle` como prev y devolvemos el
+ * resultado que el wrapper espera.
+ */
+async function colorActionAdapter(formData: FormData) {
+  return updateLeadColorAction({ status: 'idle' }, formData);
+}
 
 export type FiltersState = {
   q: string;
@@ -460,7 +478,12 @@ export function LeadsClient({
                       <PaymentBadge status={l.payment_status} />
                     </td>
                     <td>
-                      <div className="flex justify-end gap-1">
+                      <div className="flex justify-end items-center gap-1">
+                        <RowColorPickerCell
+                          leadId={l.id}
+                          value={l.row_color}
+                          action={colorActionAdapter}
+                        />
                         {l.document_url && (
                           <button
                             type="button"

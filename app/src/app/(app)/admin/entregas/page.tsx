@@ -122,7 +122,7 @@ export default async function EntregasPage({
       .select(
         `id, client_name, address, maps_url, total_amount,
          delivery_status, payment_status, sale_date, created_at,
-         driver_id, sale_type, product_type,
+         driver_id, sale_type, product_type, row_color,
          failed_delivery_reason, failed_delivery_photo_url,
          lead_colors ( quantity, colors ( name ) )`,
       )
@@ -207,6 +207,7 @@ export default async function EntregasPage({
       driver_id: string | null;
       sale_type: string | null;
       product_type: string | null;
+      row_color: string | null;
       failed_delivery_reason: string | null;
       failed_delivery_photo_url: string | null;
       lead_colors:
@@ -249,6 +250,7 @@ export default async function EntregasPage({
           : null,
         sale_type: l.sale_type,
         product_type: l.product_type,
+        row_color: l.row_color,
         failed_delivery_reason: l.failed_delivery_reason,
         failed_delivery_photo_url: l.failed_delivery_photo_url,
         colors,
