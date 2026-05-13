@@ -38,9 +38,11 @@ import {
 export {
   ROW_COLOR_VALUES,
   LEAD_ROW_COLORS,
+  LEAD_ROW_BORDERS,
   colorOf,
   parseRowColor,
   getLeadRowColor,
+  getLeadRowStyle,
   COLOR_LABEL,
 } from '@/lib/lead-row-color';
 

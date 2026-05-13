@@ -25,7 +25,7 @@ import {
 } from '@/data/mock';
 import { ImageLightbox } from '@/components/ui/ImageLightbox';
 import {
-  getLeadRowColor,
+  getLeadRowStyle,
   LeadRowLegend,
   RowColorPickerCell,
 } from '@/components/ui/lead-row-color';
@@ -367,7 +367,7 @@ export function EntregasClient({
                   <Row
                     key={r.id}
                     entrega={r}
-                    rowColor={getLeadRowColor(r, contraEntregaSet)}
+                    rowStyle={getLeadRowStyle(r, contraEntregaSet)}
                     issues={issuesByLead[r.id] ?? []}
                     evidence={evidenceByLead[r.id] ?? null}
                     onOpenIssues={() => setOpenIssuesLead(r)}
@@ -391,7 +391,7 @@ export function EntregasClient({
 
 function Row({
   entrega: r,
-  rowColor,
+  rowStyle,
   issues,
   evidence,
   onOpenIssues,
@@ -399,9 +399,10 @@ function Row({
   onOpenEvidence,
 }: {
   entrega: EntregaRow;
-  /** Color de fondo de la fila por reglas de negocio. undefined = sin
-   *  color (fondo normal). Computado en el parent con getLeadRowColor. */
-  rowColor: string | undefined;
+  /** Estilo completo de la fila (background semitransparente + borde
+   *  izquierdo acento). undefined = sin color, la fila usa el estilo
+   *  neutro de la tabla. Computado en el parent con getLeadRowStyle. */
+  rowStyle: { background: string; borderLeft: string } | undefined;
   issues: IssueRow[];
   evidence: DeliveryEvidence | null;
   onOpenIssues: () => void;
@@ -416,7 +417,7 @@ function Row({
   const hasFailed = Boolean(r.failed_delivery_reason);
 
   return (
-    <tr style={{ background: rowColor }}>
+    <tr style={rowStyle}>
       <td>
         <div className="flex items-center gap-2 flex-wrap">
           <div className="font-medium">{r.client_name}</div>

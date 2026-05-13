@@ -67,23 +67,41 @@ export function parseRowColor(v: unknown): RowColorValue | null {
 }
 
 /**
- * Colores con transparencia para fondo de fila. La opacidad de los
- * tonos rosa/azul/verde/morado (manuales mayormente) es 0.45; los
- * automáticos comunes (naranja/amarillo) van en 0.30. Si el admin
- * asigna manualmente rosa, comparte tono con el "venta_empleado"
- * automático — eso es OK, la regla manual gana y se ve igual.
+ * Colores con transparencia para fondo de fila. Las opacidades se
+ * eligieron empíricamente:
+ *   - rosa/azul/verde/morado (tonos claros): 0.75 — bastante saturados
+ *     pero aún dejan leer el texto sobre fondo blanco.
+ *   - naranja/amarillo (tonos altamente luminosos): 0.55 — más fuerte
+ *     que eso compite con el texto y satura.
  *
  * `sin_color` → undefined → la fila vuelve al fondo normal.
  */
 export const LEAD_ROW_COLORS: Readonly<
   Record<Exclude<RowColorValue, 'sin_color'>, string>
 > = {
-  rosa: 'rgba(255, 182, 193, 0.45)',
-  naranja: 'rgba(255, 165, 0, 0.30)',
-  amarillo: 'rgba(255, 255, 0, 0.30)',
-  azul: 'rgba(173, 216, 230, 0.45)',
-  verde: 'rgba(144, 238, 144, 0.45)',
-  morado: 'rgba(216, 191, 216, 0.45)',
+  rosa: 'rgba(255, 182, 193, 0.75)',
+  naranja: 'rgba(255, 165, 0, 0.55)',
+  amarillo: 'rgba(255, 255, 0, 0.55)',
+  azul: 'rgba(173, 216, 230, 0.75)',
+  verde: 'rgba(144, 238, 144, 0.75)',
+  morado: 'rgba(216, 191, 216, 0.75)',
+};
+
+/**
+ * Colores SÓLIDOS (sin alpha) para el borde izquierdo acento de la
+ * fila. Combina con el background de `LEAD_ROW_COLORS` para reforzar
+ * visualmente la asignación: el borde se ve nítido aún si el background
+ * se mezcla con la fila siguiente.
+ */
+export const LEAD_ROW_BORDERS: Readonly<
+  Record<Exclude<RowColorValue, 'sin_color'>, string>
+> = {
+  rosa: '#FF69B4',
+  naranja: '#FFA500',
+  amarillo: '#FFD700',
+  azul: '#87CEEB',
+  verde: '#90EE90',
+  morado: '#D8BFD8',
 };
 
 /** Color de fondo asociado a un RowColorValue, o undefined si
@@ -109,32 +127,72 @@ export type LeadRowColorInputs = {
 };
 
 /**
- * Devuelve el color de fondo de la fila o undefined si no aplica nada.
- * Prioridad: manual > automática.
+ * Decide la CLAVE de color que aplica (manual o automática), o
+ * undefined si ninguna aplica. Helper interno compartido por
+ * `getLeadRowColor` y `getLeadRowStyle` — single source of truth de
+ * la lógica de prioridad.
  */
-export function getLeadRowColor(
+function resolveRowColorKey(
   row: LeadRowColorInputs,
   contraEntregaIds: ReadonlySet<string>,
-): string | undefined {
+): Exclude<RowColorValue, 'sin_color'> | undefined {
   // A. Override manual gana sobre todo.
   const manual = parseRowColor(row.row_color);
-  if (manual && manual !== 'sin_color') {
-    return LEAD_ROW_COLORS[manual];
-  }
+  if (manual && manual !== 'sin_color') return manual;
 
   // B. Reglas automáticas en orden de prioridad.
-  if (row.sale_type === 'venta_empleado') return LEAD_ROW_COLORS.rosa;
-  if (contraEntregaIds.has(row.id)) return LEAD_ROW_COLORS.naranja;
+  if (row.sale_type === 'venta_empleado') return 'rosa';
+  if (contraEntregaIds.has(row.id)) return 'naranja';
   if (
     row.payment_status === 'pagado' &&
     row.delivery_status !== 'entregado' &&
     row.delivery_status !== 'cancelado'
   ) {
-    return LEAD_ROW_COLORS.amarillo;
+    return 'amarillo';
   }
-  if (row.product_type === 'con_corte') return LEAD_ROW_COLORS.azul;
+  if (row.product_type === 'con_corte') return 'azul';
 
   return undefined;
+}
+
+/**
+ * Devuelve el color de fondo de la fila o undefined si no aplica nada.
+ * Mantenido por compatibilidad. Para nuevos callers preferir
+ * `getLeadRowStyle`, que también devuelve el borde acento izquierdo.
+ */
+export function getLeadRowColor(
+  row: LeadRowColorInputs,
+  contraEntregaIds: ReadonlySet<string>,
+): string | undefined {
+  const key = resolveRowColorKey(row, contraEntregaIds);
+  return key ? LEAD_ROW_COLORS[key] : undefined;
+}
+
+/**
+ * Devuelve el estilo COMPLETO de la fila — background semitransparente
+ * + borde izquierdo de 4px con el tono sólido como acento. undefined
+ * cuando ninguna regla aplica (la fila queda con el estilo neutro de
+ * la tabla).
+ *
+ * Diseño: el borde izquierdo se ve nítido aún cuando el background se
+ * percibe suave; refuerza visualmente la asignación sin saturar la
+ * tipografía. Conjuntamente, la fila se lee como tarjeta coloreada.
+ */
+export function getLeadRowStyle(
+  row: LeadRowColorInputs,
+  contraEntregaIds: ReadonlySet<string>,
+):
+  | {
+      background: string;
+      borderLeft: string;
+    }
+  | undefined {
+  const key = resolveRowColorKey(row, contraEntregaIds);
+  if (!key) return undefined;
+  return {
+    background: LEAD_ROW_COLORS[key],
+    borderLeft: `4px solid ${LEAD_ROW_BORDERS[key]}`,
+  };
 }
 
 /** Labels en español para cada color (UI). Exportado para que

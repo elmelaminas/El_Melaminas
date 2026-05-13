@@ -24,7 +24,7 @@ import {
   type PaymentStatus,
 } from '@/data/mock';
 import {
-  getLeadRowColor,
+  getLeadRowStyle,
   LeadRowLegend,
   RowColorPickerCell,
 } from '@/components/ui/lead-row-color';
@@ -417,9 +417,10 @@ export function LeadsClient({
                 leads.map((l) => (
                   <tr
                     key={l.id}
-                    style={{
-                      background: getLeadRowColor(l, contraEntregaSet),
-                    }}
+                    // background semitransparente + borde izquierdo
+                    // sólido (acento). undefined cuando ninguna regla
+                    // aplica → React deja el <tr> con estilo neutro.
+                    style={getLeadRowStyle(l, contraEntregaSet)}
                   >
                     <td>
                       <div className="flex items-center gap-2 flex-wrap">
