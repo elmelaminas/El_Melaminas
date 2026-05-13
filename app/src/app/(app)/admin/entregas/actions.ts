@@ -6,8 +6,10 @@ import { supabaseServer } from '@/lib/supabase/server';
 import {
   ResolveIssueSchema,
   AssignRouteSchema,
+  ReturnStockSchema,
   type ResolveIssueState,
   type AssignRouteState,
+  type ReturnStockState,
 } from './schema';
 
 // NB: 'use server' file — solo async functions.
@@ -305,6 +307,309 @@ export async function assignDeliveryRouteAction(
       '[assignDeliveryRouteAction] excepción no controlada:',
       err,
     );
+    return { status: 'error', message };
+  }
+}
+
+/**
+ * `returnStockAction(_prev, formData)` — el admin marca que el material
+ * de una entrega fallida regresó al almacén. Por cada `lead_colors`
+ * del lead: aumenta `stock_total` (+qty), disminuye `stock_committed`
+ * (-qty) en `inventory`, e inserta un movimiento `entrada` con
+ * `reference='Devolución — entrega fallida'`. Al final marca el lead
+ * con `stock_returned=true`, libera `stock_committed=false` y resetea
+ * `delivery_status='pendiente'` (queda listo para reagendar la ruta).
+ *
+ * TxnLog manual para rollback (mismo patrón que markStockExitAction y
+ * saveLeadAction): si un paso intermedio falla, deshacemos los efectos
+ * previos. NO es ACID — si el proceso muere a mitad de un rollback
+ * pueden quedar filas inconsistentes; con RPC Postgres eso desaparece.
+ *
+ * Idempotencia: si el lead ya tiene `stock_returned=true` rechazamos
+ * con mensaje claro. Esto evita doble suma al stock_total cuando un
+ * admin clickea dos veces el botón (aunque la UI también lo bloquea
+ * con pending state).
+ *
+ * Triple defensa admin (middleware + page + action).
+ */
+type ReturnUndo = () => Promise<void>;
+class ReturnTxnLog {
+  private stack: ReturnUndo[] = [];
+  push(fn: ReturnUndo) {
+    this.stack.push(fn);
+  }
+  async rollback(reason: string): Promise<void> {
+    console.error(`[returnStockAction] rollback: ${reason}`);
+    while (this.stack.length > 0) {
+      const fn = this.stack.pop()!;
+      try {
+        await fn();
+      } catch (e) {
+        console.error('[returnStockAction] paso de rollback falló:', e);
+      }
+    }
+  }
+}
+
+export async function returnStockAction(
+  _prev: ReturnStockState,
+  formData: FormData,
+): Promise<ReturnStockState> {
+  const txn = new ReturnTxnLog();
+  try {
+    const parsed = ReturnStockSchema.safeParse({
+      lead_id: formData.get('lead_id'),
+    });
+    if (!parsed.success) {
+      return { status: 'error', message: 'lead_id inválido.' };
+    }
+    const { lead_id } = parsed.data;
+
+    // ── Auth + admin role
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return { status: 'error', message: 'Sesión no válida.' };
+    }
+    const userId = user.id;
+
+    const admin = supabaseAdmin();
+
+    const { data: callerProfile, error: profErr } = await admin
+      .from('profiles')
+      .select('role')
+      .eq('id', userId)
+      .maybeSingle();
+    if (profErr) {
+      return {
+        status: 'error',
+        message: `No se pudo verificar tu rol: ${profErr.message}`,
+      };
+    }
+    if (callerProfile?.role !== 'admin') {
+      return {
+        status: 'error',
+        message: 'Solo un administrador puede devolver stock.',
+      };
+    }
+
+    // ── Verificar el estado del lead (idempotencia + sanity)
+    const { data: leadRow, error: leadErr } = await admin
+      .from('leads')
+      .select(
+        'id, client_name, stock_returned, failed_delivery_reason, stock_committed',
+      )
+      .eq('id', lead_id)
+      .maybeSingle();
+    if (leadErr) {
+      return {
+        status: 'error',
+        message: `No se pudo leer el lead: ${leadErr.message}`,
+      };
+    }
+    if (!leadRow) {
+      return { status: 'error', message: 'Lead no encontrado.' };
+    }
+    if (leadRow.stock_returned === true) {
+      return {
+        status: 'error',
+        message: 'Este lead ya tiene su stock devuelto.',
+      };
+    }
+    // NB: NO bloqueamos si `failed_delivery_reason` está vacío. Aunque
+    // el flujo principal es "devolver tras falla", el admin podría
+    // querer devolver stock de un lead que se cancela por otra razón.
+    // La UI sí esconde el botón cuando no hay falla — la action acepta
+    // el caso por robustez.
+
+    // ── Cargar lead_colors (qty por color a regresar al stock)
+    const { data: lcRows, error: lcErr } = await admin
+      .from('lead_colors')
+      .select('color_id, quantity')
+      .eq('lead_id', lead_id);
+    if (lcErr) {
+      return {
+        status: 'error',
+        message: `No se pudieron leer los colores del lead: ${lcErr.message}`,
+      };
+    }
+    const lineItems = (lcRows ?? []).filter(
+      (r): r is { color_id: string; quantity: number } =>
+        !!r.color_id && Number(r.quantity ?? 0) > 0,
+    );
+    if (lineItems.length === 0) {
+      return {
+        status: 'error',
+        message: 'El lead no tiene colores asociados; nada que devolver.',
+      };
+    }
+
+    // ── Por cada color: actualizar inventory + insertar movement.
+    //    Cada paso registra su propio undo (revertir el delta).
+    for (const li of lineItems) {
+      // Leer fila actual de inventory para sumar atómicamente. PostgREST
+      // no expone UPDATE con expression sobre la columna sin RPC.
+      const { data: invRow, error: invSelErr } = await admin
+        .from('inventory')
+        .select('id, stock_total, stock_committed')
+        .eq('color_id', li.color_id)
+        .maybeSingle();
+      if (invSelErr) {
+        await txn.rollback('select inventory falló');
+        return {
+          status: 'error',
+          message: `No se pudo leer inventario: ${invSelErr.message}`,
+        };
+      }
+      if (!invRow) {
+        await txn.rollback('falta fila de inventario');
+        return {
+          status: 'error',
+          message: `Falta fila de inventario para color_id=${li.color_id}.`,
+        };
+      }
+      const prevTotal = Number(invRow.stock_total ?? 0);
+      const prevCommitted = Number(invRow.stock_committed ?? 0);
+      const qty = Number(li.quantity);
+
+      // stock_total += qty   (regresa físicamente al almacén)
+      // stock_committed -= qty (libera el compromiso del lead)
+      // El committed se piso-a-cero para tolerar inconsistencias
+      // históricas (mismo patrón que markStockExitAction).
+      const nextCommitted = Math.max(0, prevCommitted - qty);
+
+      const { error: updErr } = await admin
+        .from('inventory')
+        .update({
+          stock_total: prevTotal + qty,
+          stock_committed: nextCommitted,
+        })
+        .eq('id', invRow.id);
+      if (updErr) {
+        await txn.rollback('update inventory falló');
+        return {
+          status: 'error',
+          message: `No se pudo actualizar inventario: ${updErr.message}`,
+        };
+      }
+      txn.push(async () => {
+        await admin
+          .from('inventory')
+          .update({
+            stock_total: prevTotal,
+            stock_committed: prevCommitted,
+          })
+          .eq('id', invRow.id);
+      });
+
+      // Movimiento de entrada para auditoría. Aparece en
+      // /warehouse/movements con badge verde "Entrada" y la
+      // referencia visible.
+      const { data: mvRow, error: mvErr } = await admin
+        .from('inventory_movements')
+        .insert({
+          color_id: li.color_id,
+          movement_type: 'entrada',
+          quantity: qty,
+          lead_id,
+          registered_by: userId,
+          reference: 'Devolución — entrega fallida',
+        })
+        .select('id')
+        .single();
+      if (mvErr || !mvRow) {
+        await txn.rollback('insert movement falló');
+        return {
+          status: 'error',
+          message: `No se pudo registrar el movimiento: ${
+            mvErr?.message ?? 'sin datos'
+          }`,
+        };
+      }
+      const movementId: string = mvRow.id;
+      txn.push(async () => {
+        await admin
+          .from('inventory_movements')
+          .delete()
+          .eq('id', movementId);
+      });
+    }
+
+    // ── Actualizar el lead: marcar devuelto, liberar compromiso,
+    //    reset a pendiente para reagendar.
+    const { error: leadUpdErr } = await admin
+      .from('leads')
+      .update({
+        stock_returned: true,
+        stock_committed: false,
+        delivery_status: 'pendiente',
+      })
+      .eq('id', lead_id);
+    if (leadUpdErr) {
+      await txn.rollback('update lead falló');
+      return {
+        status: 'error',
+        message: `No se pudo actualizar el lead: ${leadUpdErr.message}`,
+      };
+    }
+
+    // ── Notificar al almacén (non-fatal). Buscamos profiles con
+    //    role='warehouse' activos. Mismo patrón que el resto del
+    //    proyecto: si falla loguamos y seguimos.
+    try {
+      const { data: warehouseUsers } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('role', 'warehouse')
+        .eq('is_active', true);
+      if (warehouseUsers && warehouseUsers.length > 0) {
+        const clientName = leadRow.client_name ?? '(sin nombre)';
+        const message =
+          `📦 Material devuelto al stock: ${clientName} — ` +
+          `${lineItems.length} ${
+            lineItems.length === 1 ? 'color regresado' : 'colores regresados'
+          }`;
+        const inserts = warehouseUsers.map((w) => ({
+          recipient_id: w.id,
+          type: 'stock_returned',
+          message,
+        }));
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifErr) {
+          console.error(
+            '[returnStockAction] notif insert falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[returnStockAction] notif lookup/insert excepción (no fatal):',
+        e,
+      );
+    }
+
+    revalidatePath('/admin/entregas');
+    revalidatePath('/warehouse');
+    revalidatePath('/warehouse/movements');
+    return {
+      status: 'success',
+      message: `Stock devuelto al inventario (${lineItems.length} ${
+        lineItems.length === 1 ? 'color' : 'colores'
+      }).`,
+    };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al devolver stock';
+    console.error('[returnStockAction] excepción no controlada:', err);
+    await txn.rollback('excepción no controlada');
     return { status: 'error', message };
   }
 }

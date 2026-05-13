@@ -712,7 +712,13 @@ export async function markFailedDeliveryAction(
         .eq('role', 'admin')
         .eq('is_active', true);
       if (admins && admins.length > 0) {
-        const message = `⚠️ ${driverName} no pudo entregar a ${clientName}: ${data.reason}`;
+        // Texto explícito sobre la acción pendiente: el admin debe
+        // marcar "Devolver al stock" en /admin/entregas para que el
+        // material regrese al inventario y libere el compromiso.
+        const message =
+          `⚠️ DEVOLUCIÓN PENDIENTE: ${driverName} no pudo entregar a ` +
+          `${clientName}. El material debe regresar al almacén. ` +
+          `Motivo: ${data.reason}`;
         const inserts = admins.map((a) => ({
           recipient_id: a.id,
           type: 'delivery_failed',

@@ -13,6 +13,8 @@ import {
   Route,
   Calendar,
   Camera,
+  Undo2,
+  PackageCheck,
 } from 'lucide-react';
 import {
   DeliveryBadge,
@@ -30,7 +32,21 @@ import {
   RowColorPickerCell,
 } from '@/components/ui/lead-row-color';
 import { updateLeadColorAction } from '../../leads/actions';
-import { resolveIssueAction, assignDeliveryRouteAction } from './actions';
+import {
+  resolveIssueAction,
+  assignDeliveryRouteAction,
+  returnStockAction,
+} from './actions';
+
+/**
+ * Estilo de fila ROJO ALERTA. Sobre-escribe cualquier color manual o
+ * automático cuando hay entrega fallida con stock pendiente de
+ * devolver. Es una alarma operativa: el admin debe actuar.
+ */
+const STOCK_RETURN_PENDING_STYLE = {
+  background: 'rgba(255, 0, 0, 0.20)',
+  borderLeft: '4px solid #DC2626',
+} as const;
 
 /** Adaptador de la Server Action al shape (formData) → result que pide
  *  RowColorPickerCell. */
@@ -67,6 +83,10 @@ export type EntregaRow = {
    *  el detalle al hacer click. */
   failed_delivery_reason: string | null;
   failed_delivery_photo_url: string | null;
+  /** El material físicamente regresó al almacén tras la falla. Cuando
+   *  `failed_delivery_reason` está y esto es false, la fila se pinta
+   *  ROJA (alerta operativa) y aparece el botón "Devolver al stock". */
+  stock_returned: boolean;
   colors: { color_name: string; quantity: number }[];
 };
 
@@ -363,23 +383,35 @@ export function EntregasClient({
                   </td>
                 </tr>
               ) : (
-                rows.map((r) => (
-                  <Row
-                    key={r.id}
-                    entrega={r}
-                    rowStyle={getLeadRowStyle(r, contraEntregaSet)}
-                    issues={issuesByLead[r.id] ?? []}
-                    evidence={evidenceByLead[r.id] ?? null}
-                    onOpenIssues={() => setOpenIssuesLead(r)}
-                    onOpenFailed={() => setOpenFailedLead(r)}
-                    onOpenEvidence={(ev) =>
-                      setLightbox({
-                        src: ev.url,
-                        alt: `Evidencia de cobro de ${r.client_name}`,
-                      })
-                    }
-                  />
-                ))
+                rows.map((r) => {
+                  // Override rojo: entrega fallida + stock no devuelto =
+                  // alerta operativa. Gana sobre el color manual o
+                  // automático del lead. Cuando el admin devuelve el
+                  // stock, la regla deja de aplicar y la fila vuelve
+                  // a su color normal.
+                  const needsStockReturn =
+                    Boolean(r.failed_delivery_reason) && !r.stock_returned;
+                  const rowStyle = needsStockReturn
+                    ? STOCK_RETURN_PENDING_STYLE
+                    : getLeadRowStyle(r, contraEntregaSet);
+                  return (
+                    <Row
+                      key={r.id}
+                      entrega={r}
+                      rowStyle={rowStyle}
+                      issues={issuesByLead[r.id] ?? []}
+                      evidence={evidenceByLead[r.id] ?? null}
+                      onOpenIssues={() => setOpenIssuesLead(r)}
+                      onOpenFailed={() => setOpenFailedLead(r)}
+                      onOpenEvidence={(ev) =>
+                        setLightbox({
+                          src: ev.url,
+                          alt: `Evidencia de cobro de ${r.client_name}`,
+                        })
+                      }
+                    />
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -454,6 +486,36 @@ function Row({
             >
               <X size={11} /> No entregado
             </button>
+          )}
+          {/* Estado de devolución de stock — solo relevante cuando
+              hubo falla. Naranja = pendiente, verde = devuelto. */}
+          {hasFailed && !r.stock_returned && (
+            <span
+              className="badge flex items-center gap-1"
+              style={{
+                border: 'none',
+                fontSize: '0.6875rem',
+                background: '#FED7AA',
+                color: '#7C2D12',
+              }}
+              title="El material aún no regresó al almacén"
+            >
+              <TriangleAlert size={11} /> Stock pendiente
+            </span>
+          )}
+          {hasFailed && r.stock_returned && (
+            <span
+              className="badge flex items-center gap-1"
+              style={{
+                border: 'none',
+                fontSize: '0.6875rem',
+                background: '#DCFCE7',
+                color: '#166534',
+              }}
+              title="El material regresó al almacén"
+            >
+              <PackageCheck size={11} /> Stock devuelto
+            </span>
           )}
         </div>
         <div
@@ -544,7 +606,13 @@ function Row({
         )}
       </td>
       <td>
-        <div className="flex justify-end items-center gap-1">
+        <div className="flex justify-end items-center gap-1 flex-wrap">
+          {hasFailed && !r.stock_returned && (
+            <ReturnStockButton
+              leadId={r.id}
+              clientName={r.client_name}
+            />
+          )}
           <RowColorPickerCell
             leadId={r.id}
             value={r.row_color}
@@ -562,6 +630,102 @@ function Row({
         </div>
       </td>
     </tr>
+  );
+}
+
+/**
+ * Botón "↩ Devolver al stock" — solo visible cuando hay falla con
+ * stock pendiente. State propio (pending/error) para que un click no
+ * bloquee otros botones de la tabla. Tras éxito el server hace
+ * revalidatePath y router.refresh() trae la fila con
+ * `stock_returned=true` → este componente se desmonta naturalmente.
+ *
+ * Confirm() defensivo antes de disparar: la acción suma al stock_total
+ * y resetea el lead a "pendiente" — un click accidental sería difícil
+ * de revertir limpiamente.
+ */
+function ReturnStockButton({
+  leadId,
+  clientName,
+}: {
+  leadId: string;
+  clientName: string;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  function handleClick() {
+    setError(null);
+    const ok = window.confirm(
+      `¿Confirmar devolución al stock para "${clientName}"?\n\n` +
+        'Esta acción suma el material al inventario, libera el ' +
+        'compromiso del lead y lo deja pendiente para reagendar.',
+    );
+    if (!ok) return;
+
+    startTransition(async () => {
+      try {
+        const fd = new FormData();
+        fd.set('lead_id', leadId);
+        const r = await returnStockAction({ status: 'idle' }, fd);
+        if (r.status === 'error') {
+          setError(r.message);
+        } else if (r.status === 'success') {
+          // revalidatePath + refresh para que la fila se repinte
+          // con stock_returned=true (badge verde, fila pierde rojo).
+          router.refresh();
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de red';
+        setError(message);
+      }
+    });
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={pending}
+        aria-busy={pending}
+        className="btn"
+        style={{
+          padding: '4px 10px',
+          fontSize: '0.75rem',
+          fontWeight: 600,
+          background: '#DC2626',
+          color: '#fff',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+        }}
+        aria-label={`Devolver al stock el material de ${clientName}`}
+        title="Regresar material al almacén"
+      >
+        {pending ? (
+          <>
+            <Loader size={12} className="animate-spin" />
+            <span>Devolviendo…</span>
+          </>
+        ) : (
+          <>
+            <Undo2 size={12} /> Devolver al stock
+          </>
+        )}
+      </button>
+      {error && (
+        <div
+          role="alert"
+          className="text-[10px]"
+          style={{ color: 'var(--danger, #dc2626)', maxWidth: 180 }}
+          title={error}
+        >
+          {error.length > 40 ? `${error.slice(0, 40)}…` : error}
+        </div>
+      )}
+    </div>
   );
 }
 

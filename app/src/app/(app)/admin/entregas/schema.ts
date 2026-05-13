@@ -56,3 +56,25 @@ export type AssignRouteState =
   | { status: 'error'; message: string };
 
 export const initialAssignRouteState: AssignRouteState = { status: 'idle' };
+
+// ─── Devolución de stock por entrega fallida ─────────────────────────
+
+/**
+ * El admin marca "Devolver al stock" sobre una entrega fallida. El
+ * action lee los `lead_colors` y, por cada color: aumenta `stock_total`
+ * y disminuye `stock_committed` de `inventory`, inserta movimiento
+ * `entrada` con referencia "Devolución — entrega fallida", y al final
+ * marca el lead con `stock_returned=true` + libera `stock_committed`
+ * + reset de `delivery_status='pendiente'` para que pueda
+ * reagendarse.
+ */
+export const ReturnStockSchema = z.object({
+  lead_id: z.string().uuid('lead_id inválido'),
+});
+
+export type ReturnStockState =
+  | { status: 'idle' }
+  | { status: 'success'; message: string }
+  | { status: 'error'; message: string };
+
+export const initialReturnStockState: ReturnStockState = { status: 'idle' };

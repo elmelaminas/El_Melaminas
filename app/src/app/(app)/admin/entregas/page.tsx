@@ -123,7 +123,7 @@ export default async function EntregasPage({
         `id, client_name, address, maps_url, total_amount,
          delivery_status, payment_status, sale_date, created_at,
          driver_id, sale_type, product_type, row_color,
-         failed_delivery_reason, failed_delivery_photo_url,
+         failed_delivery_reason, failed_delivery_photo_url, stock_returned,
          lead_colors ( quantity, colors ( name ) )`,
       )
       .is('deleted_at', null);
@@ -210,6 +210,7 @@ export default async function EntregasPage({
       row_color: string | null;
       failed_delivery_reason: string | null;
       failed_delivery_photo_url: string | null;
+      stock_returned: boolean | null;
       lead_colors:
         | {
             quantity: number | null;
@@ -253,6 +254,10 @@ export default async function EntregasPage({
         row_color: l.row_color,
         failed_delivery_reason: l.failed_delivery_reason,
         failed_delivery_photo_url: l.failed_delivery_photo_url,
+        // Default a false si la columna aún no existe en DB
+        // (migración pendiente): la UI trata null como "no devuelto",
+        // pinta la fila roja y muestra el botón.
+        stock_returned: l.stock_returned ?? false,
         colors,
       };
     });
