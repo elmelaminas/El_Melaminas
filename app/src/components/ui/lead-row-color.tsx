@@ -1,152 +1,64 @@
 'use client';
 
 /**
- * Reglas de color por fila para los listados de leads y entregas.
+ * Componentes cliente para los colores de fila (`/leads`,
+ * `/admin/entregas`).
  *
- * Codificación visual definida por Sergio. Hay DOS fuentes de color
- * por fila, en orden de prioridad descendente:
+ * IMPORTANTE: las constantes y utilidades puras viven en
+ * `@/lib/lead-row-color` (módulo NEUTRO). Acá solo:
+ *   - componentes que usan hooks (LeadRowLegend, RowColorPicker,
+ *     RowColorPickerCell)
+ *   - re-exports para mantener la API previa (un solo punto de
+ *     entrada para clients que ya importan desde acá).
  *
- *   A. Manual: el admin asignó `leads.row_color` desde el selector
- *      inline (RowColorPicker). Cualquier valor válido distinto de
- *      'sin_color' gana sobre la lógica automática.
- *
- *   B. Automático (si row_color es null o 'sin_color'):
- *      Rosa     — sale_type = 'venta_empleado'
- *      Naranja  — algún payment del lead tiene
- *                 payment_type = 'contra_entrega'
- *      Amarillo — payment_status = 'pagado' AND
- *                 delivery_status != 'entregado' (y != 'cancelado')
- *      Azul     — product_type = 'con_corte'
- *      (prioridad Rosa > Naranja > Amarillo > Azul)
- *
- * Migración manual requerida en Supabase:
- *   ALTER TABLE leads ADD COLUMN IF NOT EXISTS row_color text
- *     CHECK (row_color IN ('rosa','naranja','amarillo','azul',
- *                          'verde','morado','sin_color'));
- *
- * El módulo es 'use client' porque exporta `RowColorPicker` (componente
- * con state local). Los helpers puros (`getLeadRowColor`,
- * `LeadRowLegend`) se importan desde Server Components también: Next 16
- * permite que un Server Component renderice un componente cliente, y
- * llamar funciones JS puras exportadas desde un módulo 'use client'
- * desde el server NO está soportado oficialmente. Para el uso actual
- * (los rows se renderizan en client components) esto funciona porque
- * `getLeadRowColor` se invoca DENTRO del client. Si en el futuro un
- * Server Component lo necesita, mover la función a un archivo neutro.
+ * Por qué el split: cuando `ROW_COLOR_VALUES` vivía en este archivo
+ * `'use client'`, `leads/schema.ts` (server-only) lo importaba para
+ * construir `z.enum(...)` y Next 16 lo bundleaba como referencia
+ * cliente en el contexto server, rompiendo Zod con "function is not
+ * iterable". Mover las constantes al módulo neutro `@/lib/...`
+ * elimina ese boundary y deja la API estable para los callers.
  */
 
 import { useState, useTransition } from 'react';
 import { Loader, Check } from 'lucide-react';
-import type { DeliveryStatus, PaymentStatus } from '@/data/mock';
+import {
+  COLOR_LABEL,
+  LEAD_ROW_COLORS,
+  ROW_COLOR_VALUES,
+  colorOf,
+  parseRowColor,
+  type RowColorValue,
+} from '@/lib/lead-row-color';
 
-/** Valores válidos de `leads.row_color` (matchea el CHECK constraint
- *  de la migración). 'sin_color' es el sentinel para "limpiar override"
- *  y volver a la lógica automática. */
-export const ROW_COLOR_VALUES = [
-  'rosa',
-  'naranja',
-  'amarillo',
-  'azul',
-  'verde',
-  'morado',
-  'sin_color',
-] as const;
+// ─── Re-exports para mantener la API previa ─────────────────────────
+// Las constantes y utilidades viven en el módulo neutro; las exponemos
+// también desde acá para que los imports existentes (leads-client,
+// entregas-client, leads/schema) sigan funcionando.
 
-export type RowColorValue = (typeof ROW_COLOR_VALUES)[number];
+export {
+  ROW_COLOR_VALUES,
+  LEAD_ROW_COLORS,
+  colorOf,
+  parseRowColor,
+  getLeadRowColor,
+  COLOR_LABEL,
+} from '@/lib/lead-row-color';
 
-/** Validador runtime: devuelve el valor tipado si está en la lista,
- *  o null si llega algo distinto (DB row vieja, mano sucia en URL). */
-export function parseRowColor(v: unknown): RowColorValue | null {
-  if (typeof v !== 'string') return null;
-  return (ROW_COLOR_VALUES as readonly string[]).includes(v)
-    ? (v as RowColorValue)
-    : null;
-}
+export type {
+  RowColorValue,
+  LeadRowColorInputs,
+} from '@/lib/lead-row-color';
+
+// ─── Componentes cliente ─────────────────────────────────────────────
 
 /**
- * Colores con transparencia para fondo de fila. La opacidad de los
- * colores manuales es ligeramente mayor que la de los automáticos
- * (0.45 vs 0.35) para que la asignación deliberada del admin se
- * distinga visualmente del cálculo automático cuando ambas reglas
- * dan el mismo tono base (ej. rosa manual vs rosa automático).
+ * Leyenda horizontal con los códigos de color (4 automáticos + 2
+ * manuales). Tamaño y peso bajos — referencia secundaria.
  *
- * 'sin_color' → undefined: la fila vuelve al fondo normal.
- */
-export const LEAD_ROW_COLORS: Readonly<
-  Record<Exclude<RowColorValue, 'sin_color'>, string>
-> = {
-  rosa: 'rgba(255, 182, 193, 0.45)',
-  naranja: 'rgba(255, 165, 0, 0.30)',
-  amarillo: 'rgba(255, 255, 0, 0.30)',
-  azul: 'rgba(173, 216, 230, 0.45)',
-  verde: 'rgba(144, 238, 144, 0.45)',
-  morado: 'rgba(216, 191, 216, 0.45)',
-};
-
-/** Color de fondo asociado a un RowColorValue, o undefined si
- *  'sin_color' / inválido. */
-export function colorOf(v: RowColorValue | null | undefined): string | undefined {
-  if (!v || v === 'sin_color') return undefined;
-  return LEAD_ROW_COLORS[v];
-}
-
-export type LeadRowColorInputs = {
-  id: string;
-  /** Override manual del admin (Grupo manual). Valor válido != null
-   *  gana sobre las reglas automáticas. */
-  row_color: string | null;
-  /** `'venta_empleado'` → rosa (regla automática). */
-  sale_type: string | null;
-  /** `'con_corte'` → azul (regla automática). */
-  product_type: string | null;
-  payment_status: PaymentStatus;
-  delivery_status: DeliveryStatus;
-};
-
-/**
- * Devuelve el color de fondo de la fila o undefined si no aplica nada.
- * Prioridad: manual > automática.
- */
-export function getLeadRowColor(
-  row: LeadRowColorInputs,
-  contraEntregaIds: ReadonlySet<string>,
-): string | undefined {
-  // A. Override manual gana sobre todo. parseRowColor filtra valores
-  //    rotos de DB (NULL, '', valores no incluidos en el CHECK).
-  const manual = parseRowColor(row.row_color);
-  if (manual && manual !== 'sin_color') {
-    return LEAD_ROW_COLORS[manual];
-  }
-
-  // B. Reglas automáticas en orden de prioridad.
-  if (row.sale_type === 'venta_empleado') return LEAD_ROW_COLORS.rosa;
-  if (contraEntregaIds.has(row.id)) return LEAD_ROW_COLORS.naranja;
-  if (
-    row.payment_status === 'pagado' &&
-    row.delivery_status !== 'entregado' &&
-    row.delivery_status !== 'cancelado'
-  ) {
-    return LEAD_ROW_COLORS.amarillo;
-  }
-  if (row.product_type === 'con_corte') return LEAD_ROW_COLORS.azul;
-
-  return undefined;
-}
-
-/** Labels en español para cada color (UI). */
-const COLOR_LABEL: Readonly<Record<RowColorValue, string>> = {
-  sin_color: 'Sin color',
-  rosa: 'Rosa',
-  morado: 'Morado',
-  azul: 'Azul',
-  amarillo: 'Amarillo',
-  naranja: 'Naranja',
-  verde: 'Verde',
-};
-
-/**
- * Leyenda horizontal con los 4 códigos automáticos + 2 colores manuales.
- * Tamaño pequeño y neutro — no debe competir con filtros ni tabla.
+ * No usa hooks (es puramente presentacional), pero vive acá porque
+ * importa `LEAD_ROW_COLORS` del módulo neutro y hace JSX. Podría
+ * moverse a un archivo .tsx neutro, pero está co-locada con los
+ * otros componentes por simplicidad.
  */
 export function LeadRowLegend() {
   const items: { color: string; label: string }[] = [
@@ -185,21 +97,23 @@ export function LeadRowLegend() {
 }
 
 /**
- * Selector inline de color manual para una fila.
+ * Resultado mínimo que la Server Action debe devolver para que el
+ * wrapper `RowColorPickerCell` interprete el éxito/error.
+ */
+export type RowColorMutationResult =
+  | { status: 'idle' }
+  | { status: 'success' }
+  | { status: 'error'; message: string };
+
+/**
+ * Selector inline de color manual. Render: círculo del color actual
+ * (anillo punteado si 'sin_color'/null). Click → popover con un
+ * círculo por color. Al elegir → `onPick(value)`.
  *
- * Render: botón circular del color actual (o anillo punteado si
- * 'sin_color'/null). Al hacer click despliega un popover con un círculo
- * por cada `RowColorValue`. Al elegir uno se llama `onPick(value)` y
- * el popover se cierra.
- *
- * El estado pending/error se maneja externamente — el caller envuelve
- * `onPick` con su `useTransition` + llamada a la action. Esto permite
- * que el picker no conozca el dominio (acciones, Supabase) y sea
- * reusable en /leads y /admin/entregas con la misma forma.
- *
- * El popover NO usa Portal: vive dentro del `<td>` con `position:
- * absolute`. Si la tabla tiene `overflow-x: auto`, puede recortarse;
- * en ese caso un dropdown más simple basta — Sergio puede pedirlo.
+ * Defensivo: la lista de colores se evalúa con `Array.isArray` antes
+ * de iterar. Si por algún boundary inesperado `ROW_COLOR_VALUES` no
+ * llegara como array, caemos a una copia literal para que el picker
+ * NUNCA tire "function is not iterable".
  */
 export function RowColorPicker({
   value,
@@ -215,6 +129,21 @@ export function RowColorPicker({
   const [open, setOpen] = useState(false);
   const current = parseRowColor(value) ?? 'sin_color';
   const swatchBg = colorOf(current);
+
+  // Fallback defensivo (ver docblock). Array.isArray devuelve true para
+  // tuplas `as const` regulares en runtime; sólo cae al literal si el
+  // bundler entregó algo distinto a un array.
+  const options: readonly RowColorValue[] = Array.isArray(ROW_COLOR_VALUES)
+    ? ROW_COLOR_VALUES
+    : ([
+        'rosa',
+        'naranja',
+        'amarillo',
+        'azul',
+        'verde',
+        'morado',
+        'sin_color',
+      ] as const);
 
   return (
     <div style={{ position: 'relative' }}>
@@ -246,9 +175,6 @@ export function RowColorPicker({
               height: 16,
               borderRadius: 9999,
               background: swatchBg ?? 'transparent',
-              // 'sin_color' → borde punteado; con color → borde sólido
-              // suave para que el círculo se vea aún sobre fondos
-              // coloreados.
               border:
                 current === 'sin_color'
                   ? '1.5px dashed var(--border-strong)'
@@ -260,14 +186,9 @@ export function RowColorPicker({
 
       {open && (
         <>
-          {/* Capa invisible para cerrar al click-fuera. z-index < popover. */}
           <div
             onClick={() => setOpen(false)}
-            style={{
-              position: 'fixed',
-              inset: 0,
-              zIndex: 40,
-            }}
+            style={{ position: 'fixed', inset: 0, zIndex: 40 }}
             aria-hidden="true"
           />
           <div
@@ -286,7 +207,7 @@ export function RowColorPicker({
               minWidth: 'max-content',
             }}
           >
-            {ROW_COLOR_VALUES.map((v) => {
+            {options.map((v) => {
               const bg = colorOf(v);
               const isCurrent = v === current;
               return (
@@ -347,24 +268,10 @@ export function RowColorPicker({
 }
 
 /**
- * Resultado mínimo que la Server Action debe devolver para que el
- * wrapper `RowColorPickerCell` interprete el éxito/error.
- */
-export type RowColorMutationResult =
-  | { status: 'idle' }
-  | { status: 'success' }
-  | { status: 'error'; message: string };
-
-/**
- * Wrapper que ya conoce `useTransition`, manejo de error y optimismo.
- * Recibe la `action` como prop para mantener el módulo desacoplado del
- * dominio — el caller (leads-client / entregas-client) le pasa la
- * Server Action importada estáticamente desde su propio `actions.ts`,
- * lo cual SÍ está soportado (Next genera el RPC binding).
- *
- * Pintado optimista: el círculo cambia de color al instante; si la
- * action falla, revertimos. `revalidatePath` del server + refresh del
- * router traen el valor canónico posteriormente.
+ * Wrapper opinado: maneja `useTransition`, error inline y pintado
+ * optimista. Recibe la `action` como prop para no acoplar el módulo a
+ * un dominio específico. El caller importa la Server Action
+ * estáticamente desde su propio `actions.ts` y la pasa acá.
  */
 export function RowColorPickerCell({
   leadId,
@@ -373,11 +280,7 @@ export function RowColorPickerCell({
 }: {
   leadId: string;
   value: string | null;
-  /** Server Action que recibe FormData con lead_id + row_color y
-   *  devuelve { status }. Importada por el caller desde `actions.ts`. */
-  action: (
-    formData: FormData,
-  ) => Promise<RowColorMutationResult>;
+  action: (formData: FormData) => Promise<RowColorMutationResult>;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -396,7 +299,7 @@ export function RowColorPickerCell({
         const r = await action(fd);
         if (r.status === 'error') {
           setError(r.message);
-          setOptimistic(previous); // revert al estado anterior
+          setOptimistic(previous);
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : 'Error de red';

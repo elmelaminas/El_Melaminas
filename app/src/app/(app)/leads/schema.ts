@@ -11,7 +11,12 @@
  */
 
 import { z } from 'zod';
-import { ROW_COLOR_VALUES } from '@/components/ui/lead-row-color';
+// Import directo del módulo NEUTRO (no `'use client'`). Importar
+// `ROW_COLOR_VALUES` desde `@/components/ui/lead-row-color` ('use
+// client') causaba que Next 16 lo entregara como referencia cliente
+// al evaluarse desde `actions.ts` ('use server') → z.enum(ref, ...)
+// fallaba con "function is not iterable" en runtime.
+import { ROW_COLOR_VALUES } from '@/lib/lead-row-color';
 
 export const UpdateLeadColorSchema = z.object({
   lead_id: z.string().uuid('lead_id inválido'),
