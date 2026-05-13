@@ -7,9 +7,13 @@ import {
   ResolveIssueSchema,
   AssignRouteSchema,
   ReturnStockSchema,
+  ReassignDeliverySchema,
+  CancelLeadSchema,
   type ResolveIssueState,
   type AssignRouteState,
   type ReturnStockState,
+  type ReassignDeliveryState,
+  type CancelLeadState,
 } from './schema';
 
 // NB: 'use server' file — solo async functions.
@@ -609,6 +613,576 @@ export async function returnStockAction(
         ? err.message
         : 'Error desconocido al devolver stock';
     console.error('[returnStockAction] excepción no controlada:', err);
+    await txn.rollback('excepción no controlada');
+    return { status: 'error', message };
+  }
+}
+
+/**
+ * `reassignDeliveryAction(_prev, formData)` — el admin marca para
+ * reenvío un lead cuyo stock ya fue devuelto. Recompromete el stock
+ * (inverso de returnStockAction para `stock_committed`), limpia los
+ * campos de falla y resetea los de ruta para que se pueda reasignar
+ * en otra fecha.
+ *
+ * Pre-condición: `stock_returned=true` (los botones que llaman esta
+ * action solo aparecen en ese caso, pero validamos también acá por
+ * defensa). Si el stock todavía está comprometido y este action
+ * volviera a comprometerlo, se duplicaría el commit — la verificación
+ * lo bloquea.
+ *
+ * TxnLog manual con rollback (mismo patrón que returnStockAction).
+ * Idempotencia: rechaza si stock_returned !== true.
+ */
+type ReassignUndo = () => Promise<void>;
+class ReassignTxnLog {
+  private stack: ReassignUndo[] = [];
+  push(fn: ReassignUndo) {
+    this.stack.push(fn);
+  }
+  async rollback(reason: string): Promise<void> {
+    console.error(`[reassignDeliveryAction] rollback: ${reason}`);
+    while (this.stack.length > 0) {
+      const fn = this.stack.pop()!;
+      try {
+        await fn();
+      } catch (e) {
+        console.error(
+          '[reassignDeliveryAction] paso de rollback falló:',
+          e,
+        );
+      }
+    }
+  }
+}
+
+export async function reassignDeliveryAction(
+  _prev: ReassignDeliveryState,
+  formData: FormData,
+): Promise<ReassignDeliveryState> {
+  const txn = new ReassignTxnLog();
+  try {
+    const parsed = ReassignDeliverySchema.safeParse({
+      lead_id: formData.get('lead_id'),
+    });
+    if (!parsed.success) {
+      return { status: 'error', message: 'lead_id inválido.' };
+    }
+    const { lead_id } = parsed.data;
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return { status: 'error', message: 'Sesión no válida.' };
+    }
+    const userId = user.id;
+
+    const admin = supabaseAdmin();
+
+    // Role check
+    const { data: callerProfile, error: profErr } = await admin
+      .from('profiles')
+      .select('role')
+      .eq('id', userId)
+      .maybeSingle();
+    if (profErr) {
+      return {
+        status: 'error',
+        message: `No se pudo verificar tu rol: ${profErr.message}`,
+      };
+    }
+    if (callerProfile?.role !== 'admin') {
+      return {
+        status: 'error',
+        message: 'Solo un administrador puede reenviar pedidos.',
+      };
+    }
+
+    // Verificar estado del lead
+    const { data: leadRow, error: leadErr } = await admin
+      .from('leads')
+      .select(
+        'id, client_name, stock_returned, stock_committed, delivery_status, deleted_at',
+      )
+      .eq('id', lead_id)
+      .maybeSingle();
+    if (leadErr) {
+      return {
+        status: 'error',
+        message: `No se pudo leer el lead: ${leadErr.message}`,
+      };
+    }
+    if (!leadRow) {
+      return { status: 'error', message: 'Lead no encontrado.' };
+    }
+    if (leadRow.deleted_at) {
+      return {
+        status: 'error',
+        message: 'Este lead está cancelado y no puede reenviarse.',
+      };
+    }
+    if (leadRow.stock_returned !== true) {
+      return {
+        status: 'error',
+        message:
+          'Solo se puede reenviar un pedido cuyo stock fue devuelto al ' +
+          'almacén. Devuelve el stock primero.',
+      };
+    }
+    if (leadRow.stock_committed === true) {
+      return {
+        status: 'error',
+        message:
+          'El stock de este lead ya está comprometido; no se puede ' +
+          'volver a comprometer.',
+      };
+    }
+
+    // Cargar lead_colors
+    const { data: lcRows, error: lcErr } = await admin
+      .from('lead_colors')
+      .select('color_id, quantity')
+      .eq('lead_id', lead_id);
+    if (lcErr) {
+      return {
+        status: 'error',
+        message: `No se pudieron leer los colores del lead: ${lcErr.message}`,
+      };
+    }
+    const lineItems = (lcRows ?? []).filter(
+      (r): r is { color_id: string; quantity: number } =>
+        !!r.color_id && Number(r.quantity ?? 0) > 0,
+    );
+    if (lineItems.length === 0) {
+      return {
+        status: 'error',
+        message: 'El lead no tiene colores asociados.',
+      };
+    }
+
+    // Recompromiso del stock: por cada color, stock_committed += qty
+    // + movement 'compromiso' con reference 'Reenvío de pedido'.
+    for (const li of lineItems) {
+      const { data: invRow, error: invSelErr } = await admin
+        .from('inventory')
+        .select('id, stock_committed')
+        .eq('color_id', li.color_id)
+        .maybeSingle();
+      if (invSelErr) {
+        await txn.rollback('select inventory falló');
+        return {
+          status: 'error',
+          message: `No se pudo leer inventario: ${invSelErr.message}`,
+        };
+      }
+      if (!invRow) {
+        await txn.rollback('falta fila de inventario');
+        return {
+          status: 'error',
+          message: `Falta fila de inventario para color_id=${li.color_id}.`,
+        };
+      }
+      const prevCommitted = Number(invRow.stock_committed ?? 0);
+      const qty = Number(li.quantity);
+
+      const { error: updErr } = await admin
+        .from('inventory')
+        .update({ stock_committed: prevCommitted + qty })
+        .eq('id', invRow.id);
+      if (updErr) {
+        await txn.rollback('update inventory falló');
+        return {
+          status: 'error',
+          message: `No se pudo actualizar inventario: ${updErr.message}`,
+        };
+      }
+      txn.push(async () => {
+        await admin
+          .from('inventory')
+          .update({ stock_committed: prevCommitted })
+          .eq('id', invRow.id);
+      });
+
+      const { data: mvRow, error: mvErr } = await admin
+        .from('inventory_movements')
+        .insert({
+          color_id: li.color_id,
+          movement_type: 'compromiso',
+          quantity: qty,
+          lead_id,
+          registered_by: userId,
+          reference: 'Reenvío de pedido',
+        })
+        .select('id')
+        .single();
+      if (mvErr || !mvRow) {
+        await txn.rollback('insert movement falló');
+        return {
+          status: 'error',
+          message: `No se pudo registrar movimiento: ${
+            mvErr?.message ?? 'sin datos'
+          }`,
+        };
+      }
+      const movementId: string = mvRow.id;
+      txn.push(async () => {
+        await admin
+          .from('inventory_movements')
+          .delete()
+          .eq('id', movementId);
+      });
+    }
+
+    // Reset del lead: limpiar campos de falla + ruta, recompromiso ON,
+    // delivery_status pendiente.
+    const { error: leadUpdErr } = await admin
+      .from('leads')
+      .update({
+        stock_returned: false,
+        stock_committed: true,
+        delivery_status: 'pendiente',
+        failed_delivery_reason: null,
+        failed_delivery_photo_url: null,
+        delivery_order: null,
+        delivery_date: null,
+      })
+      .eq('id', lead_id);
+    if (leadUpdErr) {
+      await txn.rollback('update lead falló');
+      return {
+        status: 'error',
+        message: `No se pudo actualizar el lead: ${leadUpdErr.message}`,
+      };
+    }
+
+    // Notif a admins activos (non-fatal).
+    try {
+      const clientName = leadRow.client_name ?? '(sin nombre)';
+      const { data: admins } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('role', 'admin')
+        .eq('is_active', true);
+      if (admins && admins.length > 0) {
+        const message = `🔄 Pedido de ${clientName} marcado para reenvío`;
+        const inserts = admins.map((a) => ({
+          recipient_id: a.id,
+          type: 'delivery_reassigned',
+          message,
+        }));
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifErr) {
+          console.error(
+            '[reassignDeliveryAction] notif insert falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[reassignDeliveryAction] notif lookup/insert excepción (no fatal):',
+        e,
+      );
+    }
+
+    revalidatePath('/admin/entregas');
+    revalidatePath('/warehouse');
+    revalidatePath('/warehouse/movements');
+    revalidatePath('/leads');
+    return {
+      status: 'success',
+      message: 'Pedido marcado para reenvío.',
+    };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al reenviar pedido';
+    console.error('[reassignDeliveryAction] excepción no controlada:', err);
+    await txn.rollback('excepción no controlada');
+    return { status: 'error', message };
+  }
+}
+
+/**
+ * `cancelLeadAction(_prev, formData)` — el admin cancela una compra
+ * (soft-delete vía `deleted_at`). Dos caminos según el estado actual:
+ *
+ *   1. Si `stock_returned=false` (stock comprometido todavía):
+ *      por cada color, liberamos el commitment
+ *      (stock_committed -= qty, piso a 0) e insertamos movimiento
+ *      `liberacion` con reference 'Cancelación de compra'.
+ *
+ *   2. Si `stock_returned=true` (stock ya regresó al almacén):
+ *      no tocamos inventory — solo marcamos el lead como cancelado.
+ *
+ * En ambos casos: UPDATE leads SET delivery_status='cancelado',
+ * deleted_at=now(). Mantenemos `payment_status` como esté.
+ *
+ * Idempotencia: rechaza si `deleted_at` ya está poblado.
+ * TxnLog para rollback. Triple defensa admin.
+ */
+type CancelUndo = () => Promise<void>;
+class CancelTxnLog {
+  private stack: CancelUndo[] = [];
+  push(fn: CancelUndo) {
+    this.stack.push(fn);
+  }
+  async rollback(reason: string): Promise<void> {
+    console.error(`[cancelLeadAction] rollback: ${reason}`);
+    while (this.stack.length > 0) {
+      const fn = this.stack.pop()!;
+      try {
+        await fn();
+      } catch (e) {
+        console.error('[cancelLeadAction] paso de rollback falló:', e);
+      }
+    }
+  }
+}
+
+export async function cancelLeadAction(
+  _prev: CancelLeadState,
+  formData: FormData,
+): Promise<CancelLeadState> {
+  const txn = new CancelTxnLog();
+  try {
+    const parsed = CancelLeadSchema.safeParse({
+      lead_id: formData.get('lead_id'),
+    });
+    if (!parsed.success) {
+      return { status: 'error', message: 'lead_id inválido.' };
+    }
+    const { lead_id } = parsed.data;
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return { status: 'error', message: 'Sesión no válida.' };
+    }
+    const userId = user.id;
+
+    const admin = supabaseAdmin();
+
+    // Role check
+    const { data: callerProfile, error: profErr } = await admin
+      .from('profiles')
+      .select('role')
+      .eq('id', userId)
+      .maybeSingle();
+    if (profErr) {
+      return {
+        status: 'error',
+        message: `No se pudo verificar tu rol: ${profErr.message}`,
+      };
+    }
+    if (callerProfile?.role !== 'admin') {
+      return {
+        status: 'error',
+        message: 'Solo un administrador puede cancelar compras.',
+      };
+    }
+
+    // Verificar estado del lead
+    const { data: leadRow, error: leadErr } = await admin
+      .from('leads')
+      .select(
+        'id, client_name, stock_returned, stock_committed, delivery_status, deleted_at',
+      )
+      .eq('id', lead_id)
+      .maybeSingle();
+    if (leadErr) {
+      return {
+        status: 'error',
+        message: `No se pudo leer el lead: ${leadErr.message}`,
+      };
+    }
+    if (!leadRow) {
+      return { status: 'error', message: 'Lead no encontrado.' };
+    }
+    if (leadRow.deleted_at) {
+      return {
+        status: 'error',
+        message: 'Este lead ya está cancelado.',
+      };
+    }
+
+    // Si el stock NO se devolvió (sigue comprometido), lo liberamos.
+    // Las dos vías:
+    //   stock_committed=true Y stock_returned=false  → liberar acá
+    //   stock_committed=false Y stock_returned=true  → ya está libre
+    // El flag `stock_committed` es la fuente de verdad para decidir
+    // si tocar inventory; `stock_returned` solo aplica cuando hubo
+    // falla previa. Si el lead jamás comprometió stock (caso raro,
+    // legacy), stock_committed=false → no tocamos nada.
+    const shouldRelease = leadRow.stock_committed === true;
+    if (shouldRelease) {
+      const { data: lcRows, error: lcErr } = await admin
+        .from('lead_colors')
+        .select('color_id, quantity')
+        .eq('lead_id', lead_id);
+      if (lcErr) {
+        return {
+          status: 'error',
+          message: `No se pudieron leer los colores del lead: ${lcErr.message}`,
+        };
+      }
+      const lineItems = (lcRows ?? []).filter(
+        (r): r is { color_id: string; quantity: number } =>
+          !!r.color_id && Number(r.quantity ?? 0) > 0,
+      );
+
+      for (const li of lineItems) {
+        const { data: invRow, error: invSelErr } = await admin
+          .from('inventory')
+          .select('id, stock_committed')
+          .eq('color_id', li.color_id)
+          .maybeSingle();
+        if (invSelErr) {
+          await txn.rollback('select inventory falló');
+          return {
+            status: 'error',
+            message: `No se pudo leer inventario: ${invSelErr.message}`,
+          };
+        }
+        if (!invRow) {
+          // Best-effort: si no hay fila de inventory para ese color
+          // (improbable) skip y seguimos — preferible cancelar el lead
+          // a abortar la cancelación.
+          console.warn(
+            `[cancelLeadAction] sin inventory para color ${li.color_id}, skip`,
+          );
+          continue;
+        }
+        const prevCommitted = Number(invRow.stock_committed ?? 0);
+        const qty = Number(li.quantity);
+        // Piso a 0 para tolerar inconsistencias históricas.
+        const nextCommitted = Math.max(0, prevCommitted - qty);
+
+        const { error: updErr } = await admin
+          .from('inventory')
+          .update({ stock_committed: nextCommitted })
+          .eq('id', invRow.id);
+        if (updErr) {
+          await txn.rollback('update inventory falló');
+          return {
+            status: 'error',
+            message: `No se pudo liberar inventario: ${updErr.message}`,
+          };
+        }
+        txn.push(async () => {
+          await admin
+            .from('inventory')
+            .update({ stock_committed: prevCommitted })
+            .eq('id', invRow.id);
+        });
+
+        const { data: mvRow, error: mvErr } = await admin
+          .from('inventory_movements')
+          .insert({
+            color_id: li.color_id,
+            movement_type: 'liberacion',
+            quantity: qty,
+            lead_id,
+            registered_by: userId,
+            reference: 'Cancelación de compra',
+          })
+          .select('id')
+          .single();
+        if (mvErr || !mvRow) {
+          await txn.rollback('insert movement falló');
+          return {
+            status: 'error',
+            message: `No se pudo registrar movimiento: ${
+              mvErr?.message ?? 'sin datos'
+            }`,
+          };
+        }
+        const movementId: string = mvRow.id;
+        txn.push(async () => {
+          await admin
+            .from('inventory_movements')
+            .delete()
+            .eq('id', movementId);
+        });
+      }
+    }
+
+    // Soft-delete + cancelado. NO tocamos payment_status — los pagos
+    // hechos siguen siendo válidos contablemente; el reverso/reembolso
+    // es flujo aparte.
+    const { error: leadUpdErr } = await admin
+      .from('leads')
+      .update({
+        delivery_status: 'cancelado',
+        deleted_at: new Date().toISOString(),
+        // Si liberamos el commitment, marcamos stock_committed=false
+        // para que el flag quede consistente con inventory.
+        ...(shouldRelease ? { stock_committed: false } : {}),
+      })
+      .eq('id', lead_id);
+    if (leadUpdErr) {
+      await txn.rollback('update lead falló');
+      return {
+        status: 'error',
+        message: `No se pudo cancelar el lead: ${leadUpdErr.message}`,
+      };
+    }
+
+    // Notif a admins (non-fatal).
+    try {
+      const clientName = leadRow.client_name ?? '(sin nombre)';
+      const { data: admins } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('role', 'admin')
+        .eq('is_active', true);
+      if (admins && admins.length > 0) {
+        const message = `❌ Compra de ${clientName} cancelada`;
+        const inserts = admins.map((a) => ({
+          recipient_id: a.id,
+          type: 'lead_cancelled',
+          message,
+        }));
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifErr) {
+          console.error(
+            '[cancelLeadAction] notif insert falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[cancelLeadAction] notif lookup/insert excepción (no fatal):',
+        e,
+      );
+    }
+
+    revalidatePath('/admin/entregas');
+    revalidatePath('/leads');
+    revalidatePath('/warehouse');
+    revalidatePath('/warehouse/movements');
+    return {
+      status: 'success',
+      message: 'Compra cancelada.',
+    };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al cancelar compra';
+    console.error('[cancelLeadAction] excepción no controlada:', err);
     await txn.rollback('excepción no controlada');
     return { status: 'error', message };
   }

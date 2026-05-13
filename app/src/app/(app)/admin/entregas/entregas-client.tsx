@@ -15,6 +15,8 @@ import {
   Camera,
   Undo2,
   PackageCheck,
+  RefreshCcw,
+  Ban,
 } from 'lucide-react';
 import {
   DeliveryBadge,
@@ -36,6 +38,8 @@ import {
   resolveIssueAction,
   assignDeliveryRouteAction,
   returnStockAction,
+  reassignDeliveryAction,
+  cancelLeadAction,
 } from './actions';
 
 /**
@@ -518,6 +522,17 @@ function Row({
             </span>
           )}
         </div>
+
+        {/* Acciones post-devolución: aparece DEBAJO de los badges
+            cuando el stock ya regresó y el admin debe decidir el
+            siguiente paso (reagendar o cancelar). State propio por
+            componente para no bloquear el resto de la fila. */}
+        {hasFailed && r.stock_returned && (
+          <PostReturnActions
+            leadId={r.id}
+            clientName={r.client_name}
+          />
+        )}
         <div
           className="text-xs font-mono"
           style={{ color: 'var(--text-tertiary)' }}
@@ -723,6 +738,223 @@ function ReturnStockButton({
           title={error}
         >
           {error.length > 40 ? `${error.slice(0, 40)}…` : error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Bloque de acciones que aparece DEBAJO de los badges cuando un lead
+ * tiene `stock_returned=true`. El admin elige entre dos caminos:
+ *
+ *   - Reenviar el pedido: recompromete el stock, limpia los campos de
+ *     falla y deja el lead pendiente para reagendar en otra ruta.
+ *   - Cancelar la compra: soft-delete del lead (deleted_at=now()),
+ *     marca delivery_status='cancelado'. Requiere confirmación inline.
+ *
+ * Dos `useTransition` separados para que reasignar no bloquee el
+ * botón de cancelar y viceversa. Errores inline por cada acción
+ * (texto chico, truncado a 40 chars).
+ *
+ * UX del confirm: en vez de window.confirm() inline (modal nativo),
+ * mostramos un mini-prompt con dos botones "Sí, cancelar" y "No" —
+ * cliquéable sin layout shift, más accesible y consistente con el
+ * resto del módulo.
+ */
+function PostReturnActions({
+  leadId,
+  clientName,
+}: {
+  leadId: string;
+  clientName: string;
+}) {
+  const router = useRouter();
+  const [reassignPending, startReassign] = useTransition();
+  const [cancelPending, startCancel] = useTransition();
+  const [confirming, setConfirming] = useState(false);
+  const [reassignError, setReassignError] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+
+  function handleReassign() {
+    setReassignError(null);
+    startReassign(async () => {
+      try {
+        const fd = new FormData();
+        fd.set('lead_id', leadId);
+        const r = await reassignDeliveryAction({ status: 'idle' }, fd);
+        if (r.status === 'error') {
+          setReassignError(r.message);
+        } else if (r.status === 'success') {
+          router.refresh();
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de red';
+        setReassignError(message);
+      }
+    });
+  }
+
+  function handleCancel() {
+    setCancelError(null);
+    startCancel(async () => {
+      try {
+        const fd = new FormData();
+        fd.set('lead_id', leadId);
+        const r = await cancelLeadAction({ status: 'idle' }, fd);
+        if (r.status === 'error') {
+          setCancelError(r.message);
+          setConfirming(false);
+        } else if (r.status === 'success') {
+          // El lead queda con deleted_at — el SELECT del page.tsx ya
+          // filtra .is('deleted_at', null), así que router.refresh()
+          // hace desaparecer la fila de la tabla.
+          router.refresh();
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de red';
+        setCancelError(message);
+        setConfirming(false);
+      }
+    });
+  }
+
+  const anyPending = reassignPending || cancelPending;
+
+  return (
+    <div className="mt-2">
+      {!confirming ? (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={handleReassign}
+            disabled={anyPending}
+            aria-busy={reassignPending}
+            className="btn"
+            style={{
+              padding: '4px 10px',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              background: 'var(--brand-primary)',
+              color: '#fff',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+            aria-label={`Volver a mandar pedido de ${clientName}`}
+            title="Recompromete el stock y deja el lead listo para reagendar"
+          >
+            {reassignPending ? (
+              <>
+                <Loader size={12} className="animate-spin" />
+                <span>Reenviando…</span>
+              </>
+            ) : (
+              <>
+                <RefreshCcw size={12} /> Volver a mandar
+              </>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            disabled={anyPending}
+            className="btn btn-outline"
+            style={{
+              padding: '4px 10px',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              color: '#B91C1C',
+              borderColor: '#FCA5A5',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+            aria-label={`Cancelar compra de ${clientName}`}
+            title="Marca el lead como cancelado (soft-delete)"
+          >
+            <Ban size={12} /> Cancelar compra
+          </button>
+        </div>
+      ) : (
+        <div
+          className="flex items-center gap-2 flex-wrap"
+          style={{
+            background: '#FEF2F2',
+            border: '1px solid #FCA5A5',
+            padding: '6px 10px',
+            borderRadius: 6,
+          }}
+          role="dialog"
+          aria-label="Confirmar cancelación"
+        >
+          <span
+            className="text-xs"
+            style={{ color: '#7F1D1D', fontWeight: 500 }}
+          >
+            ¿Seguro que quieres cancelar la compra de{' '}
+            <strong>{clientName}</strong>?
+          </span>
+          <button
+            type="button"
+            onClick={handleCancel}
+            disabled={cancelPending}
+            aria-busy={cancelPending}
+            className="btn"
+            style={{
+              padding: '4px 10px',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              background: '#DC2626',
+              color: '#fff',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+          >
+            {cancelPending ? (
+              <>
+                <Loader size={12} className="animate-spin" />
+                <span>Cancelando…</span>
+              </>
+            ) : (
+              'Sí, cancelar'
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setConfirming(false)}
+            disabled={cancelPending}
+            className="btn btn-ghost"
+            style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+          >
+            No
+          </button>
+        </div>
+      )}
+
+      {reassignError && (
+        <div
+          role="alert"
+          className="text-[10px] mt-1"
+          style={{ color: 'var(--danger, #dc2626)', maxWidth: 240 }}
+          title={reassignError}
+        >
+          {reassignError.length > 40
+            ? `${reassignError.slice(0, 40)}…`
+            : reassignError}
+        </div>
+      )}
+      {cancelError && (
+        <div
+          role="alert"
+          className="text-[10px] mt-1"
+          style={{ color: 'var(--danger, #dc2626)', maxWidth: 240 }}
+          title={cancelError}
+        >
+          {cancelError.length > 40
+            ? `${cancelError.slice(0, 40)}…`
+            : cancelError}
         </div>
       )}
     </div>

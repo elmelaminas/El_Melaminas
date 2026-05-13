@@ -78,3 +78,43 @@ export type ReturnStockState =
   | { status: 'error'; message: string };
 
 export const initialReturnStockState: ReturnStockState = { status: 'idle' };
+
+// ─── Reasignar entrega tras devolución ───────────────────────────────
+
+/**
+ * El admin "vuelve a mandar" un lead cuyo stock ya fue devuelto. El
+ * action vuelve a comprometer el stock (inverso de returnStockAction
+ * en términos de inventory_committed), limpia los campos de falla y
+ * deja el lead listo para reagendar en una nueva ruta.
+ */
+export const ReassignDeliverySchema = z.object({
+  lead_id: z.string().uuid('lead_id inválido'),
+});
+
+export type ReassignDeliveryState =
+  | { status: 'idle' }
+  | { status: 'success'; message: string }
+  | { status: 'error'; message: string };
+
+export const initialReassignDeliveryState: ReassignDeliveryState = {
+  status: 'idle',
+};
+
+// ─── Cancelar lead (soft-delete) ─────────────────────────────────────
+
+/**
+ * El admin cancela una compra. Si el stock todavía está comprometido
+ * (stock_returned=false), el action libera el commitment y registra un
+ * movimiento `liberacion`. Si ya fue devuelto, solo marca el lead como
+ * cancelado + `deleted_at=now()`.
+ */
+export const CancelLeadSchema = z.object({
+  lead_id: z.string().uuid('lead_id inválido'),
+});
+
+export type CancelLeadState =
+  | { status: 'idle' }
+  | { status: 'success'; message: string }
+  | { status: 'error'; message: string };
+
+export const initialCancelLeadState: CancelLeadState = { status: 'idle' };
