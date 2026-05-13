@@ -1,11 +1,13 @@
 'use client';
 
 import { useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
 import { Plus, Pencil } from 'lucide-react';
 import type { Role } from '@/data/mock';
 import { RoleBadge } from '@/components/ui/Badges';
 import { toggleUserActiveAction } from './actions';
 import { NewUserModal } from './new-user-modal';
+import { EditUserModal } from './edit-user-modal';
 
 export type UserRow = {
   id: string;
@@ -17,12 +19,18 @@ export type UserRow = {
 };
 
 export function UsersClient({ initialUsers }: { initialUsers: UserRow[] }) {
+  const router = useRouter();
   // Mantenemos copia local para reflejar cambios optimistas del toggle. Tras
   // cada acción server, revalidatePath dispara un re-render con datos frescos
   // que sobrescriben este state al recibir nuevas props (montaje de cliente
   // tras router refresh).
   const [users, setUsers] = useState(initialUsers);
   const [showNew, setShowNew] = useState(false);
+  // Usuario actualmente abierto en el modal de edición. null = cerrado.
+  // Guardamos el row completo (no solo el id) para precargar el form sin
+  // un round-trip extra. revalidatePath + router.refresh tras success
+  // sobreescribe `initialUsers` con los datos frescos del server.
+  const [editingUser, setEditingUser] = useState<UserRow | null>(null);
 
   return (
     <div className="flex flex-col gap-6">
@@ -68,6 +76,7 @@ export function UsersClient({ initialUsers }: { initialUsers: UserRow[] }) {
                         prev.map((x) => (x.id === u.id ? { ...x, is_active: next } : x)),
                       )
                     }
+                    onEdit={() => setEditingUser(u)}
                   />
                 ))
               )}
@@ -82,6 +91,26 @@ export function UsersClient({ initialUsers }: { initialUsers: UserRow[] }) {
           onSuccess={() => setShowNew(false)}
         />
       )}
+
+      {editingUser && (
+        <EditUserModal
+          initialValues={{
+            id: editingUser.id,
+            full_name: editingUser.full_name,
+            email: editingUser.email,
+            phone: editingUser.phone,
+            role: editingUser.role,
+          }}
+          onClose={() => setEditingUser(null)}
+          onSuccess={() => {
+            setEditingUser(null);
+            // revalidatePath del server invalida el cache; el refresh
+            // del router re-monta el Server Component para que la fila
+            // muestre los datos nuevos.
+            router.refresh();
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -89,9 +118,11 @@ export function UsersClient({ initialUsers }: { initialUsers: UserRow[] }) {
 function UserRowItem({
   user,
   onToggle,
+  onEdit,
 }: {
   user: UserRow;
   onToggle: (nextActive: boolean) => void;
+  onEdit: () => void;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -152,11 +183,12 @@ function UserRowItem({
       <td>
         <div className="flex justify-end gap-1">
           <button
+            type="button"
+            onClick={onEdit}
             className="btn btn-ghost"
             style={{ padding: '6px' }}
-            aria-label="Editar rol"
-            disabled
-            title="Edición de rol — próximamente"
+            aria-label={`Editar usuario ${user.full_name}`}
+            title="Editar nombre, teléfono y rol"
           >
             <Pencil size={16} />
           </button>

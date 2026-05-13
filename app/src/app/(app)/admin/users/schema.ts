@@ -63,3 +63,42 @@ export type CreateUserState =
     };
 
 export const initialCreateUserState: CreateUserState = { status: 'idle' };
+
+// ─── Edit user ──────────────────────────────────────────────────────────
+//
+// El correo NO es editable acá — es el identificador de Supabase Auth y
+// cambiarlo requiere flujo separado (email change confirm). La contraseña
+// tampoco se toca desde acá: para resetear, /forgot-password.
+
+export const EditUserSchema = z.object({
+  profile_id: z.string().uuid('profile_id inválido'),
+  full_name: z
+    .string()
+    .trim()
+    .min(2, 'Nombre debe tener al menos 2 caracteres')
+    .max(120, 'Nombre demasiado largo'),
+  phone: z
+    .string()
+    .trim()
+    .max(20, 'Teléfono demasiado largo')
+    .optional()
+    .or(z.literal('')),
+  role: z.enum(ROLES, { message: 'Rol inválido' }),
+});
+
+export type EditUserInput = z.infer<typeof EditUserSchema>;
+
+export type EditUserState =
+  | { status: 'idle' }
+  | { status: 'success'; message: string }
+  | {
+      status: 'error';
+      message: string;
+      // Excluimos profile_id de los fieldErrors mostrables porque es un
+      // hidden value en el modal — no hay input al que asociar el error.
+      fieldErrors?: Partial<
+        Record<Exclude<keyof EditUserInput, 'profile_id'>, string[]>
+      >;
+    };
+
+export const initialEditUserState: EditUserState = { status: 'idle' };

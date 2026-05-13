@@ -2,7 +2,13 @@
 
 import { revalidatePath } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { CreateUserSchema, type CreateUserState } from './schema';
+import { supabaseServer } from '@/lib/supabase/server';
+import {
+  CreateUserSchema,
+  EditUserSchema,
+  type CreateUserState,
+  type EditUserState,
+} from './schema';
 
 // NB: este archivo solo puede exportar async functions porque tiene
 // `'use server'`. Schema, tipos y constantes viven en `./schema`. Ver el
@@ -149,6 +155,151 @@ export async function toggleUserActiveAction(
     const message = err instanceof Error ? err.message : 'Error desconocido';
     console.error('[toggleUserActiveAction] excepción no controlada:', err);
     return { ok: false, message };
+  }
+}
+
+/**
+ * Edita los campos editables del profile (full_name, phone, role).
+ *
+ * Triple defensa de admin:
+ *   1. middleware ya bloquea /admin/* a no-admins.
+ *   2. /admin/users/page ya verifica el rol antes de renderizar.
+ *   3. acá lo verificamos también — la action puede invocarse fuera
+ *      del flujo normal (curl, devtools, otro front).
+ *
+ * Regla anti-self-demote: si el `profile_id` editado es el del usuario
+ * autenticado, NO permitimos cambiar `role` a algo distinto de 'admin'.
+ * Sin esto, el último admin podría dejarse fuera del sistema y nadie
+ * podría restaurarlo sin acceso directo a DB. Otros admins SÍ pueden
+ * demovernos — la consigna explícita del spec es "no se quite a sí
+ * mismo el rol".
+ *
+ * NO se editan: email (identifier de auth) ni password (existe el
+ * flujo de /forgot-password). Mismo patrón de error handling que
+ * createUserAction.
+ */
+export async function updateUserAction(
+  _prev: EditUserState,
+  formData: FormData,
+): Promise<EditUserState> {
+  try {
+    const parsed = EditUserSchema.safeParse({
+      profile_id: formData.get('profile_id'),
+      full_name: formData.get('full_name'),
+      phone: formData.get('phone'),
+      role: formData.get('role'),
+    });
+
+    if (!parsed.success) {
+      console.error(
+        '[updateUserAction] validación falló:',
+        parsed.error.flatten(),
+      );
+      // `profile_id` no tiene input visible (es hidden en el modal);
+      // omitimos su error de la lista para no enviar errores que el
+      // cliente no puede pintar.
+      const flat = parsed.error.flatten().fieldErrors as Record<
+        string,
+        string[]
+      >;
+      const { profile_id: _omit, ...visible } = flat;
+      void _omit; // suprimir noUnusedLocals
+      return {
+        status: 'error',
+        message: 'Datos inválidos',
+        fieldErrors: visible,
+      };
+    }
+
+    const { profile_id, full_name, phone, role } = parsed.data;
+    const normalizedPhone = phone && phone.length > 0 ? phone : null;
+
+    // ── Auth: necesitamos auth.uid() para anti-self-demote y el role
+    //    check. supabaseServer() lee de cookies; supabaseAdmin() es
+    //    service_role para bypassear RLS al hacer el SELECT/UPDATE.
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return {
+        status: 'error',
+        message: 'Sesión no válida. Vuelve a iniciar sesión.',
+      };
+    }
+
+    const admin = supabaseAdmin();
+
+    // Role check del caller. Si no es admin, rechazamos sin tocar nada.
+    const { data: callerProfile, error: callerErr } = await admin
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (callerErr) {
+      console.error(
+        '[updateUserAction] no se pudo leer rol del caller:',
+        callerErr,
+      );
+      return {
+        status: 'error',
+        message: `No se pudo verificar tu rol: ${callerErr.message}`,
+      };
+    }
+    if (callerProfile?.role !== 'admin') {
+      return {
+        status: 'error',
+        message: 'Solo un administrador puede editar usuarios.',
+      };
+    }
+
+    // Anti-self-demote: si te estás editando a ti mismo, role debe
+    // seguir siendo 'admin'. Antes de leer la fila del target chequeamos
+    // los uuids para evitar un round-trip cuando no aplica.
+    if (profile_id === user.id && role !== 'admin') {
+      return {
+        status: 'error',
+        message:
+          'No puedes quitarte el rol de administrador a ti mismo. ' +
+          'Pide a otro admin que lo haga.',
+      };
+    }
+
+    const { error: updErr } = await admin
+      .from('profiles')
+      .update({
+        full_name,
+        phone: normalizedPhone,
+        role,
+        // updated_at: now() en el server. Si la columna tiene un
+        // trigger BEFORE UPDATE que lo maneja, este valor lo
+        // sobreescribe el trigger con el suyo — sin daño. Si no hay
+        // trigger, queda el nuestro.
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', profile_id);
+
+    if (updErr) {
+      console.error('[updateUserAction] update falló:', updErr);
+      return {
+        status: 'error',
+        message: `No se pudo actualizar el usuario: ${updErr.message}`,
+      };
+    }
+
+    revalidatePath('/admin/users');
+    return {
+      status: 'success',
+      message: 'Usuario actualizado.',
+    };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al actualizar usuario';
+    console.error('[updateUserAction] excepción no controlada:', err);
+    return { status: 'error', message };
   }
 }
 
