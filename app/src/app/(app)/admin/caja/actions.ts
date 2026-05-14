@@ -49,6 +49,28 @@ export async function validarEfectivoAction(
 
     const admin = supabaseAdmin();
 
+    // Defense-in-depth: solo el rol admin2 puede validar caja (el admin
+    // regular ya no opera caja — separación de responsabilidades). El
+    // middleware ya bloquea la ruta, pero también validamos acá por si
+    // alguien invoca la action vía RPC directo.
+    const { data: profile, error: profErr } = await admin
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (profErr || !profile) {
+      return {
+        status: 'error',
+        message: 'No se pudo verificar tu rol.',
+      };
+    }
+    if (profile.role !== 'admin2') {
+      return {
+        status: 'error',
+        message: 'Solo el rol Administrador 2 puede validar caja.',
+      };
+    }
+
     // Verificar que el transfer existe y está en estado 'recibido'.
     const { data: tf, error: tErr } = await admin
       .from('cash_transfers')

@@ -101,10 +101,13 @@ export async function recibirEfectivoAction(
         await Promise.all([
           admin.from('profiles').select('full_name').eq('id', contadorId).maybeSingle(),
           admin.from('profiles').select('full_name').eq('id', driver_id).maybeSingle(),
+          // La validación de caja la hace exclusivamente el rol admin2
+          // (separación de responsabilidades). Notificamos solo a ese rol
+          // — el admin regular ya no opera caja.
           admin
             .from('profiles')
             .select('id')
-            .eq('role', 'admin')
+            .eq('role', 'admin2')
             .eq('is_active', true),
         ]);
       const contadorName = contadorProfile?.full_name ?? 'Contador';

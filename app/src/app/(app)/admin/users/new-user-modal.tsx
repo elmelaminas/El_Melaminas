@@ -19,6 +19,7 @@ import type { Role } from '@/data/mock';
 // (a diferencia de `Record<Role, …>` que sí cazaría el faltante).
 const ROLES: { value: Role; label: string }[] = [
   { value: 'admin', label: 'Administrador' },
+  { value: 'admin2', label: 'Administrador 2' },
   { value: 'seller', label: 'Vendedor' },
   { value: 'driver', label: 'Chofer' },
   { value: 'warehouse', label: 'Almacén' },

@@ -12,6 +12,7 @@ import {
   Calendar,
   Loader,
   FileText,
+  Camera,
 } from 'lucide-react';
 import {
   LeadCreateSchema,
@@ -27,6 +28,7 @@ import {
   NEW_COLOR_SENTINEL,
   LEAD_DOCUMENT_MAX_BYTES,
   type LeadCreateInput,
+  type LeadDocumentKind,
 } from './schema';
 import { saveLeadAction, uploadLeadDocumentAction } from './actions';
 import { updateLeadFullAction } from '../[id]/edit/actions';
@@ -77,16 +79,26 @@ export function NewLeadForm({
   const [pending, startTransition] = useTransition();
   const isEdit = mode === 'edit';
 
-  // PDF adjunto (opcional). El File NO entra al schema RHF — se maneja
-  // como state local y se sube DESPUÉS del save exitoso del lead.
-  // Razón: cambiar el schema RHF a aceptar File rompe el flujo
-  // existente y obliga a serializar el form a FormData en vez de
-  // JSON. Más simple: dos pasos secuenciales (lead → upload PDF).
-  // Si el upload falla, el lead ya está creado y la UI muestra
-  // warning (mejor un lead sin PDF que un lead perdido).
+  // Documento adjunto (opcional, PDF O Foto — excluyentes). El File NO
+  // entra al schema RHF: se maneja como state local y se sube DESPUÉS
+  // del save exitoso del lead. Razón: cambiar el schema RHF a aceptar
+  // File rompe el flujo existente y obliga a serializar el form a
+  // FormData en vez de JSON. Más simple: dos pasos secuenciales (lead
+  // → upload). Si el upload falla, el lead ya está creado y la UI
+  // muestra warning (mejor un lead sin doc que un lead perdido).
+  //
+  // `docKind` controla qué tab está activo (PDF o Foto). null = ninguno
+  // seleccionado todavía (estado inicial). Al cambiar de tab se limpia
+  // el archivo seleccionado para evitar enviar un PDF como "foto" o
+  // viceversa.
+  const [docKind, setDocKind] = useState<LeadDocumentKind | null>(null);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [pdfWarning, setPdfWarning] = useState<string | null>(null);
   const pdfRef = useRef<HTMLInputElement>(null);
+  // Preview URL para la foto seleccionada. Lo regeneramos cada vez que
+  // cambia el archivo y lo liberamos con URL.revokeObjectURL en cleanup
+  // para no fugar memoria.
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -197,14 +209,16 @@ export function NewLeadForm({
         console.log('[NewLeadForm] respuesta:', result);
 
         if (result.status === 'success') {
-          // PDF: en ambos modos, si el usuario adjuntó archivo, lo
-          // subimos para reemplazar/setear el document_url. La subida
-          // es non-fatal — si falla, lead/edit ya están guardados, solo
-          // mostramos warning y NO navegamos.
-          if (pdfFile && pdfFile.size > 0) {
+          // Documento: en ambos modos, si el usuario adjuntó archivo
+          // (PDF o Foto), lo subimos para reemplazar/setear el
+          // document_url. La subida es non-fatal — si falla, lead/edit
+          // ya están guardados, solo mostramos warning y NO navegamos.
+          if (docKind && pdfFile && pdfFile.size > 0) {
+            const docLabel = docKind === 'pdf' ? 'PDF' : 'foto';
             try {
               const fd = new FormData();
               fd.set('lead_id', result.leadId);
+              fd.set('kind', docKind);
               fd.set('document', pdfFile);
               const upRes = await uploadLeadDocumentAction(
                 { status: 'idle' },
@@ -212,28 +226,28 @@ export function NewLeadForm({
               );
               if (upRes.status !== 'success') {
                 console.error(
-                  '[NewLeadForm] upload PDF falló (no fatal):',
+                  `[NewLeadForm] upload ${docLabel} falló (no fatal):`,
                   upRes,
                 );
                 const actionLabel = isEdit ? 'Lead actualizado' : 'Lead creado';
                 setPdfWarning(
                   upRes.status === 'error'
-                    ? `${actionLabel}, pero el PDF no se pudo subir: ${upRes.message}`
-                    : `${actionLabel}, pero el PDF no se pudo subir.`,
+                    ? `${actionLabel}, pero el/la ${docLabel} no se pudo subir: ${upRes.message}`
+                    : `${actionLabel}, pero el/la ${docLabel} no se pudo subir.`,
                 );
                 return;
               }
             } catch (uploadErr) {
               console.error(
-                '[NewLeadForm] upload PDF excepción (no fatal):',
+                `[NewLeadForm] upload ${docLabel} excepción (no fatal):`,
                 uploadErr,
               );
               const msg =
                 uploadErr instanceof Error
                   ? uploadErr.message
-                  : 'Error de red al subir PDF';
+                  : `Error de red al subir ${docLabel}`;
               const actionLabel = isEdit ? 'Lead actualizado' : 'Lead creado';
-              setPdfWarning(`${actionLabel}, pero el PDF no se pudo subir: ${msg}`);
+              setPdfWarning(`${actionLabel}, pero el/la ${docLabel} no se pudo subir: ${msg}`);
               return;
             }
           }
@@ -269,28 +283,67 @@ export function NewLeadForm({
     });
   };
 
-  /** Validación cliente del PDF antes de aceptar el archivo en state.
-   *  Si falla, mostramos error inline y limpiamos el input. */
-  function handlePdfChange(file: File | null) {
+  /** Validación cliente del archivo (PDF o Foto) antes de aceptarlo en
+   *  state. La validación depende del `docKind` actual: el caller
+   *  garantiza que docKind no sea null al llamar a esta función. Si
+   *  falla, mostramos error inline y limpiamos el input. */
+  function handleDocChange(file: File | null) {
     setPdfWarning(null);
+    // Limpieza del preview anterior (solo aplica a fotos).
+    if (photoPreview) {
+      URL.revokeObjectURL(photoPreview);
+      setPhotoPreview(null);
+    }
     if (!file) {
       setPdfFile(null);
       return;
     }
     if (file.size > LEAD_DOCUMENT_MAX_BYTES) {
-      setPdfWarning('El PDF excede 10 MB. Comprime o reduce el archivo.');
+      setPdfWarning(
+        docKind === 'pdf'
+          ? 'El PDF excede 10 MB. Comprime o reduce el archivo.'
+          : 'La foto excede 10 MB. Reduce el tamaño o calidad.',
+      );
       setPdfFile(null);
       if (pdfRef.current) pdfRef.current.value = '';
       return;
     }
-    const ext = (file.name.split('.').pop() ?? '').toLowerCase();
-    if (ext !== 'pdf') {
-      setPdfWarning('Solo se aceptan archivos PDF (.pdf).');
-      setPdfFile(null);
-      if (pdfRef.current) pdfRef.current.value = '';
-      return;
+    if (docKind === 'pdf') {
+      const ext = (file.name.split('.').pop() ?? '').toLowerCase();
+      if (ext !== 'pdf') {
+        setPdfWarning('Solo se aceptan archivos PDF (.pdf).');
+        setPdfFile(null);
+        if (pdfRef.current) pdfRef.current.value = '';
+        return;
+      }
+    } else if (docKind === 'photo') {
+      const mime = (file.type ?? '').toLowerCase();
+      if (!mime.startsWith('image/')) {
+        setPdfWarning('Solo se aceptan imágenes (JPG, PNG, HEIC, etc.).');
+        setPdfFile(null);
+        if (pdfRef.current) pdfRef.current.value = '';
+        return;
+      }
+      // Generamos un object URL para mostrar el preview de la foto.
+      // Lo liberaremos cuando el componente se desmonte o el archivo
+      // cambie de nuevo.
+      setPhotoPreview(URL.createObjectURL(file));
     }
     setPdfFile(file);
+  }
+
+  /** Cambia entre tabs PDF/Foto. Al cambiar limpiamos el archivo
+   *  seleccionado (un PDF no aplica como foto y viceversa) y el
+   *  warning. Clickear el tab activo lo deselecciona. */
+  function handleDocKindToggle(next: LeadDocumentKind) {
+    if (photoPreview) {
+      URL.revokeObjectURL(photoPreview);
+      setPhotoPreview(null);
+    }
+    if (pdfRef.current) pdfRef.current.value = '';
+    setPdfFile(null);
+    setPdfWarning(null);
+    setDocKind((prev) => (prev === next ? null : next));
   }
 
   const onInvalidSubmit = (formErrors: FieldErrors<LeadCreateInput>) => {
@@ -716,17 +769,17 @@ export function NewLeadForm({
             </div>
           </Section>
 
-          {/* Documento adjunto (Grupo 3). PDF opcional asociado al lead.
-              Se sube al bucket lead-documents después de que el lead
-              se crea/actualiza. Max 10 MB, solo .pdf. En edit mode si
-              el lead ya tiene PDF, se muestra un link al actual; subir
-              uno nuevo lo reemplaza. */}
+          {/* Documento adjunto (Grupo 3). PDF O Foto opcional asociado
+              al lead (excluyentes). Se sube al bucket lead-documents
+              después de que el lead se crea/actualiza. Max 10 MB. En
+              edit mode si el lead ya tiene documento, se muestra un
+              link al actual; subir uno nuevo lo reemplaza. */}
           <Section
             title="Documento adjunto"
             subtitle={
               isEdit && initialDocumentUrl
-                ? 'Cotización o contrato (opcional). Subir uno nuevo reemplaza al actual.'
-                : 'Cotización, contrato o cualquier PDF asociado al pedido (opcional, máx. 10 MB).'
+                ? 'Cotización, contrato o foto (opcional). Subir uno nuevo reemplaza al actual.'
+                : 'Cotización o contrato (PDF) o foto del pedido (opcional, máx. 10 MB).'
             }
           >
             {isEdit && initialDocumentUrl && !pdfFile && (
@@ -738,7 +791,7 @@ export function NewLeadForm({
                   size={14}
                   style={{ color: 'var(--brand-secondary)' }}
                 />
-                <span>PDF actual:</span>
+                <span>Documento actual:</span>
                 <a
                   href={initialDocumentUrl}
                   target="_blank"
@@ -753,67 +806,168 @@ export function NewLeadForm({
                 </a>
               </div>
             )}
+            {/* Toggle PDF ↔ Foto. Estilo tab/pill: el activo se pinta
+                con --brand-primary; el inactivo en gris. Clickear el
+                activo lo desactiva (estado "ninguno seleccionado"). */}
             <div
-              id="field-pdf"
-              className="rounded-lg border p-4 flex items-start gap-3"
-              style={{
-                borderColor: pdfFile
-                  ? 'var(--success, #16A34A)'
-                  : 'var(--border)',
-                background: pdfFile ? '#F0FDF4' : 'var(--bg-subtle)',
-                cursor: pending ? 'not-allowed' : 'pointer',
-              }}
-              onClick={() => !pending && pdfRef.current?.click()}
+              role="tablist"
+              aria-label="Tipo de documento"
+              className="flex gap-2 mb-3"
             >
-              <FileText
-                size={22}
-                style={{
-                  color: pdfFile
-                    ? 'var(--success, #16A34A)'
-                    : 'var(--text-tertiary)',
-                  flexShrink: 0,
-                  marginTop: 2,
-                }}
-              />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="text-sm font-medium">
-                  {pdfFile ? pdfFile.name : 'Selecciona un PDF…'}
-                </div>
-                <div
-                  className="text-[11px] mt-1"
-                  style={{ color: 'var(--text-tertiary)' }}
-                >
-                  {pdfFile
-                    ? `${(pdfFile.size / 1024 / 1024).toFixed(2)} MB · listo para subir`
-                    : 'Solo .pdf · máx. 10 MB'}
-                </div>
-              </div>
-              {pdfFile && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handlePdfChange(null);
-                  }}
-                  className="btn btn-ghost"
-                  style={{ padding: '4px' }}
-                  disabled={pending}
-                  aria-label="Quitar PDF"
-                >
-                  <X size={14} />
-                </button>
-              )}
-              <input
-                ref={pdfRef}
-                type="file"
-                accept="application/pdf,.pdf"
-                onChange={(e) =>
-                  handlePdfChange(e.target.files?.[0] ?? null)
-                }
-                style={{ display: 'none' }}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={docKind === 'pdf'}
+                onClick={() => handleDocKindToggle('pdf')}
                 disabled={pending}
-              />
+                className="btn"
+                style={{
+                  padding: '6px 14px',
+                  background:
+                    docKind === 'pdf'
+                      ? 'var(--brand-primary)'
+                      : 'var(--bg-subtle)',
+                  color:
+                    docKind === 'pdf' ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontWeight: 500,
+                }}
+              >
+                <FileText size={14} />
+                <span>PDF</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={docKind === 'photo'}
+                onClick={() => handleDocKindToggle('photo')}
+                disabled={pending}
+                className="btn"
+                style={{
+                  padding: '6px 14px',
+                  background:
+                    docKind === 'photo'
+                      ? 'var(--brand-primary)'
+                      : 'var(--bg-subtle)',
+                  color:
+                    docKind === 'photo' ? '#fff' : 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontWeight: 500,
+                }}
+              >
+                <Camera size={14} />
+                <span>Foto</span>
+              </button>
             </div>
+
+            {/* Área de upload — solo visible cuando hay un kind
+                seleccionado. Hasta entonces solo se ven los tabs. */}
+            {docKind && (
+              <div
+                id="field-pdf"
+                className="rounded-lg border p-4 flex items-start gap-3"
+                style={{
+                  borderColor: pdfFile
+                    ? 'var(--success, #16A34A)'
+                    : 'var(--border)',
+                  background: pdfFile ? '#F0FDF4' : 'var(--bg-subtle)',
+                  cursor: pending ? 'not-allowed' : 'pointer',
+                }}
+                onClick={() => !pending && pdfRef.current?.click()}
+              >
+                {docKind === 'pdf' ? (
+                  <FileText
+                    size={22}
+                    style={{
+                      color: pdfFile
+                        ? 'var(--success, #16A34A)'
+                        : 'var(--text-tertiary)',
+                      flexShrink: 0,
+                      marginTop: 2,
+                    }}
+                  />
+                ) : photoPreview ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={photoPreview}
+                    alt="Previsualización"
+                    style={{
+                      width: 64,
+                      height: 64,
+                      objectFit: 'cover',
+                      borderRadius: 6,
+                      flexShrink: 0,
+                    }}
+                  />
+                ) : (
+                  <Camera
+                    size={22}
+                    style={{
+                      color: 'var(--text-tertiary)',
+                      flexShrink: 0,
+                      marginTop: 2,
+                    }}
+                  />
+                )}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="text-sm font-medium">
+                    {pdfFile
+                      ? pdfFile.name
+                      : docKind === 'pdf'
+                        ? 'Selecciona un PDF…'
+                        : 'Toma o selecciona una foto…'}
+                  </div>
+                  <div
+                    className="text-[11px] mt-1"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    {pdfFile
+                      ? `${(pdfFile.size / 1024 / 1024).toFixed(2)} MB · listo para subir`
+                      : docKind === 'pdf'
+                        ? 'Solo .pdf · máx. 10 MB'
+                        : 'JPG, PNG, HEIC · máx. 10 MB'}
+                  </div>
+                </div>
+                {pdfFile && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDocChange(null);
+                    }}
+                    className="btn btn-ghost"
+                    style={{ padding: '4px' }}
+                    disabled={pending}
+                    aria-label={
+                      docKind === 'pdf' ? 'Quitar PDF' : 'Quitar foto'
+                    }
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+                {/* Input según kind. Re-creamos el elemento al cambiar
+                    de tab (key={docKind}) para que `capture` y `accept`
+                    sean los correctos sin trampas del browser. */}
+                <input
+                  key={docKind}
+                  ref={pdfRef}
+                  type="file"
+                  accept={docKind === 'pdf' ? 'application/pdf,.pdf' : 'image/*'}
+                  capture={docKind === 'photo' ? 'environment' : undefined}
+                  onChange={(e) =>
+                    handleDocChange(e.target.files?.[0] ?? null)
+                  }
+                  style={{ display: 'none' }}
+                  disabled={pending}
+                />
+              </div>
+            )}
             {pdfWarning && (
               <div
                 role="alert"

@@ -247,7 +247,7 @@ export async function updateUserAction(
         message: `No se pudo verificar tu rol: ${callerErr.message}`,
       };
     }
-    if (callerProfile?.role !== 'admin') {
+    if (callerProfile?.role !== 'admin' && callerProfile?.role !== 'admin2') {
       return {
         status: 'error',
         message: 'Solo un administrador puede editar usuarios.',
@@ -255,9 +255,10 @@ export async function updateUserAction(
     }
 
     // Anti-self-demote: si te estás editando a ti mismo, role debe
-    // seguir siendo 'admin'. Antes de leer la fila del target chequeamos
-    // los uuids para evitar un round-trip cuando no aplica.
-    if (profile_id === user.id && role !== 'admin') {
+    // seguir siendo admin o admin2 (ambos son roles administrativos).
+    // Antes de leer la fila del target chequeamos los uuids para evitar
+    // un round-trip cuando no aplica.
+    if (profile_id === user.id && role !== 'admin' && role !== 'admin2') {
       return {
         status: 'error',
         message:

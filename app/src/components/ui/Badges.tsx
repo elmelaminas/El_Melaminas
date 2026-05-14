@@ -95,8 +95,12 @@ export function StockBadge({ status }: { status: StockStatus }) {
   return <span className={STOCK_BADGE[status]}>{STOCK_LABEL[status]}</span>;
 }
 
+// `admin2` usa un estilo índigo más oscuro (inline, no en globals.css)
+// para diferenciarlo visualmente del admin regular (badge-primary, lavanda)
+// sin tener que crear una nueva clase CSS global.
 const ROLE_BADGE: Record<Role, string> = {
   admin: 'badge badge-primary',
+  admin2: 'badge',
   seller: 'badge badge-success',
   driver: 'badge badge-purple',
   warehouse: 'badge badge-orange',
@@ -105,12 +109,26 @@ const ROLE_BADGE: Record<Role, string> = {
 };
 const ROLE_LABEL: Record<Role, string> = {
   admin: 'Administrador',
+  admin2: 'Administrador 2',
   seller: 'Vendedor',
   driver: 'Chofer',
   warehouse: 'Almacén',
   supervisor: 'Supervisor',
   contador: 'Contador',
 };
+// Estilo inline para admin2 — índigo profundo, contrasta con el lavanda
+// del admin regular.
+const ADMIN2_STYLE: React.CSSProperties = {
+  background: '#312E81',
+  color: '#E0E7FF',
+};
 export function RoleBadge({ role }: { role: Role }) {
-  return <span className={ROLE_BADGE[role]}>{ROLE_LABEL[role]}</span>;
+  return (
+    <span
+      className={ROLE_BADGE[role]}
+      style={role === 'admin2' ? ADMIN2_STYLE : undefined}
+    >
+      {ROLE_LABEL[role]}
+    </span>
+  );
 }

@@ -36,6 +36,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const ROLES = [
   'admin',
+  'admin2',
   'seller',
   'driver',
   'warehouse',
@@ -47,6 +48,7 @@ type Role = (typeof ROLES)[number];
 /** Pantalla principal por rol — destino tras login y fallback de RBAC. */
 const HOME_BY_ROLE: Record<Role, string> = {
   admin: '/dashboard',
+  admin2: '/dashboard',
   seller: '/leads/new',
   driver: '/driver',
   warehouse: '/warehouse',
@@ -60,25 +62,28 @@ const HOME_BY_ROLE: Record<Role, string> = {
  *
  * El orden de los `if` importa: `/leads/new` se chequea ANTES de `/leads`
  * porque ambos prefijos chocan y la regla de `/leads/new` es más estricta.
+ *
+ * admin2 es un rol "validador de caja": tiene acceso a casi todo lo que
+ * tiene admin operativo MÁS acceso exclusivo a /admin/caja (donde admin
+ * regular NO entra) y acceso a /contador (que admin tampoco tiene).
  */
 function rolesAllowed(pathname: string): readonly Role[] | null {
-  // /admin/* (incluye /admin/caja) → solo admin. Esa regla "atrapa-todo"
-  // se evalúa primero, así no hay que listar /admin/caja explícitamente.
-  if (pathname.startsWith('/admin')) return ['admin'];
-  if (pathname === '/leads/new' || pathname.startsWith('/leads/new/')) return ['admin', 'seller'];
-  // Editar un lead (`/leads/<uuid>/edit`) es exclusivo de admin.
-  // Probamos ANTES de la regla genérica /leads/* porque ésta abriría
-  // edit a supervisor. Match: /leads/<algo>/edit (con o sin trailing).
-  if (/^\/leads\/[^/]+\/edit(\/|$)/.test(pathname)) return ['admin'];
-  if (pathname === '/leads' || pathname.startsWith('/leads/')) return ['admin', 'supervisor'];
-  if (pathname === '/payments' || pathname.startsWith('/payments/')) return ['admin', 'supervisor'];
-  if (pathname === '/dashboard') return ['admin', 'supervisor'];
-  if (pathname === '/driver' || pathname.startsWith('/driver/')) return ['admin', 'driver'];
-  if (pathname === '/warehouse' || pathname.startsWith('/warehouse/')) return ['admin', 'warehouse'];
-  if (pathname === '/reports' || pathname.startsWith('/reports/')) return ['admin', 'supervisor'];
-  // /contador es para el rol contador (recibe efectivo de los choferes).
-  // Los admins también pueden entrar para auditar/operar como contador.
-  if (pathname === '/contador' || pathname.startsWith('/contador/')) return ['admin', 'contador'];
+  // /admin/caja → SOLO admin2 (el admin regular ya no valida caja).
+  // Hay que chequearlo ANTES de /admin/* para que no caiga al match general.
+  if (pathname === '/admin/caja' || pathname.startsWith('/admin/caja/')) return ['admin2'];
+  // /admin/* (resto) → admin Y admin2.
+  if (pathname.startsWith('/admin')) return ['admin', 'admin2'];
+  if (pathname === '/leads/new' || pathname.startsWith('/leads/new/')) return ['admin', 'admin2', 'seller'];
+  // Editar un lead (`/leads/<uuid>/edit`) es exclusivo de admin/admin2.
+  if (/^\/leads\/[^/]+\/edit(\/|$)/.test(pathname)) return ['admin', 'admin2'];
+  if (pathname === '/leads' || pathname.startsWith('/leads/')) return ['admin', 'admin2', 'supervisor'];
+  if (pathname === '/payments' || pathname.startsWith('/payments/')) return ['admin', 'admin2', 'supervisor'];
+  if (pathname === '/dashboard') return ['admin', 'admin2', 'supervisor'];
+  if (pathname === '/driver' || pathname.startsWith('/driver/')) return ['admin', 'admin2', 'driver'];
+  if (pathname === '/warehouse' || pathname.startsWith('/warehouse/')) return ['admin', 'admin2', 'warehouse'];
+  if (pathname === '/reports' || pathname.startsWith('/reports/')) return ['admin', 'admin2', 'supervisor'];
+  // /contador: contador + admin2 (admin regular ya no opera caja).
+  if (pathname === '/contador' || pathname.startsWith('/contador/')) return ['admin2', 'contador'];
   return null;
 }
 

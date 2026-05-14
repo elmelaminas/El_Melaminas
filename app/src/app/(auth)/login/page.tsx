@@ -41,6 +41,7 @@ import { type Role } from '@/data/mock';
 
 const ROLE_TARGET: Record<Role, string> = {
   admin: '/dashboard',
+  admin2: '/dashboard',
   seller: '/leads/new',
   driver: '/driver',
   warehouse: '/warehouse',
@@ -50,6 +51,7 @@ const ROLE_TARGET: Record<Role, string> = {
 
 const ALLOWED_ROLES: readonly Role[] = [
   'admin',
+  'admin2',
   'seller',
   'driver',
   'warehouse',

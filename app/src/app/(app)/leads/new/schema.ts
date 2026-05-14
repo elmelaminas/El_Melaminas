@@ -307,23 +307,32 @@ export const initialLeadFormState: LeadFormState = { status: 'idle' };
 // ─── Upload de documento PDF (Grupo 3) ───────────────────────────────
 
 /**
- * Upload de PDF asociado a un lead. La validación de archivo (mime,
- * size) vive en el action porque `File` no se serializa en JSON; el
- * schema valida solo el `lead_id`.
+ * Upload de documento asociado a un lead — soporta PDF o Foto (uno u
+ * otro, no ambos). La validación de archivo (mime, size) vive en el
+ * action porque `File` no se serializa en JSON; el schema valida solo
+ * el `lead_id` y el `kind`.
  *
- * Flujo: al guardar el lead, si el usuario adjuntó PDF, después del
- * INSERT exitoso se llama `uploadLeadDocumentAction(leadId, file)`
- * que sube al bucket `lead-documents` y UPDATEa
+ * Flujo: al guardar el lead, si el usuario adjuntó documento, después
+ * del INSERT exitoso se llama `uploadLeadDocumentAction(leadId, kind,
+ * file)` que sube al bucket `lead-documents` y UPDATEa
  * `leads.document_url`. La subida es non-fatal: si falla, el lead
- * sigue creado y la UI muestra warning (mejor un lead sin PDF que
+ * sigue creado y la UI muestra warning (mejor un lead sin doc que
  * un lead perdido).
+ *
+ * `kind`:
+ *   - 'pdf'   → accept .pdf, ruta {lead_id}/doc_{timestamp}.pdf
+ *   - 'photo' → accept image/*, ruta {lead_id}/photo_{timestamp}.jpg
  *
  * Migración manual previa en Supabase:
  *   ALTER TABLE leads ADD COLUMN IF NOT EXISTS document_url text;
  *   -- Storage: crear bucket 'lead-documents' (público o con políticas).
  */
+export const LEAD_DOCUMENT_KINDS = ['pdf', 'photo'] as const;
+export type LeadDocumentKind = (typeof LEAD_DOCUMENT_KINDS)[number];
+
 export const UploadLeadDocumentSchema = z.object({
   lead_id: z.string().uuid('lead_id inválido'),
+  kind: z.enum(LEAD_DOCUMENT_KINDS, { message: 'Tipo de documento inválido' }),
 });
 
 export type UploadLeadDocumentState =

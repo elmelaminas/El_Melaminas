@@ -113,7 +113,7 @@ export async function updateLeadFullAction(
         message: `No se pudo verificar tu rol: ${profErr.message}`,
       };
     }
-    if (callerProfile?.role !== 'admin') {
+    if (callerProfile?.role !== 'admin' && callerProfile?.role !== 'admin2') {
       return {
         status: 'error',
         message: 'Solo un administrador puede editar leads.',

@@ -72,7 +72,7 @@ export async function updateLeadColorAction(
         message: `No se pudo verificar tu rol: ${profileErr.message}`,
       };
     }
-    if (profile?.role !== 'admin') {
+    if (profile?.role !== 'admin' && profile?.role !== 'admin2') {
       return {
         status: 'error',
         message: 'Solo un administrador puede cambiar el color de fila.',

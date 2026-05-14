@@ -4,7 +4,7 @@
    Sin Supabase: todos los datos viven aquí.
    ═══════════════════════════════════════════ */
 
-export type Role = 'admin' | 'seller' | 'driver' | 'warehouse' | 'supervisor' | 'contador';
+export type Role = 'admin' | 'admin2' | 'seller' | 'driver' | 'warehouse' | 'supervisor' | 'contador';
 
 export interface MockUser {
   id: string;
@@ -211,6 +211,7 @@ export const formatMXN = (n: number): string =>
 export const roleLabel = (r: Role): string =>
   ({
     admin: 'Administrador',
+    admin2: 'Administrador 2',
     seller: 'Vendedor',
     driver: 'Chofer',
     warehouse: 'Almacén',

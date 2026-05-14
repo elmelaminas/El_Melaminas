@@ -42,28 +42,30 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { id: 'nav-dashboard',        href: '/dashboard',       label: 'Dashboard',         icon: <LayoutDashboard size={18} />, roles: ['admin', 'supervisor'] },
-  { id: 'nav-nuevo-lead',       href: '/leads/new',       label: 'Nuevo Lead',        icon: <CirclePlus size={18} />,      roles: ['admin', 'seller'] },
-  { id: 'nav-leads',            href: '/leads',           label: 'Leads',             icon: <ClipboardList size={18} />,   roles: ['admin', 'seller'] },
-  { id: 'nav-pagos',            href: '/payments',        label: 'Pagos',             icon: <CreditCard size={18} />,      roles: ['admin'] },
-  { id: 'nav-registrar-pago',   href: '/payments/new',    label: 'Registrar Pago',    icon: <CirclePlus size={18} />,      roles: ['admin'] },
+  { id: 'nav-dashboard',        href: '/dashboard',       label: 'Dashboard',         icon: <LayoutDashboard size={18} />, roles: ['admin', 'admin2', 'supervisor'] },
+  { id: 'nav-nuevo-lead',       href: '/leads/new',       label: 'Nuevo Lead',        icon: <CirclePlus size={18} />,      roles: ['admin', 'admin2', 'seller'] },
+  { id: 'nav-leads',            href: '/leads',           label: 'Leads',             icon: <ClipboardList size={18} />,   roles: ['admin', 'admin2', 'seller'] },
+  { id: 'nav-pagos',            href: '/payments',        label: 'Pagos',             icon: <CreditCard size={18} />,      roles: ['admin', 'admin2'] },
+  { id: 'nav-registrar-pago',   href: '/payments/new',    label: 'Registrar Pago',    icon: <CirclePlus size={18} />,      roles: ['admin', 'admin2'] },
   // Admin ve TODAS las entregas con info del chofer asignado en una
   // ruta dedicada; el chofer ve solo las suyas en /driver. Dos NavItems
   // separados (en lugar de un href dinámico) porque cada rol los
   // entiende como pantallas semánticamente distintas — el admin nunca
   // verá "Mis Entregas" como label, lo confundiría.
-  { id: 'nav-entregas',         href: '/admin/entregas',  label: 'Entregas',          icon: <Truck size={18} />,           roles: ['admin'] },
+  { id: 'nav-entregas',         href: '/admin/entregas',  label: 'Entregas',          icon: <Truck size={18} />,           roles: ['admin', 'admin2'] },
   {                             href: '/driver',          label: 'Mis Entregas',      icon: <Truck size={18} />,           roles: ['driver'] },
   {                             href: '/driver?tab=hist', label: 'Historial',         icon: <History size={18} />,         roles: ['driver'] },
-  { id: 'nav-stock',            href: '/warehouse',       label: 'Stock',             icon: <Package size={18} />,         roles: ['admin', 'warehouse'] },
+  { id: 'nav-stock',            href: '/warehouse',       label: 'Stock',             icon: <Package size={18} />,         roles: ['admin', 'admin2', 'warehouse'] },
   { id: 'nav-registrar-entrada', href: '/warehouse?new=1', label: 'Registrar Entrada', icon: <PackagePlus size={18} />,    roles: ['warehouse'] },
   {                             href: '/warehouse?tab=mov', label: 'Movimientos',     icon: <ArrowLeftRight size={18} />,  roles: ['warehouse'] },
-  { id: 'nav-usuarios',         href: '/admin/users',     label: 'Usuarios',          icon: <UsersIcon size={18} />,       roles: ['admin'] },
-  { id: 'nav-catalogos',        href: '/admin/catalogs',  label: 'Catálogos',         icon: <BookOpen size={18} />,        roles: ['admin'] },
+  { id: 'nav-usuarios',         href: '/admin/users',     label: 'Usuarios',          icon: <UsersIcon size={18} />,       roles: ['admin', 'admin2'] },
+  { id: 'nav-catalogos',        href: '/admin/catalogs',  label: 'Catálogos',         icon: <BookOpen size={18} />,        roles: ['admin', 'admin2'] },
   // Caja del contador — recibe el efectivo que los choferes traen.
-  { id: 'nav-contador',         href: '/contador',        label: 'Caja',              icon: <DollarSign size={18} />,      roles: ['admin', 'contador'] },
-  // Validación de admin: confirma que el contador entregó el efectivo.
-  { id: 'nav-caja',             href: '/admin/caja',      label: 'Validar Caja',      icon: <DollarSign size={18} />,      roles: ['admin'] },
+  // admin regular ya no opera caja: solo contador + admin2.
+  { id: 'nav-contador',         href: '/contador',        label: 'Caja',              icon: <DollarSign size={18} />,      roles: ['contador', 'admin2'] },
+  // Validación de caja: exclusivo de admin2. El admin regular ya no
+  // valida — separación de responsabilidades.
+  { id: 'nav-caja',             href: '/admin/caja',      label: 'Validar Caja',      icon: <DollarSign size={18} />,      roles: ['admin2'] },
   {                             href: '/dashboard',       label: 'Reportes',          icon: <ChartBarBig size={18} />,       roles: ['supervisor'] },
 ];
 

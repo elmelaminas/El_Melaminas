@@ -24,6 +24,7 @@ import type { Role } from '@/data/mock';
 
 export const ROLES = [
   'admin',
+  'admin2',
   'seller',
   'driver',
   'warehouse',

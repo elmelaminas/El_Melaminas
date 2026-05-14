@@ -142,6 +142,59 @@ const STEPS_BY_ROLE: Readonly<Record<Role, TourStep[]>> = {
     },
   ],
 
+  // admin2: rol "validador de caja" — pasos enfocados en validación y
+  // caja, NO en leads/pagos operativos (aunque tiene acceso por menú).
+  admin2: [
+    {
+      element: '#nav-dashboard',
+      popover: {
+        title: '📊 Dashboard',
+        description:
+          'Métricas del mes: leads, cobros, efectivo validado, entregas pendientes y stock bajo. Puedes filtrar por mes y año.',
+      },
+    },
+    {
+      element: '#nav-contador',
+      popover: {
+        title: '💵 Caja',
+        description:
+          'Recepciones de efectivo que el contador ha registrado de los choferes. Tú las verás aquí antes de validarlas.',
+      },
+    },
+    {
+      element: '#nav-caja',
+      popover: {
+        title: '✅ Validar Caja',
+        description:
+          'Tu responsabilidad exclusiva: confirma que el contador entregó físicamente el efectivo. Tab "Por validar" muestra lo pendiente, "Validados" el historial.',
+      },
+    },
+    {
+      element: '#nav-entregas',
+      popover: {
+        title: '🚚 Entregas',
+        description:
+          'Vista de todas las entregas en curso. Útil para cruzar contra los cobros que se reciben.',
+      },
+    },
+    {
+      element: '#nav-usuarios',
+      popover: {
+        title: '👥 Usuarios',
+        description:
+          'Gestión del equipo: crea vendedores, choferes, almacenistas y contadores.',
+      },
+    },
+    {
+      element: '#tour-btn',
+      popover: {
+        title: '❓ Ayuda',
+        description:
+          '¡Este botón! Presiona aquí cuando quieras volver a ver el recorrido.',
+      },
+    },
+  ],
+
   seller: [
     {
       element: '#nav-nuevo-lead',

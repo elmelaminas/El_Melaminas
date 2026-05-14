@@ -57,7 +57,7 @@ export async function resolveIssueAction(
         message: `No se pudo verificar tu rol: ${profileErr.message}`,
       };
     }
-    if (profile?.role !== 'admin') {
+    if (profile?.role !== 'admin' && profile?.role !== 'admin2') {
       return {
         status: 'error',
         message: 'Solo un administrador puede resolver issues.',
@@ -168,7 +168,7 @@ export async function assignDeliveryRouteAction(
         message: `No se pudo verificar tu rol: ${profileErr.message}`,
       };
     }
-    if (profile?.role !== 'admin') {
+    if (profile?.role !== 'admin' && profile?.role !== 'admin2') {
       return {
         status: 'error',
         message: 'Solo un administrador puede asignar rutas.',
@@ -393,7 +393,7 @@ export async function returnStockAction(
         message: `No se pudo verificar tu rol: ${profErr.message}`,
       };
     }
-    if (callerProfile?.role !== 'admin') {
+    if (callerProfile?.role !== 'admin' && callerProfile?.role !== 'admin2') {
       return {
         status: 'error',
         message: 'Solo un administrador puede devolver stock.',
@@ -694,7 +694,7 @@ export async function reassignDeliveryAction(
         message: `No se pudo verificar tu rol: ${profErr.message}`,
       };
     }
-    if (callerProfile?.role !== 'admin') {
+    if (callerProfile?.role !== 'admin' && callerProfile?.role !== 'admin2') {
       return {
         status: 'error',
         message: 'Solo un administrador puede reenviar pedidos.',
@@ -984,7 +984,7 @@ export async function cancelLeadAction(
         message: `No se pudo verificar tu rol: ${profErr.message}`,
       };
     }
-    if (callerProfile?.role !== 'admin') {
+    if (callerProfile?.role !== 'admin' && callerProfile?.role !== 'admin2') {
       return {
         status: 'error',
         message: 'Solo un administrador puede cancelar compras.',

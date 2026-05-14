@@ -18,6 +18,7 @@ import type { Role } from '@/data/mock';
 // sobre arrays planos, así que un rol faltante NO se cacha en build.
 const ROLES: { value: Role; label: string }[] = [
   { value: 'admin', label: 'Administrador' },
+  { value: 'admin2', label: 'Administrador 2' },
   { value: 'seller', label: 'Vendedor' },
   { value: 'driver', label: 'Chofer' },
   { value: 'warehouse', label: 'Almacén' },

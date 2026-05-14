@@ -547,11 +547,12 @@ export async function uploadLeadDocumentAction(
   try {
     const parsed = UploadLeadDocumentSchema.safeParse({
       lead_id: formData.get('lead_id'),
+      kind: formData.get('kind'),
     });
     if (!parsed.success) {
-      return { status: 'error', message: 'lead_id inválido.' };
+      return { status: 'error', message: 'Datos del documento inválidos.' };
     }
-    const { lead_id } = parsed.data;
+    const { lead_id, kind } = parsed.data;
 
     const userClient = await supabaseServer();
     const {
@@ -563,30 +564,44 @@ export async function uploadLeadDocumentAction(
     }
 
     const file = formData.get('document');
+    const labelDoc = kind === 'pdf' ? 'PDF' : 'foto';
     if (!(file instanceof File) || file.size === 0) {
-      return { status: 'error', message: 'No se recibió el documento PDF.' };
+      return {
+        status: 'error',
+        message: `No se recibió ${kind === 'pdf' ? 'el PDF' : 'la foto'}.`,
+      };
     }
     if (file.size > LEAD_DOCUMENT_MAX_BYTES) {
       return {
         status: 'error',
-        message: 'El PDF excede 10 MB. Comprime o reduce el archivo.',
+        message: `${labelDoc === 'PDF' ? 'El PDF' : 'La foto'} excede 10 MB. Comprime o reduce el archivo.`,
       };
     }
-    // Validación cinturón+tirantes: extensión Y mime. El mime de un
-    // .pdf debería ser application/pdf, pero algunos navegadores lo
-    // mandan como octet-stream — aceptamos ambos si la extensión es
-    // .pdf.
+
+    // Validación cinturón+tirantes: extensión Y/o mime según kind.
     const ext = (file.name.split('.').pop() ?? '').toLowerCase();
-    if (ext !== 'pdf') {
-      return {
-        status: 'error',
-        message: 'Solo se aceptan archivos PDF (.pdf).',
-      };
+    if (kind === 'pdf') {
+      if (ext !== 'pdf') {
+        return {
+          status: 'error',
+          message: 'Solo se aceptan archivos PDF (.pdf).',
+        };
+      }
+    } else {
+      // Foto: validar por mime (image/*) — la extensión puede ser
+      // jpg/jpeg/png/heic/webp; cualquier image/* mime es válido.
+      const mime = (file.type ?? '').toLowerCase();
+      if (!mime.startsWith('image/')) {
+        return {
+          status: 'error',
+          message: 'Solo se aceptan imágenes (JPG, PNG, etc.).',
+        };
+      }
     }
 
     const admin = supabaseAdmin();
 
-    // Verificar que el lead existe — evitar PDFs huérfanos
+    // Verificar que el lead existe — evitar documentos huérfanos
     // referenciando leads inexistentes/borrados.
     const { data: leadRow, error: leadErr } = await admin
       .from('leads')
@@ -603,22 +618,30 @@ export async function uploadLeadDocumentAction(
       return { status: 'error', message: 'Lead no encontrado.' };
     }
 
-    // Path: {lead_id}/{timestamp}-{rand}.pdf — ver `driver/actions.ts`
-    // para el patrón. Random-suffix evita colisiones si dos uploads
-    // simultáneos al mismo lead caen en el mismo milisegundo.
-    const path = `${lead_id}/${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 8)}.pdf`;
+    // Path según kind:
+    //   PDF   → {lead_id}/doc_{timestamp}.pdf
+    //   Foto  → {lead_id}/photo_{timestamp}.jpg
+    // (La extensión .jpg para fotos se mantiene fija como convención,
+    // independientemente del mime real — el contentType correcto se
+    // pasa al upload para que el browser lo sirva bien.)
+    const timestamp = Date.now();
+    const path =
+      kind === 'pdf'
+        ? `${lead_id}/doc_${timestamp}.pdf`
+        : `${lead_id}/photo_${timestamp}.jpg`;
+    const contentType =
+      kind === 'pdf' ? 'application/pdf' : file.type || 'image/jpeg';
+
     const { error: upErr } = await admin.storage
       .from(LEAD_DOCUMENT_BUCKET)
       .upload(path, file, {
-        contentType: 'application/pdf',
+        contentType,
         upsert: false,
       });
     if (upErr) {
       return {
         status: 'error',
-        message: `No se pudo subir el PDF: ${upErr.message}`,
+        message: `No se pudo subir ${kind === 'pdf' ? 'el PDF' : 'la foto'}: ${upErr.message}`,
       };
     }
     const { data: pub } = admin.storage
@@ -635,13 +658,13 @@ export async function uploadLeadDocumentAction(
       .update({ document_url: documentUrl })
       .eq('id', lead_id);
     if (updErr) {
-      // Cleanup del PDF recién subido — si el UPDATE falla no queremos
-      // huérfanos en storage.
+      // Cleanup del archivo recién subido — si el UPDATE falla no
+      // queremos huérfanos en storage.
       try {
         await admin.storage.from(LEAD_DOCUMENT_BUCKET).remove([path]);
       } catch (e) {
         console.error(
-          '[uploadLeadDocumentAction] cleanup PDF huérfano falló:',
+          '[uploadLeadDocumentAction] cleanup documento huérfano falló:',
           e,
         );
       }

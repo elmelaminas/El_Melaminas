@@ -108,7 +108,10 @@ export default async function EditLeadPage({
         />
       );
     }
-    if (profileResult.data?.role !== 'admin') {
+    if (
+      profileResult.data?.role !== 'admin' &&
+      profileResult.data?.role !== 'admin2'
+    ) {
       return (
         <ErrorState message="Solo un administrador puede editar leads." />
       );
