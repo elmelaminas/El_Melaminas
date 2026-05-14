@@ -14,7 +14,12 @@ import type { LeadCreateInput } from '../../new/schema';
  */
 export type EditLeadFormData = {
   leadId: string;
+  /** URL legacy del único documento adjunto. Solo para leads viejos
+   *  pre-multifile. Si `initialDocumentUrls` tiene contenido, gana ese. */
   initialDocumentUrl: string | null;
+  /** Array de URLs de archivos adjuntos (multifile). En leads viejos
+   *  llega vacío y el form cae al `initialDocumentUrl`. */
+  initialDocumentUrls: string[];
   initialValues: Partial<LeadCreateInput>;
 };
 
@@ -49,6 +54,7 @@ export function EditLeadForm({
       leadId={formData.leadId}
       initialValues={formData.initialValues}
       initialDocumentUrl={formData.initialDocumentUrl}
+      initialDocumentUrls={formData.initialDocumentUrls}
       sellers={sellers}
       colors={colors}
       drivers={drivers}

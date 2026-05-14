@@ -8,12 +8,14 @@ import {
   NEW_COLOR_SENTINEL,
   CUT_RATE,
   EDGE_BANDING_RATE,
-  UploadLeadDocumentSchema,
+  UploadLeadDocumentsSchema,
   LEAD_DOCUMENT_MAX_BYTES,
+  LEAD_DOCUMENT_MAX_FILES,
   LEAD_DOCUMENT_BUCKET,
+  LEAD_DOCUMENT_EXTS,
   type LeadCreateInput,
   type LeadFormState,
-  type UploadLeadDocumentState,
+  type UploadLeadDocumentsState,
   normalizeName,
   emptyToNull,
 } from './schema';
@@ -583,36 +585,45 @@ export async function saveLeadAction(
 }
 
 /**
- * `uploadLeadDocumentAction(_prev, formData)` — sube un PDF al bucket
- * `lead-documents` y guarda la URL pública en `leads.document_url`.
+ * `uploadLeadDocumentsAction(_prev, formData)` — sube hasta 5 archivos
+ * (PDFs e imágenes mezclados) al bucket `lead-documents` y guarda las
+ * URLs en `leads.document_urls` (array). También escribe la URL del
+ * primer archivo en `leads.document_url` para compat con UI legacy.
  *
- * Llamado por el formulario DESPUÉS del `saveLeadAction` exitoso. Si
- * la subida falla, el lead ya existe (no se rolledback) — el usuario
- * ve un warning en la UI y puede reintentar el upload luego desde la
- * página del lead.
+ * Llamado por el form DESPUÉS del `saveLeadAction` exitoso. Si la
+ * subida falla, el lead ya existe (no rollback) — la UI muestra
+ * warning y el admin puede reintentar desde /leads/[id]/edit.
  *
- * Auth: cualquier usuario autenticado puede subir un PDF a un lead.
- * El `lead_id` se valida que exista (pero no que sea propiedad del
- * caller — los leads no tienen ownership formal, son colaborativos
- * entre admin/seller/contador). Si en el futuro quieres restringir
- * por created_by, agrega la verificación acá.
+ * El cliente manda los archivos como `document_0`, `document_1`, ...
+ * Iteramos hasta encontrar el primer slot vacío (no asumimos
+ * contigüidad pero sí lo respetamos en la práctica).
  *
- * Solo se aceptan PDFs (validación de extensión + content-type).
- * Tamaño máximo 10 MB (definido en schema.ts).
+ * Auth: cualquier usuario autenticado. Sin ownership check (los leads
+ * son colaborativos entre admin/seller/contador).
+ *
+ * Validación por archivo (cinturón + tirantes):
+ *   - tamaño ≤ 10 MB
+ *   - extensión en LEAD_DOCUMENT_EXTS
+ *
+ * Si un archivo falla la subida, abortamos: cleanup de los ya subidos
+ * (best-effort) y retornamos error. El UPDATE del lead solo corre si
+ * TODOS los archivos subieron OK.
+ *
+ * REQUIERE migración manual previa:
+ *   ALTER TABLE leads ADD COLUMN IF NOT EXISTS document_urls text[] DEFAULT '{}';
  */
-export async function uploadLeadDocumentAction(
-  _prev: UploadLeadDocumentState,
+export async function uploadLeadDocumentsAction(
+  _prev: UploadLeadDocumentsState,
   formData: FormData,
-): Promise<UploadLeadDocumentState> {
+): Promise<UploadLeadDocumentsState> {
   try {
-    const parsed = UploadLeadDocumentSchema.safeParse({
+    const parsed = UploadLeadDocumentsSchema.safeParse({
       lead_id: formData.get('lead_id'),
-      kind: formData.get('kind'),
     });
     if (!parsed.success) {
       return { status: 'error', message: 'Datos del documento inválidos.' };
     }
-    const { lead_id, kind } = parsed.data;
+    const { lead_id } = parsed.data;
 
     const userClient = await supabaseServer();
     const {
@@ -623,49 +634,50 @@ export async function uploadLeadDocumentAction(
       return { status: 'error', message: 'Sesión no válida.' };
     }
 
-    const file = formData.get('document');
-    const labelDoc = kind === 'pdf' ? 'PDF' : 'foto';
-    if (!(file instanceof File) || file.size === 0) {
-      return {
-        status: 'error',
-        message: `No se recibió ${kind === 'pdf' ? 'el PDF' : 'la foto'}.`,
-      };
+    // Recolectar archivos: document_0, document_1, … hasta MAX_FILES.
+    // Si el cliente manda más allá de MAX_FILES los ignoramos (cap).
+    const files: File[] = [];
+    for (let i = 0; i < LEAD_DOCUMENT_MAX_FILES; i++) {
+      const slot = formData.get(`document_${i}`);
+      if (slot instanceof File && slot.size > 0) {
+        files.push(slot);
+      }
     }
-    if (file.size > LEAD_DOCUMENT_MAX_BYTES) {
+    if (files.length === 0) {
+      return { status: 'error', message: 'No se recibió ningún archivo.' };
+    }
+    if (files.length > LEAD_DOCUMENT_MAX_FILES) {
       return {
         status: 'error',
-        message: `${labelDoc === 'PDF' ? 'El PDF' : 'La foto'} excede 10 MB. Comprime o reduce el archivo.`,
+        message: `Máximo ${LEAD_DOCUMENT_MAX_FILES} archivos por lead.`,
       };
     }
 
-    // Validación cinturón+tirantes: extensión Y/o mime según kind.
-    const ext = (file.name.split('.').pop() ?? '').toLowerCase();
-    if (kind === 'pdf') {
-      if (ext !== 'pdf') {
+    // Validación por archivo ANTES de tocar storage — fallar barato.
+    for (const f of files) {
+      if (f.size > LEAD_DOCUMENT_MAX_BYTES) {
         return {
           status: 'error',
-          message: 'Solo se aceptan archivos PDF (.pdf).',
+          message: `El archivo "${f.name}" excede 10 MB.`,
         };
       }
-    } else {
-      // Foto: validar por mime (image/*) — la extensión puede ser
-      // jpg/jpeg/png/heic/webp; cualquier image/* mime es válido.
-      const mime = (file.type ?? '').toLowerCase();
-      if (!mime.startsWith('image/')) {
+      const ext = (f.name.split('.').pop() ?? '').toLowerCase();
+      if (!(LEAD_DOCUMENT_EXTS as readonly string[]).includes(ext)) {
         return {
           status: 'error',
-          message: 'Solo se aceptan imágenes (JPG, PNG, etc.).',
+          message: `Formato no soportado en "${f.name}". Usa PDF, JPG, PNG, WEBP o HEIC.`,
         };
       }
     }
 
     const admin = supabaseAdmin();
 
-    // Verificar que el lead existe — evitar documentos huérfanos
-    // referenciando leads inexistentes/borrados.
+    // Verificar que el lead existe — evitar documentos huérfanos.
+    // También leemos document_urls actual para fusionar (no
+    // sobreescribir si el lead ya tenía archivos).
     const { data: leadRow, error: leadErr } = await admin
       .from('leads')
-      .select('id, document_url')
+      .select('id, document_urls')
       .eq('id', lead_id)
       .maybeSingle();
     if (leadErr) {
@@ -678,74 +690,221 @@ export async function uploadLeadDocumentAction(
       return { status: 'error', message: 'Lead no encontrado.' };
     }
 
-    // Path según kind:
-    //   PDF   → {lead_id}/doc_{timestamp}.pdf
-    //   Foto  → {lead_id}/photo_{timestamp}.jpg
-    // (La extensión .jpg para fotos se mantiene fija como convención,
-    // independientemente del mime real — el contentType correcto se
-    // pasa al upload para que el browser lo sirva bien.)
-    const timestamp = Date.now();
-    const path =
-      kind === 'pdf'
-        ? `${lead_id}/doc_${timestamp}.pdf`
-        : `${lead_id}/photo_${timestamp}.jpg`;
-    const contentType =
-      kind === 'pdf' ? 'application/pdf' : file.type || 'image/jpeg';
-
-    const { error: upErr } = await admin.storage
-      .from(LEAD_DOCUMENT_BUCKET)
-      .upload(path, file, {
-        contentType,
-        upsert: false,
-      });
-    if (upErr) {
+    const existingUrls: string[] = Array.isArray(leadRow.document_urls)
+      ? (leadRow.document_urls as string[])
+      : [];
+    // Cap defensivo: si por alguna razón el lead ya tiene >= 5 docs,
+    // refusamos para no exceder.
+    if (existingUrls.length + files.length > LEAD_DOCUMENT_MAX_FILES) {
       return {
         status: 'error',
-        message: `No se pudo subir ${kind === 'pdf' ? 'el PDF' : 'la foto'}: ${upErr.message}`,
+        message: `Este lead ya tiene ${existingUrls.length} archivo(s); no se pueden agregar ${files.length} más (máximo ${LEAD_DOCUMENT_MAX_FILES}).`,
       };
     }
-    const { data: pub } = admin.storage
-      .from(LEAD_DOCUMENT_BUCKET)
-      .getPublicUrl(path);
-    const documentUrl = pub.publicUrl;
 
-    // UPDATE leads.document_url. Si el lead ya tenía un documento
-    // adjunto, lo sobreescribimos (no borramos el anterior — queda
-    // huérfano en storage). Si en el futuro quieres limpiar, agrega
-    // un DELETE del path anterior antes del UPDATE.
+    // Subir cada archivo. Si cualquiera falla, limpiamos los que ya
+    // subimos y retornamos error.
+    const uploadedPaths: string[] = [];
+    const newUrls: string[] = [];
+    const baseIdx = existingUrls.length;
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const ext = (f.name.split('.').pop() ?? 'bin').toLowerCase();
+      const slotIdx = baseIdx + i;
+      // Ruta: {lead_id}/{slot}_{timestamp}.{ext}
+      // slot evita colisiones cuando se agregan archivos en edits
+      // sucesivos; timestamp evita colisiones si dos uploads paralelos
+      // tocan el mismo slot.
+      const path = `${lead_id}/${slotIdx}_${Date.now()}_${Math.random()
+        .toString(36)
+        .slice(2, 6)}.${ext}`;
+      const contentType =
+        ext === 'pdf'
+          ? 'application/pdf'
+          : f.type || `image/${ext === 'jpg' ? 'jpeg' : ext}`;
+
+      const { error: upErr } = await admin.storage
+        .from(LEAD_DOCUMENT_BUCKET)
+        .upload(path, f, { contentType, upsert: false });
+      if (upErr) {
+        // Cleanup de los que sí subimos.
+        if (uploadedPaths.length > 0) {
+          try {
+            await admin.storage
+              .from(LEAD_DOCUMENT_BUCKET)
+              .remove(uploadedPaths);
+          } catch (e) {
+            console.error(
+              '[uploadLeadDocumentsAction] cleanup parcial falló:',
+              e,
+            );
+          }
+        }
+        return {
+          status: 'error',
+          message: `No se pudo subir "${f.name}": ${upErr.message}`,
+        };
+      }
+      uploadedPaths.push(path);
+      const { data: pub } = admin.storage
+        .from(LEAD_DOCUMENT_BUCKET)
+        .getPublicUrl(path);
+      newUrls.push(pub.publicUrl);
+    }
+
+    // UPDATE leads.document_urls (fusión) y leads.document_url
+    // (compat: primer archivo). Si el UPDATE falla, cleanup de TODOS
+    // los archivos recién subidos para no dejar huérfanos.
+    const mergedUrls = [...existingUrls, ...newUrls];
     const { error: updErr } = await admin
       .from('leads')
-      .update({ document_url: documentUrl })
+      .update({
+        document_urls: mergedUrls,
+        document_url: mergedUrls[0] ?? null,
+      })
       .eq('id', lead_id);
     if (updErr) {
-      // Cleanup del archivo recién subido — si el UPDATE falla no
-      // queremos huérfanos en storage.
       try {
-        await admin.storage.from(LEAD_DOCUMENT_BUCKET).remove([path]);
+        await admin.storage
+          .from(LEAD_DOCUMENT_BUCKET)
+          .remove(uploadedPaths);
       } catch (e) {
         console.error(
-          '[uploadLeadDocumentAction] cleanup documento huérfano falló:',
+          '[uploadLeadDocumentsAction] cleanup post-UPDATE falló:',
           e,
         );
       }
       return {
         status: 'error',
-        message: `No se pudo guardar la URL del documento: ${updErr.message}`,
+        message: `No se pudo guardar las URLs: ${updErr.message}`,
       };
     }
 
     revalidatePath('/leads');
     revalidatePath(`/leads/${lead_id}/edit`);
-    return { status: 'success', document_url: documentUrl };
+    return { status: 'success', document_urls: mergedUrls };
   } catch (err) {
     const message =
       err instanceof Error
         ? err.message
-        : 'Error desconocido al subir el documento';
+        : 'Error desconocido al subir los documentos';
     console.error(
-      '[uploadLeadDocumentAction] excepción no controlada:',
+      '[uploadLeadDocumentsAction] excepción no controlada:',
       err,
     );
+    return { status: 'error', message };
+  }
+}
+
+/**
+ * `deleteLeadDocumentAction(lead_id, url)` — elimina un archivo del
+ * array `leads.document_urls` y, best-effort, borra el blob del bucket.
+ *
+ * Usado por el editor de lead para que el admin pueda quitar archivos
+ * individuales antes de subir otros nuevos.
+ *
+ * Auth: cualquier usuario autenticado (mismo patrón que upload). No
+ * verificamos ownership porque los leads son colaborativos. Si en el
+ * futuro hay roles más estrictos, agregar role-check acá.
+ *
+ * Estrategia:
+ *   1. Validar lead_id y url.
+ *   2. SELECT document_urls actual.
+ *   3. Filtrar la URL pedida del array.
+ *   4. UPDATE leads.document_urls + leads.document_url (compat: primer
+ *      restante o null).
+ *   5. Best-effort: borrar el blob del storage. Si falla, el row queda
+ *      consistente (la URL ya no está referenciada) y el blob queda
+ *      huérfano — preferimos eso a abortar la operación.
+ */
+export async function deleteLeadDocumentAction(
+  lead_id: string,
+  url: string,
+): Promise<{ status: 'success' } | { status: 'error'; message: string }> {
+  try {
+    if (typeof lead_id !== 'string' || lead_id.length === 0) {
+      return { status: 'error', message: 'lead_id inválido.' };
+    }
+    if (typeof url !== 'string' || url.length === 0) {
+      return { status: 'error', message: 'URL inválida.' };
+    }
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return { status: 'error', message: 'Sesión no válida.' };
+    }
+
+    const admin = supabaseAdmin();
+
+    const { data: leadRow, error: leadErr } = await admin
+      .from('leads')
+      .select('document_urls')
+      .eq('id', lead_id)
+      .maybeSingle();
+    if (leadErr) {
+      return {
+        status: 'error',
+        message: `No se pudo leer el lead: ${leadErr.message}`,
+      };
+    }
+    if (!leadRow) {
+      return { status: 'error', message: 'Lead no encontrado.' };
+    }
+
+    const current: string[] = Array.isArray(leadRow.document_urls)
+      ? (leadRow.document_urls as string[])
+      : [];
+    const next = current.filter((u) => u !== url);
+    if (next.length === current.length) {
+      // El URL no estaba en el array — tratamos como idempotente.
+      return { status: 'success' };
+    }
+
+    const { error: updErr } = await admin
+      .from('leads')
+      .update({
+        document_urls: next,
+        document_url: next[0] ?? null,
+      })
+      .eq('id', lead_id);
+    if (updErr) {
+      return {
+        status: 'error',
+        message: `No se pudo actualizar: ${updErr.message}`,
+      };
+    }
+
+    // Best-effort: derivar el path desde la URL pública y borrar el
+    // blob. Public URLs de Supabase Storage tienen el formato
+    //   {host}/storage/v1/object/public/{bucket}/{path}
+    // Extraemos el segmento después de `/public/{bucket}/`.
+    try {
+      const marker = `/public/${LEAD_DOCUMENT_BUCKET}/`;
+      const idx = url.indexOf(marker);
+      if (idx >= 0) {
+        const path = decodeURIComponent(url.slice(idx + marker.length));
+        await admin.storage.from(LEAD_DOCUMENT_BUCKET).remove([path]);
+      }
+    } catch (e) {
+      console.error(
+        '[deleteLeadDocumentAction] cleanup blob falló (no fatal):',
+        e,
+      );
+    }
+
+    revalidatePath('/leads');
+    revalidatePath(`/leads/${lead_id}/edit`);
+    return { status: 'success' };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al eliminar el documento';
+    console.error('[deleteLeadDocumentAction] excepción no controlada:', err);
     return { status: 'error', message };
   }
 }

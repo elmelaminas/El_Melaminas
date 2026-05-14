@@ -74,7 +74,7 @@ export default async function EditLeadPage({
           `id, client_name, phone, address, maps_url, channel, seller_id,
            sale_place, sale_type, sale_date, purchase_type, product_type,
            cost_per_sheet, cuts_count, edge_banding_type,
-           edge_banding_meters, driver_id, document_url,
+           edge_banding_meters, driver_id, document_url, document_urls,
            delivery_status, deleted_at`,
         )
         .eq('id', id)
@@ -255,9 +255,17 @@ export default async function EditLeadPage({
     // `lead-documents` es bucket PÚBLICO — la URL guardada funciona
     // directo en el browser. Si en el futuro se cambia a privado,
     // habría que pasar por signEvidenceUrl como en payments-evidence.
+    // Normalizamos document_urls como array siempre; si es null o no es
+    // array (DB no migrada), filtramos nulos por defensa.
+    const rawUrls = leadResult.data.document_urls;
+    const initialDocumentUrls: string[] = Array.isArray(rawUrls)
+      ? rawUrls.filter((u): u is string => typeof u === 'string' && !!u)
+      : [];
+
     const formData: EditLeadFormData = {
       leadId: leadResult.data.id,
       initialDocumentUrl: leadResult.data.document_url ?? null,
+      initialDocumentUrls,
       initialValues: {
         client_name: leadResult.data.client_name ?? '',
         phone: leadResult.data.phone ?? '',

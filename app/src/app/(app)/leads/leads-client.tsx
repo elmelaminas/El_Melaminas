@@ -11,7 +11,10 @@ import {
   Loader,
   Pencil,
   FileText,
+  Image as ImageIcon,
+  Paperclip,
 } from 'lucide-react';
+import { isPdfUrl } from './new/schema';
 import {
   ChannelBadge,
   DeliveryBadge,
@@ -54,9 +57,14 @@ export type LeadRow = {
    *  'naranja', 'amarillo', 'azul', 'verde', 'morado', 'sin_color'.
    *  null o 'sin_color' → cae a reglas automáticas. */
   row_color: string | null;
-  /** URL del PDF adjunto al lead (Grupo 3). null si no hay documento.
-   *  Se muestra como ícono FileText clicable en la columna Cliente. */
+  /** URL del documento legacy (`leads.document_url`). null si no hay
+   *  documento. Se mantiene por compat con leads pre-multifile. La
+   *  UI moderna usa `document_urls` (array). */
   document_url: string | null;
+  /** Array de URLs de archivos adjuntos (PDFs + imágenes mezclados).
+   *  Origen: `leads.document_urls` con fallback a `[document_url]`
+   *  cuando solo existe el campo legacy (resuelto en page.tsx). */
+  document_urls: string[];
 };
 
 /**
@@ -542,25 +550,11 @@ export function LeadsClient({
                     <td>
                       <div className="flex items-center gap-2 flex-wrap">
                         <div className="font-medium">{l.client_name}</div>
-                        {l.document_url && (
-                          <a
-                            href={l.document_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded"
-                            style={{
-                              background: '#FEE2E2',
-                              color: '#B91C1C',
-                              fontSize: '0.6875rem',
-                              fontWeight: 600,
-                              textDecoration: 'none',
-                            }}
-                            title="Ver documento adjunto (PDF)"
-                            aria-label={`Ver PDF adjunto de ${l.client_name}`}
-                          >
-                            <FileText size={11} /> PDF
-                          </a>
+                        {l.document_urls.length > 0 && (
+                          <AttachmentsBadge
+                            urls={l.document_urls}
+                            clientName={l.client_name}
+                          />
                         )}
                       </div>
                       <div
@@ -602,28 +596,6 @@ export function LeadsClient({
                           value={l.row_color}
                           action={colorActionAdapter}
                         />
-                        {l.document_url && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              // window.open en lugar de <a target="_blank">
-                              // por petición explícita del usuario;
-                              // ambos producen el mismo efecto de
-                              // abrir en nueva pestaña (rel="noopener"
-                              // ya es default en navegadores modernos).
-                              window.open(l.document_url!, '_blank')
-                            }
-                            className="btn btn-ghost"
-                            style={{
-                              padding: '6px',
-                              color: 'var(--brand-secondary)',
-                            }}
-                            aria-label={`Ver PDF adjunto de ${l.client_name}`}
-                            title="Ver PDF adjunto"
-                          >
-                            <FileText size={16} />
-                          </button>
-                        )}
                         <Link
                           href={`/leads/${l.id}/edit`}
                           className="btn btn-ghost"
@@ -706,4 +678,116 @@ function formatDate(iso: string | null): string {
     month: 'short',
     year: 'numeric',
   });
+}
+
+/**
+ * Badge "clip + N" que abre un popover con la lista de archivos
+ * adjuntos al lead. Cada archivo es un link clickeable que abre en
+ * nueva pestaña. PDFs e imágenes se diferencian visualmente con
+ * ícono y color.
+ *
+ * Si solo hay 1 archivo, el badge sigue funcionando — el usuario lo
+ * abre con un click, ve el popover con 1 link, lo clickea. Simple
+ * y consistente.
+ */
+function AttachmentsBadge({
+  urls,
+  clientName,
+}: {
+  urls: string[];
+  clientName: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const count = urls.length;
+  return (
+    <div style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded"
+        style={{
+          background: '#DBEAFE',
+          color: '#1E40AF',
+          fontSize: '0.6875rem',
+          fontWeight: 600,
+          border: 'none',
+          cursor: 'pointer',
+        }}
+        aria-label={`Ver ${count} archivo${count === 1 ? '' : 's'} adjunto${count === 1 ? '' : 's'} de ${clientName}`}
+        title={`${count} archivo${count === 1 ? '' : 's'} adjunto${count === 1 ? '' : 's'}`}
+        aria-expanded={open}
+        aria-haspopup="menu"
+      >
+        <Paperclip size={11} />
+        {count}
+      </button>
+      {open && (
+        <>
+          {/* Backdrop transparente — al clickear afuera cierra. */}
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 40 }}
+            aria-hidden="true"
+          />
+          <div
+            role="menu"
+            aria-label="Archivos adjuntos"
+            className="card"
+            style={{
+              position: 'absolute',
+              top: '110%',
+              left: 0,
+              zIndex: 41,
+              padding: 6,
+              minWidth: 220,
+              maxWidth: 320,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+            }}
+          >
+            {urls.map((u, i) => {
+              const pdf = isPdfUrl(u);
+              const name = u.split('/').pop() ?? `Archivo ${i + 1}`;
+              const cleanName = /^\d+_\d+_[a-z0-9]+\./i.test(name)
+                ? `Archivo ${i + 1}.${name.split('.').pop() ?? ''}`
+                : name;
+              return (
+                <a
+                  key={u}
+                  href={u}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded"
+                  style={{
+                    color: 'var(--text-primary)',
+                    textDecoration: 'none',
+                    fontSize: '0.8125rem',
+                  }}
+                  role="menuitem"
+                >
+                  {pdf ? (
+                    <FileText
+                      size={14}
+                      style={{ color: '#B91C1C', flexShrink: 0 }}
+                    />
+                  ) : (
+                    <ImageIcon
+                      size={14}
+                      style={{ color: '#1E40AF', flexShrink: 0 }}
+                    />
+                  )}
+                  <span className="truncate">{cleanName}</span>
+                </a>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }

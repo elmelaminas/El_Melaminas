@@ -146,7 +146,7 @@ export default async function LeadsPage({
       .select(
         `id, client_name, phone, channel, sheets_count, total_amount,
          sale_date, created_at, delivery_status, payment_status,
-         sale_type, product_type, document_url, row_color,
+         sale_type, product_type, document_url, document_urls, row_color,
          sellers ( name )`,
         { count: 'exact' },
       )
@@ -254,34 +254,48 @@ export default async function LeadsPage({
       sale_type: string | null;
       product_type: string | null;
       document_url: string | null;
+      document_urls: string[] | null;
       row_color: string | null;
       sellers: { name: string } | { name: string }[] | null;
     };
 
-    const rows: LeadRow[] = ((data ?? []) as RawRow[]).map((r) => ({
-      id: r.id,
-      client_name: r.client_name,
-      phone: r.phone ?? '',
-      // DB enum es lowercase; el badge `<ChannelBadge>` espera uppercase
-      // (mock.Channel = 'WHATSAPP' | ...). Mapeamos aquí para no tocar el
-      // type de mock (lo consumen otros archivos con datos uppercase).
-      channel: ((r.channel as string) ?? '').toUpperCase() as Channel,
-      // PostgREST puede devolver el join como objeto o como array según
-      // el tipo de relación; manejamos ambas formas.
-      seller_name: Array.isArray(r.sellers)
-        ? r.sellers[0]?.name ?? null
-        : r.sellers?.name ?? null,
-      sheets_count: Number(r.sheets_count ?? 0),
-      total_amount: Number(r.total_amount ?? 0),
-      sale_date: r.sale_date,
-      created_at: r.created_at,
-      delivery_status: (r.delivery_status as DeliveryStatus) ?? 'pendiente',
-      payment_status: (r.payment_status as PaymentStatus) ?? 'pendiente',
-      sale_type: r.sale_type,
-      product_type: r.product_type,
-      document_url: r.document_url,
-      row_color: r.row_color,
-    }));
+    const rows: LeadRow[] = ((data ?? []) as RawRow[]).map((r) => {
+      // Fusión document_url (legacy single) + document_urls (array
+      // nuevo). Si document_urls trae al menos un elemento usamos esa
+      // lista; si está vacía y existe document_url, lo envolvemos en
+      // un array para que el cliente lo trate uniformemente. Si no
+      // hay nada, array vacío.
+      const urls = Array.isArray(r.document_urls)
+        ? r.document_urls.filter((u): u is string => !!u)
+        : [];
+      const merged =
+        urls.length > 0 ? urls : r.document_url ? [r.document_url] : [];
+      return {
+        id: r.id,
+        client_name: r.client_name,
+        phone: r.phone ?? '',
+        // DB enum es lowercase; el badge `<ChannelBadge>` espera uppercase
+        // (mock.Channel = 'WHATSAPP' | ...). Mapeamos aquí para no tocar el
+        // type de mock (lo consumen otros archivos con datos uppercase).
+        channel: ((r.channel as string) ?? '').toUpperCase() as Channel,
+        // PostgREST puede devolver el join como objeto o como array según
+        // el tipo de relación; manejamos ambas formas.
+        seller_name: Array.isArray(r.sellers)
+          ? r.sellers[0]?.name ?? null
+          : r.sellers?.name ?? null,
+        sheets_count: Number(r.sheets_count ?? 0),
+        total_amount: Number(r.total_amount ?? 0),
+        sale_date: r.sale_date,
+        created_at: r.created_at,
+        delivery_status: (r.delivery_status as DeliveryStatus) ?? 'pendiente',
+        payment_status: (r.payment_status as PaymentStatus) ?? 'pendiente',
+        sale_type: r.sale_type,
+        product_type: r.product_type,
+        document_url: r.document_url,
+        document_urls: merged,
+        row_color: r.row_color,
+      };
+    });
 
     // Detección de "contra_entrega": un lead se marca naranja si AL MENOS
     // un pago suyo tiene payment_type='contra_entrega'. Hacemos una sola
