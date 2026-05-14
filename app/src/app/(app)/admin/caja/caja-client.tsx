@@ -2,7 +2,13 @@
 
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { useState, useTransition } from 'react';
-import { CircleCheckBig, Loader, Wallet, ClipboardList } from 'lucide-react';
+import {
+  CircleCheckBig,
+  Loader,
+  Wallet,
+  ClipboardList,
+  Banknote,
+} from 'lucide-react';
 import { formatMXN } from '@/data/mock';
 import { validarEfectivoAction } from './actions';
 
@@ -20,7 +26,35 @@ export type TransferRow = {
   notes: string | null;
 };
 
-type TabKey = 'por-validar' | 'validados';
+/** Resumen de la caja personal de cada admin (efectivo acumulado y
+ *  del mes en curso). Origen: `admin_cash_register`. */
+export type AdminCashSummary = {
+  admin_id: string;
+  admin_name: string;
+  role: 'admin' | 'admin2';
+  /** Sum total de ingresos históricos. */
+  ingresos: number;
+  /** Sum total de egresos históricos (validado_contador, etc.). */
+  egresos: number;
+  /** Saldo actual: ingresos - egresos. Puede ser negativo en casos raros. */
+  balance: number;
+  /** Solo ingresos del mes calendario actual (para reporte). */
+  this_month_ingresos: number;
+};
+
+/** Una fila de la tabla de movimientos recientes. */
+export type AdminCashMovement = {
+  id: string;
+  admin_name: string;
+  amount: number;
+  operation_type: 'ingreso' | 'egreso' | 'validacion';
+  source: string;
+  created_at: string | null;
+  registered_by_name: string;
+  notes: string | null;
+};
+
+type TabKey = 'por-validar' | 'validados' | 'efectivo-admin';
 
 /**
  * UI de /admin/caja con dos pestañas controladas por searchParam.
@@ -46,6 +80,11 @@ export function CajaClient({
   validatedThisMonthTotal,
   validatedTotalLabel,
   monthFilterActive,
+  adminCashSummaries,
+  adminCashMovements,
+  totalCashWithContador,
+  totalCashWithAdmins,
+  totalCashInSystem,
 }: {
   tab: TabKey;
   pendingTransfers: TransferRow[];
@@ -58,6 +97,17 @@ export function CajaClient({
   /** True cuando el page recibió `?mes=N&anio=N` válidos. Lo usamos
    *  para mostrar el sub-texto del card y la lista en consecuencia. */
   monthFilterActive: boolean;
+  /** Resúmenes por admin (saldo + movimientos del mes). */
+  adminCashSummaries: AdminCashSummary[];
+  /** Últimos 50 movimientos para auditoría. */
+  adminCashMovements: AdminCashMovement[];
+  /** Efectivo que el contador tiene en mano (cash_transfers
+   *  status='recibido'). */
+  totalCashWithContador: number;
+  /** Sum de saldos positivos de admins. */
+  totalCashWithAdmins: number;
+  /** totalCashWithContador + totalCashWithAdmins. */
+  totalCashInSystem: number;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -132,6 +182,13 @@ export function CajaClient({
             {validatedTransfers.length}
           </span>
         </TabButton>
+        <TabButton
+          id="tab-efectivo-admin"
+          active={tab === 'efectivo-admin'}
+          onClick={() => selectTab('efectivo-admin')}
+        >
+          <Banknote size={16} /> Efectivo Admin
+        </TabButton>
       </div>
 
       {tab === 'por-validar' ? (
@@ -139,12 +196,20 @@ export function CajaClient({
           transfers={pendingTransfers}
           grandTotal={pendingGrandTotal}
         />
-      ) : (
+      ) : tab === 'validados' ? (
         <ValidatedTab
           transfers={validatedTransfers}
           monthTotal={validatedThisMonthTotal}
           totalLabel={validatedTotalLabel}
           monthFilterActive={monthFilterActive}
+        />
+      ) : (
+        <EfectivoAdminTab
+          summaries={adminCashSummaries}
+          movements={adminCashMovements}
+          totalCashWithContador={totalCashWithContador}
+          totalCashWithAdmins={totalCashWithAdmins}
+          totalCashInSystem={totalCashInSystem}
         />
       )}
     </div>
@@ -522,4 +587,272 @@ function formatDate(iso: string | null): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+/**
+ * Tab "Efectivo Admin" — vista de auditoría para admin/admin2:
+ *
+ *   - 3 cards arriba: efectivo en contador, en admins, total general.
+ *   - Tabla por admin: ingresos / egresos / saldo / ingresos del mes.
+ *   - Tabla de últimos 50 movimientos (ingresos + egresos + validaciones)
+ *     con marca de tiempo y quién lo registró.
+ *
+ * Solo lectura — la validación se hace en el tab "Por validar" y la
+ * recepción del contador desde /contador.
+ */
+function EfectivoAdminTab({
+  summaries,
+  movements,
+  totalCashWithContador,
+  totalCashWithAdmins,
+  totalCashInSystem,
+}: {
+  summaries: AdminCashSummary[];
+  movements: AdminCashMovement[];
+  totalCashWithContador: number;
+  totalCashWithAdmins: number;
+  totalCashInSystem: number;
+}) {
+  return (
+    <>
+      {/* 3 cards de resumen */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <SummaryCard
+          label="Efectivo en contador"
+          value={totalCashWithContador}
+          color="#D97706"
+          subtle="cash_transfers status=recibido"
+        />
+        <SummaryCard
+          label="Efectivo en admins"
+          value={totalCashWithAdmins}
+          color="#4338CA"
+          subtle="saldo positivo acumulado"
+        />
+        <SummaryCard
+          label="Total en el sistema"
+          value={totalCashInSystem}
+          color="#15803D"
+          subtle="contador + admins"
+        />
+      </div>
+
+      {/* Tabla por admin */}
+      <div className="tbl-wrap">
+        <div
+          className="px-6 py-4 border-b"
+          style={{ borderColor: 'var(--border)' }}
+        >
+          <h3 className="font-semibold">Saldo por administrador</h3>
+          <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+            Acumulativo histórico + lo cobrado este mes.
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Administrador</th>
+                <th>Rol</th>
+                <th className="text-right">Ingresos (total)</th>
+                <th className="text-right">Egresos (total)</th>
+                <th className="text-right">Saldo</th>
+                <th className="text-right">Cobros del mes</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summaries.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="text-center py-8 text-sm"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Sin administradores activos o sin movimientos registrados.
+                  </td>
+                </tr>
+              ) : (
+                summaries.map((a) => (
+                  <tr key={a.admin_id}>
+                    <td className="font-medium">{a.admin_name}</td>
+                    <td
+                      className="text-xs"
+                      style={{ color: 'var(--text-tertiary)' }}
+                    >
+                      {a.role === 'admin2' ? 'Admin 2' : 'Admin'}
+                    </td>
+                    <td
+                      className="text-right text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {formatMXN(a.ingresos)}
+                    </td>
+                    <td
+                      className="text-right text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {formatMXN(a.egresos)}
+                    </td>
+                    <td
+                      className="text-right font-bold"
+                      style={{
+                        color: a.balance > 0 ? '#15803D' : 'var(--text-tertiary)',
+                      }}
+                    >
+                      {formatMXN(a.balance)}
+                    </td>
+                    <td
+                      className="text-right text-sm"
+                      style={{ color: '#3730A3', fontWeight: 600 }}
+                    >
+                      {formatMXN(a.this_month_ingresos)}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Tabla de movimientos recientes */}
+      <div className="tbl-wrap">
+        <div
+          className="px-6 py-4 border-b"
+          style={{ borderColor: 'var(--border)' }}
+        >
+          <h3 className="font-semibold">Movimientos recientes (50 últimos)</h3>
+          <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+            Auditoría: cada ingreso (pago en efectivo) y cada egreso
+            (entrega al contador).
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Admin</th>
+                <th>Operación</th>
+                <th>Origen</th>
+                <th className="text-right">Monto</th>
+                <th>Registrado por</th>
+              </tr>
+            </thead>
+            <tbody>
+              {movements.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="text-center py-8 text-sm"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Sin movimientos registrados aún.
+                  </td>
+                </tr>
+              ) : (
+                movements.map((m) => (
+                  <tr key={m.id}>
+                    <td
+                      className="text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {formatDate(m.created_at)}
+                    </td>
+                    <td className="font-medium">{m.admin_name}</td>
+                    <td>
+                      {m.operation_type === 'ingreso' ? (
+                        <span className="badge badge-success">Ingreso</span>
+                      ) : m.operation_type === 'egreso' ? (
+                        <span className="badge badge-warning">Egreso</span>
+                      ) : (
+                        <span className="badge badge-info">Validación</span>
+                      )}
+                    </td>
+                    <td
+                      className="text-xs"
+                      style={{ color: 'var(--text-tertiary)' }}
+                    >
+                      {m.source}
+                    </td>
+                    <td
+                      className="text-right font-bold"
+                      style={{
+                        color:
+                          m.operation_type === 'ingreso'
+                            ? '#15803D'
+                            : '#B91C1C',
+                      }}
+                    >
+                      {m.operation_type === 'ingreso' ? '+' : '−'}
+                      {formatMXN(m.amount)}
+                    </td>
+                    <td
+                      className="text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {m.registered_by_name}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function SummaryCard({
+  label,
+  value,
+  color,
+  subtle,
+}: {
+  label: string;
+  value: number;
+  color: string;
+  subtle: string;
+}) {
+  return (
+    <div
+      className="card p-4 flex items-center gap-3"
+      style={{ border: '1px solid var(--border)' }}
+    >
+      <div
+        className="flex items-center justify-center"
+        style={{
+          width: 44,
+          height: 44,
+          borderRadius: 12,
+          background: value > 0 ? color : 'var(--text-tertiary)',
+          color: '#fff',
+          flexShrink: 0,
+        }}
+      >
+        <Banknote size={22} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          className="text-xs uppercase tracking-wide"
+          style={{ color: 'var(--text-tertiary)', fontWeight: 600 }}
+        >
+          {label}
+        </div>
+        <div
+          className="text-xl font-bold leading-tight mt-1"
+          style={{ color: value > 0 ? color : 'var(--text-tertiary)' }}
+        >
+          {formatMXN(value)}
+        </div>
+        <div
+          className="text-[11px] mt-0.5"
+          style={{ color: 'var(--text-tertiary)' }}
+        >
+          {subtle}
+        </div>
+      </div>
+    </div>
+  );
 }

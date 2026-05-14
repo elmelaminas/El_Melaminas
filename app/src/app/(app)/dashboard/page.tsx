@@ -7,6 +7,7 @@ import {
   TrendingUp,
   Wallet,
   PackagePlus,
+  Banknote,
 } from 'lucide-react';
 import {
   ChannelBadge,
@@ -146,6 +147,7 @@ export default async function DashboardPage({
       channelChartResult,
       recentLeadsResult,
       profileResult,
+      adminCashResult,
     ] = await Promise.all([
       // 1. Leads del mes (sale_date ∈ [start, nextStart))
       admin
@@ -216,6 +218,19 @@ export default async function DashboardPage({
             .eq('id', user.id)
             .maybeSingle()
         : Promise.resolve({ data: null, error: null }),
+      // 10. Caja personal del admin: saldo del mes en
+      //     `admin_cash_register`. SUM(ingresos) - SUM(egresos) del
+      //     usuario actual filtrado por mes. Si la tabla no existe
+      //     todavía (migración pendiente), tratamos como error
+      //     non-fatal y mostramos $0 en la card.
+      user
+        ? admin
+            .from('admin_cash_register')
+            .select('amount, operation_type')
+            .eq('admin_id', user.id)
+            .gte('created_at', startOfMonthIso)
+            .lt('created_at', startOfNextMonthIso)
+        : Promise.resolve({ data: [], error: null }),
     ]);
 
     if (leadsMonthResult.error) {
@@ -275,6 +290,20 @@ export default async function DashboardPage({
       (s, m) => s + Number(m.quantity ?? 0) * Number(m.unit_cost ?? 0),
       0,
     );
+
+    // Saldo de la caja personal del admin en el mes:
+    // SUM(ingresos) - SUM(egresos). 'validacion' contribuye igual que
+    // 'egreso' (movimiento de salida hacia el contador).
+    if (adminCashResult.error) {
+      console.error(
+        '[DashboardPage] admin_cash_register select falló (no fatal):',
+        adminCashResult.error,
+      );
+    }
+    const adminCashMonth = (adminCashResult.data ?? []).reduce((s, r) => {
+      const amt = Number(r.amount ?? 0);
+      return r.operation_type === 'ingreso' ? s + amt : s - amt;
+    }, 0);
 
     // Chart por canal
     const channelCount = new Map<string, number>();
@@ -404,6 +433,14 @@ export default async function DashboardPage({
             value={lowStock.toString()}
             unit="materiales bajo mínimo (actual)"
             href="/warehouse"
+          />
+          <MetricCard
+            icon={<Banknote size={20} />}
+            iconBg="#DCFCE7"
+            iconColor="#14532D"
+            label="Mi efectivo (mes)"
+            value={formatMXN(adminCashMonth)}
+            unit="cobrado en efectivo directo"
           />
         </div>
 

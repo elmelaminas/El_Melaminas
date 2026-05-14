@@ -4,6 +4,7 @@ import {
   ContadorClient,
   type DriverWithCash,
   type HistoryRow,
+  type AdminWithCash,
 } from './contador-client';
 
 /**
@@ -138,11 +139,96 @@ export default async function ContadorPage() {
       }),
     );
 
+    // ── Sección 2/3: efectivo de cada administrador.
+    //
+    // Para cada admin (role='admin' OR 'admin2', is_active=true) calculamos:
+    //   - cashThisMonth: ingresos en efectivo del MES actual (para
+    //     reporte "cuánto cobró este mes").
+    //   - balance: saldo TOTAL acumulado (sum ingresos - sum egresos)
+    //     desde siempre. Es lo que el contador "le va a recibir".
+    //
+    // Toda la lógica vive en JS para evitar varias queries por admin.
+    // Una sola query trae TODOS los movimientos y agrupamos por
+    // admin_id. Si la tabla no existe (migración pendiente),
+    // adminCashRegs queda vacío y las secciones se ven en 0.
+    let adminsWithCash: AdminWithCash[] = [];
+    let adminCashGrandTotal = 0;
+    try {
+      const now = new Date();
+      const startOfMonthIso = new Date(
+        Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+      ).toISOString();
+      const [adminsRes, cashRes] = await Promise.all([
+        admin
+          .from('profiles')
+          .select('id, full_name, role')
+          .in('role', ['admin', 'admin2'])
+          .eq('is_active', true)
+          .order('full_name', { ascending: true }),
+        admin
+          .from('admin_cash_register')
+          .select('admin_id, amount, operation_type, created_at'),
+      ]);
+      if (adminsRes.error) {
+        console.error(
+          '[ContadorPage] select admins falló (no fatal):',
+          adminsRes.error,
+        );
+      }
+      if (cashRes.error) {
+        console.error(
+          '[ContadorPage] select admin_cash_register falló (no fatal):',
+          cashRes.error,
+        );
+      }
+      const cashByAdmin = new Map<
+        string,
+        { balance: number; thisMonth: number }
+      >();
+      for (const r of cashRes.data ?? []) {
+        if (!r.admin_id) continue;
+        const amt = Number(r.amount ?? 0);
+        const isIngreso = r.operation_type === 'ingreso';
+        const slot = cashByAdmin.get(r.admin_id) ?? {
+          balance: 0,
+          thisMonth: 0,
+        };
+        // balance: acumulativo histórico
+        slot.balance += isIngreso ? amt : -amt;
+        // thisMonth: solo ingresos pago_efectivo del mes actual
+        if (isIngreso && r.created_at && r.created_at >= startOfMonthIso) {
+          slot.thisMonth += amt;
+        }
+        cashByAdmin.set(r.admin_id, slot);
+      }
+      adminsWithCash = (adminsRes.data ?? []).map((a) => {
+        const slot = cashByAdmin.get(a.id) ?? { balance: 0, thisMonth: 0 };
+        return {
+          admin_id: a.id,
+          admin_name: a.full_name ?? '(sin nombre)',
+          role: a.role as 'admin' | 'admin2',
+          balance: slot.balance,
+          this_month: slot.thisMonth,
+        };
+      });
+      adminCashGrandTotal = adminsWithCash.reduce(
+        (s, a) => s + Math.max(0, a.balance),
+        0,
+      );
+    } catch (e) {
+      console.error(
+        '[ContadorPage] admin_cash_register lookup excepción (no fatal):',
+        e,
+      );
+    }
+
     return (
       <ContadorClient
         drivers={rows}
         grandTotal={grandTotal}
         history={history}
+        admins={adminsWithCash}
+        adminCashGrandTotal={adminCashGrandTotal}
       />
     );
   } catch (err) {

@@ -1,5 +1,10 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
-import { CajaClient, type TransferRow } from './caja-client';
+import {
+  CajaClient,
+  type TransferRow,
+  type AdminCashSummary,
+  type AdminCashMovement,
+} from './caja-client';
 import { MES_LABEL } from '../../dashboard/constants';
 
 /**
@@ -35,9 +40,13 @@ function pickStr(v: string | string[] | undefined): string {
   return v ?? '';
 }
 
-type TabKey = 'por-validar' | 'validados';
+type TabKey = 'por-validar' | 'validados' | 'efectivo-admin';
 
-const ALLOWED_TABS: readonly TabKey[] = ['por-validar', 'validados'];
+const ALLOWED_TABS: readonly TabKey[] = [
+  'por-validar',
+  'validados',
+  'efectivo-admin',
+];
 
 export default async function CajaPage({
   searchParams,
@@ -199,6 +208,177 @@ export default async function CajaPage({
       ? `Total validado en ${MES_LABEL[mes] ?? mes} ${anio}`
       : 'Total validado este mes';
 
+    // ── Tab "Efectivo Admin": agregamos:
+    //   - Por cada admin activo: saldo (ingresos - egresos) + ingresos
+    //     del mes en curso.
+    //   - Lista completa de movimientos recientes para auditoría.
+    //   - Resumen general: efectivo en contador (cash_transfers
+    //     status=recibido) + efectivo en admins (sum positivos).
+    //
+    // Toda la lectura es best-effort: si la tabla no existe (migración
+    // pendiente), las listas salen vacías y el tab muestra ceros.
+    let adminCashSummaries: AdminCashSummary[] = [];
+    let adminCashMovements: AdminCashMovement[] = [];
+    let totalCashWithContador = 0;
+    let totalCashWithAdmins = 0;
+    try {
+      const nowDate = new Date();
+      const startCurMonthIso = new Date(
+        Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), 1),
+      ).toISOString();
+
+      const [adminsRes, cashAllRes, contadorCashRes, recentMovRes] =
+        await Promise.all([
+          admin
+            .from('profiles')
+            .select('id, full_name, role')
+            .in('role', ['admin', 'admin2'])
+            .eq('is_active', true)
+            .order('full_name', { ascending: true }),
+          admin
+            .from('admin_cash_register')
+            .select('admin_id, amount, operation_type, created_at'),
+          // Efectivo que el contador ya recibió pero todavía no se
+          // valida ni se transfiere — `status='recibido'`.
+          admin
+            .from('cash_transfers')
+            .select('amount')
+            .eq('status', 'recibido'),
+          // Últimos 50 movimientos de admin_cash_register con join a
+          // profiles para mostrar nombres en la tabla.
+          admin
+            .from('admin_cash_register')
+            .select(
+              'id, admin_id, amount, operation_type, source, created_at, notes, registered_by',
+            )
+            .order('created_at', { ascending: false })
+            .limit(50),
+        ]);
+
+      if (adminsRes.error) {
+        console.error(
+          '[CajaPage] admins select falló (no fatal):',
+          adminsRes.error,
+        );
+      }
+      if (cashAllRes.error) {
+        console.error(
+          '[CajaPage] admin_cash_register select falló (no fatal):',
+          cashAllRes.error,
+        );
+      }
+      if (contadorCashRes.error) {
+        console.error(
+          '[CajaPage] cash_transfers recibidos select falló (no fatal):',
+          contadorCashRes.error,
+        );
+      }
+      if (recentMovRes.error) {
+        console.error(
+          '[CajaPage] movimientos recientes select falló (no fatal):',
+          recentMovRes.error,
+        );
+      }
+
+      // Agregar por admin_id
+      type CashSlot = {
+        ingresos: number;
+        egresos: number;
+        thisMonthIngresos: number;
+      };
+      const byAdmin = new Map<string, CashSlot>();
+      for (const r of cashAllRes.data ?? []) {
+        if (!r.admin_id) continue;
+        const slot = byAdmin.get(r.admin_id) ?? {
+          ingresos: 0,
+          egresos: 0,
+          thisMonthIngresos: 0,
+        };
+        const amt = Number(r.amount ?? 0);
+        if (r.operation_type === 'ingreso') {
+          slot.ingresos += amt;
+          if (r.created_at && r.created_at >= startCurMonthIso) {
+            slot.thisMonthIngresos += amt;
+          }
+        } else {
+          slot.egresos += amt;
+        }
+        byAdmin.set(r.admin_id, slot);
+      }
+
+      adminCashSummaries = (adminsRes.data ?? []).map((a) => {
+        const slot = byAdmin.get(a.id) ?? {
+          ingresos: 0,
+          egresos: 0,
+          thisMonthIngresos: 0,
+        };
+        return {
+          admin_id: a.id,
+          admin_name: a.full_name ?? '(sin nombre)',
+          role: a.role as 'admin' | 'admin2',
+          ingresos: slot.ingresos,
+          egresos: slot.egresos,
+          balance: slot.ingresos - slot.egresos,
+          this_month_ingresos: slot.thisMonthIngresos,
+        };
+      });
+
+      totalCashWithAdmins = adminCashSummaries.reduce(
+        (s, a) => s + Math.max(0, a.balance),
+        0,
+      );
+      totalCashWithContador = (contadorCashRes.data ?? []).reduce(
+        (s, t) => s + Number(t.amount ?? 0),
+        0,
+      );
+
+      // Resolución de nombres para los movimientos recientes.
+      const movRaw = recentMovRes.data ?? [];
+      const movUserIds = Array.from(
+        new Set(
+          movRaw
+            .flatMap((m) => [m.admin_id, m.registered_by])
+            .filter((x): x is string => !!x),
+        ),
+      );
+      const movNameById = new Map<string, string>();
+      if (movUserIds.length > 0) {
+        const { data: movUsers } = await admin
+          .from('profiles')
+          .select('id, full_name')
+          .in('id', movUserIds);
+        for (const u of movUsers ?? []) {
+          movNameById.set(u.id, u.full_name ?? '(sin nombre)');
+        }
+      }
+      adminCashMovements = movRaw.map((m) => ({
+        id: m.id,
+        admin_name: m.admin_id
+          ? movNameById.get(m.admin_id) ?? '—'
+          : '—',
+        amount: Number(m.amount ?? 0),
+        operation_type:
+          m.operation_type === 'egreso'
+            ? 'egreso'
+            : m.operation_type === 'validacion'
+              ? 'validacion'
+              : 'ingreso',
+        source: m.source ?? '',
+        created_at: m.created_at ?? null,
+        registered_by_name: m.registered_by
+          ? movNameById.get(m.registered_by) ?? '—'
+          : '—',
+        notes: m.notes ?? null,
+      }));
+    } catch (e) {
+      console.error(
+        '[CajaPage] efectivo admin lookup excepción (no fatal):',
+        e,
+      );
+    }
+
+    const totalCashInSystem = totalCashWithContador + totalCashWithAdmins;
+
     return (
       <CajaClient
         tab={tab}
@@ -208,6 +388,11 @@ export default async function CajaPage({
         validatedThisMonthTotal={validatedTotal}
         validatedTotalLabel={validatedTotalLabel}
         monthFilterActive={monthFilterActive}
+        adminCashSummaries={adminCashSummaries}
+        adminCashMovements={adminCashMovements}
+        totalCashWithContador={totalCashWithContador}
+        totalCashWithAdmins={totalCashWithAdmins}
+        totalCashInSystem={totalCashInSystem}
       />
     );
   } catch (err) {

@@ -24,3 +24,25 @@ export type ReceiveCashState =
   | { status: 'error'; message: string; fieldErrors?: Record<string, string[]> };
 
 export const initialReceiveCashState: ReceiveCashState = { status: 'idle' };
+
+/**
+ * Schema para `receiveAdminCashAction`. El contador recibe el efectivo
+ * que un admin acumuló por cobros en efectivo directo (ver
+ * `admin_cash_register`). NO confiamos en el monto del cliente — el
+ * servidor lo recalcula desde el saldo actual del admin para evitar
+ * race conditions con cobros concurrentes.
+ */
+export const ReceiveAdminCashSchema = z.object({
+  admin_id: z.string().uuid('admin_id inválido'),
+});
+
+export type ReceiveAdminCashInput = z.infer<typeof ReceiveAdminCashSchema>;
+
+export type ReceiveAdminCashState =
+  | { status: 'idle' }
+  | { status: 'success'; received: number }
+  | { status: 'error'; message: string };
+
+export const initialReceiveAdminCashState: ReceiveAdminCashState = {
+  status: 'idle',
+};

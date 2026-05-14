@@ -274,7 +274,43 @@ export async function savePaymentAction(
       );
     }
 
-    // ── 7. Notificaciones a admins (best-effort, no fatal).
+    // ── 7. Si el método es 'efectivo', registramos un INGRESO en
+    //    `admin_cash_register` atribuido al usuario que registró el
+    //    pago (típicamente un admin recibiendo el cash directamente).
+    //    Non-fatal — si la tabla no existe (migración pendiente),
+    //    políticas RLS bloquean, o falla por cualquier razón, el pago
+    //    sigue siendo válido y el flujo continúa.
+    //
+    //    Requiere migración manual previa:
+    //      CREATE TABLE admin_cash_register (...);
+    //    Que Sergio corra ese SQL antes del deploy.
+    if (data.method === 'efectivo') {
+      try {
+        const { error: cashErr } = await admin
+          .from('admin_cash_register')
+          .insert({
+            admin_id: userId,
+            amount: data.amount,
+            operation_type: 'ingreso',
+            source: 'pago_efectivo',
+            payment_id: paymentId,
+            registered_by: userId,
+          });
+        if (cashErr) {
+          console.error(
+            '[savePaymentAction] admin_cash_register insert falló (no fatal):',
+            cashErr,
+          );
+        }
+      } catch (e) {
+        console.error(
+          '[savePaymentAction] admin_cash_register excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
+    // ── 8. Notificaciones a admins (best-effort, no fatal).
     //    Necesitamos el client_name del lead para el message. Si el SELECT
     //    falla, intentamos un mensaje genérico con el id corto. Cualquier
     //    error aquí se loguea pero el pago ya está registrado.
