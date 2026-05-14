@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import { useDemo } from '@/context/DemoContext';
+import { useAutoStartTour } from '@/components/ui/AppTour';
 
 /**
  * AppShell — wrapper client component que envuelve la layout privada.
@@ -28,6 +30,13 @@ import Header from './Header';
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const { role } = useDemo();
+
+  // Auto-iniciar el tour la PRIMERA vez que el usuario entra a la
+  // zona autenticada (gate por localStorage 'em_tour_completed').
+  // El hook tiene un delay corto para que Sidebar/Header ya estén
+  // montados cuando driver.js resuelva los selectores #nav-*.
+  useAutoStartTour(role);
 
   // Auto-close al cambiar de ruta. usePathname dispara con la URL nueva
   // antes de que el contenido del child re-renderee, así que el drawer

@@ -5,10 +5,11 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Bell, Menu, Search } from 'lucide-react';
+import { Bell, Menu, Search, HelpCircle } from 'lucide-react';
 import { useDemo } from '@/context/DemoContext';
 import { roleLabel } from '@/data/mock';
 import { supabaseClient } from '@/lib/supabase/client';
+import { startTour } from '@/components/ui/AppTour';
 
 /**
  * Tipo de notificación que la app emite. Coincide con los valores que
@@ -291,6 +292,29 @@ export default function Header({
       </div>
 
       <div className="flex items-center gap-3">
+        {/* Tour guiado — botón "?" para (re)iniciar el recorrido por
+            la app. El tour conoce el rol actual y arma los pasos en
+            consecuencia. id="tour-btn" es referenciado por el último
+            paso del tour de admin que apunta a este mismo botón. */}
+        <button
+          type="button"
+          id="tour-btn"
+          onClick={() => startTour(role)}
+          className="flex items-center justify-center rounded-full hover:bg-[var(--bg-muted)]"
+          style={{
+            width: 32,
+            height: 32,
+            color: '#1B3A5C',
+            border: '2px solid var(--brand-primary)',
+            background: '#fff',
+            cursor: 'pointer',
+          }}
+          aria-label="Iniciar recorrido guiado de la app"
+          title="Ayuda — recorrido guiado"
+        >
+          <HelpCircle size={18} />
+        </button>
+
         {/* Notifications */}
         <div className="relative">
           <button

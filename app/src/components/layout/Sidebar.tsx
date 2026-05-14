@@ -35,32 +35,36 @@ interface NavItem {
   label: string;
   icon: React.ReactNode;
   roles: Role[];
+  /** ID DOM aplicado al `<Link>` — usado por el tour guiado de driver.js
+   *  para anclar los popovers. Opcional: items sin id no aparecen como
+   *  paso del tour. */
+  id?: string;
 }
 
 const NAV: NavItem[] = [
-  { href: '/dashboard',       label: 'Dashboard',         icon: <LayoutDashboard size={18} />, roles: ['admin', 'supervisor'] },
-  { href: '/leads/new',       label: 'Nuevo Lead',        icon: <CirclePlus size={18} />,      roles: ['admin', 'seller'] },
-  { href: '/leads',           label: 'Leads',             icon: <ClipboardList size={18} />,   roles: ['admin', 'seller'] },
-  { href: '/payments',        label: 'Pagos',             icon: <CreditCard size={18} />,      roles: ['admin'] },
-  { href: '/payments/new',    label: 'Registrar Pago',    icon: <CirclePlus size={18} />,      roles: ['admin'] },
+  { id: 'nav-dashboard',        href: '/dashboard',       label: 'Dashboard',         icon: <LayoutDashboard size={18} />, roles: ['admin', 'supervisor'] },
+  { id: 'nav-nuevo-lead',       href: '/leads/new',       label: 'Nuevo Lead',        icon: <CirclePlus size={18} />,      roles: ['admin', 'seller'] },
+  { id: 'nav-leads',            href: '/leads',           label: 'Leads',             icon: <ClipboardList size={18} />,   roles: ['admin', 'seller'] },
+  { id: 'nav-pagos',            href: '/payments',        label: 'Pagos',             icon: <CreditCard size={18} />,      roles: ['admin'] },
+  { id: 'nav-registrar-pago',   href: '/payments/new',    label: 'Registrar Pago',    icon: <CirclePlus size={18} />,      roles: ['admin'] },
   // Admin ve TODAS las entregas con info del chofer asignado en una
   // ruta dedicada; el chofer ve solo las suyas en /driver. Dos NavItems
   // separados (en lugar de un href dinámico) porque cada rol los
   // entiende como pantallas semánticamente distintas — el admin nunca
   // verá "Mis Entregas" como label, lo confundiría.
-  { href: '/admin/entregas',  label: 'Entregas',          icon: <Truck size={18} />,           roles: ['admin'] },
-  { href: '/driver',          label: 'Mis Entregas',      icon: <Truck size={18} />,           roles: ['driver'] },
-  { href: '/driver?tab=hist', label: 'Historial',         icon: <History size={18} />,         roles: ['driver'] },
-  { href: '/warehouse',       label: 'Stock',             icon: <Package size={18} />,         roles: ['admin', 'warehouse'] },
-  { href: '/warehouse?new=1', label: 'Registrar Entrada', icon: <PackagePlus size={18} />,     roles: ['warehouse'] },
-  { href: '/warehouse?tab=mov', label: 'Movimientos',     icon: <ArrowLeftRight size={18} />,  roles: ['warehouse'] },
-  { href: '/admin/users',     label: 'Usuarios',          icon: <UsersIcon size={18} />,       roles: ['admin'] },
-  { href: '/admin/catalogs',  label: 'Catálogos',         icon: <BookOpen size={18} />,        roles: ['admin'] },
+  { id: 'nav-entregas',         href: '/admin/entregas',  label: 'Entregas',          icon: <Truck size={18} />,           roles: ['admin'] },
+  {                             href: '/driver',          label: 'Mis Entregas',      icon: <Truck size={18} />,           roles: ['driver'] },
+  {                             href: '/driver?tab=hist', label: 'Historial',         icon: <History size={18} />,         roles: ['driver'] },
+  { id: 'nav-stock',            href: '/warehouse',       label: 'Stock',             icon: <Package size={18} />,         roles: ['admin', 'warehouse'] },
+  { id: 'nav-registrar-entrada', href: '/warehouse?new=1', label: 'Registrar Entrada', icon: <PackagePlus size={18} />,    roles: ['warehouse'] },
+  {                             href: '/warehouse?tab=mov', label: 'Movimientos',     icon: <ArrowLeftRight size={18} />,  roles: ['warehouse'] },
+  { id: 'nav-usuarios',         href: '/admin/users',     label: 'Usuarios',          icon: <UsersIcon size={18} />,       roles: ['admin'] },
+  { id: 'nav-catalogos',        href: '/admin/catalogs',  label: 'Catálogos',         icon: <BookOpen size={18} />,        roles: ['admin'] },
   // Caja del contador — recibe el efectivo que los choferes traen.
-  { href: '/contador',        label: 'Caja',              icon: <DollarSign size={18} />,      roles: ['admin', 'contador'] },
+  { id: 'nav-contador',         href: '/contador',        label: 'Caja',              icon: <DollarSign size={18} />,      roles: ['admin', 'contador'] },
   // Validación de admin: confirma que el contador entregó el efectivo.
-  { href: '/admin/caja',      label: 'Validar Caja',      icon: <DollarSign size={18} />,      roles: ['admin'] },
-  { href: '/dashboard',       label: 'Reportes',          icon: <ChartBarBig size={18} />,       roles: ['supervisor'] },
+  { id: 'nav-caja',             href: '/admin/caja',      label: 'Validar Caja',      icon: <DollarSign size={18} />,      roles: ['admin'] },
+  {                             href: '/dashboard',       label: 'Reportes',          icon: <ChartBarBig size={18} />,       roles: ['supervisor'] },
 ];
 
 export default function Sidebar({
@@ -173,6 +177,7 @@ export default function Sidebar({
           {items.map((it, i) => (
             <Link
               key={`${it.href}-${i}`}
+              id={it.id}
               href={it.href}
               className={`nav-link ${isActive(it.href) ? 'active' : ''}`}
             >
