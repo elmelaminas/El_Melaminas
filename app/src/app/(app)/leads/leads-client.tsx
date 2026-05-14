@@ -276,6 +276,7 @@ export function LeadsClient({
               style={{ color: 'var(--text-tertiary)' }}
             />
             <input
+              id="leads-search"
               placeholder="Buscar por nombre o teléfono…"
               className="input"
               style={{ paddingLeft: 36 }}
@@ -285,6 +286,7 @@ export function LeadsClient({
             />
           </div>
           <select
+            id="leads-filter-channel"
             className="select"
             value={filters.channel}
             onChange={(e) =>
@@ -299,6 +301,7 @@ export function LeadsClient({
             ))}
           </select>
           <select
+            id="leads-filter-delivery"
             className="select"
             value={filters.delivery}
             onChange={(e) =>
@@ -313,6 +316,7 @@ export function LeadsClient({
             ))}
           </select>
           <select
+            id="leads-filter-payment"
             className="select"
             value={filters.payment}
             onChange={(e) =>
@@ -375,13 +379,14 @@ export function LeadsClient({
         )}
 
         {/* Leyenda discreta de los códigos de color de fila. */}
-        <div className="mt-3">
+        <div id="leads-legend" className="mt-3">
           <LeadRowLegend />
         </div>
       </div>
 
       {/* Tabla */}
       <div
+        id="leads-table"
         className="tbl-wrap"
         style={{ opacity: pending ? 0.6 : 1, transition: 'opacity 150ms ease' }}
       >

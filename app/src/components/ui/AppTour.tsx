@@ -41,15 +41,16 @@ const STORAGE_KEY = 'em_tour_completed';
  * Step con shape compatible con driver.js v1.x. La librería tipa los
  * pasos como `DriveStep`; nosotros usamos un subset (element opcional
  * + popover {title, description}) que es suficiente para todos los
- * casos del proyecto.
+ * casos del proyecto. Exportado para que el hook `usePageTour`
+ * comparta el tipo.
  */
-type Step = {
+export type TourStep = {
   element?: string;
   popover: { title: string; description: string };
 };
 
 /** Pasos por rol. Cada array es una secuencia lineal. */
-const STEPS_BY_ROLE: Readonly<Record<Role, Step[]>> = {
+const STEPS_BY_ROLE: Readonly<Record<Role, TourStep[]>> = {
   admin: [
     {
       element: '#nav-dashboard',
@@ -280,16 +281,29 @@ function hasTourBeenCompleted(): boolean {
 }
 
 /**
- * Inicia el tour para el rol dado. Si la role no tiene pasos
- * definidos (raro: contador/supervisor están cubiertos), no hace
- * nada. Tras completarse o cancelarse, marca el flag en localStorage
- * — así el auto-start del próximo arranque no vuelve a dispararlo.
+ * Inicia el tour. Prioridad de pasos:
  *
- * Se puede invocar libremente desde el botón "?" — siempre arranca
- * un tour nuevo aunque ya esté marcado como completado.
+ *   1. Si `pageSteps` viene definido y no vacío → tour CONTEXTUAL
+ *      (los pasos específicos de la ruta actual, provistos por
+ *      `usePageTour`). Es el caso normal cuando el usuario clickea
+ *      el botón "?" estando en una página con tour propio.
+ *   2. Si no, fallback al tour GLOBAL por rol (STEPS_BY_ROLE).
+ *
+ * Tras completarse o cancelarse, marca el flag en localStorage —
+ * el auto-start del próximo arranque no vuelve a dispararlo. Se puede
+ * invocar libremente desde el botón "?": siempre arranca un tour
+ * nuevo aunque ya esté marcado como completado.
  */
-export function startTour(role: Role): void {
-  const steps = STEPS_BY_ROLE[role];
+export function startTour(
+  role: Role,
+  pageSteps?: readonly TourStep[] | null,
+): void {
+  // pageSteps tiene prioridad sobre los de rol — más relevante al
+  // contexto donde está el usuario.
+  const steps =
+    pageSteps && pageSteps.length > 0
+      ? (pageSteps as TourStep[])
+      : STEPS_BY_ROLE[role];
   if (!steps || steps.length === 0) return;
 
   let instance: Driver | null = null;
@@ -330,11 +344,18 @@ export function startTour(role: Role): void {
  * la app autenticada. Una vez completado (o cerrado), guarda flag en
  * localStorage y no vuelve a dispararse hasta que el flag se borre.
  *
- * Delay corto para que el sidebar / header ya estén montados cuando
- * driver.js intente resolver los selectores. Sin el delay, los pasos
- * basados en `#nav-*` fallarían al iniciar.
+ * Recibe los pasos de la página actual (de `usePageTour`) para que
+ * el tour inicial sea CONTEXTUAL si el usuario aterrizó en una vista
+ * con tour propio. Si no hay pageSteps, cae al tour de rol.
+ *
+ * Delay corto para que sidebar/header/contenido ya estén montados
+ * cuando driver.js intente resolver los selectores. Sin el delay,
+ * los pasos basados en `#nav-*` o `#field-*` fallarían al iniciar.
  */
-export function useAutoStartTour(role: Role): void {
+export function useAutoStartTour(
+  role: Role,
+  pageSteps: readonly TourStep[] | null,
+): void {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     if (hasTourBeenCompleted()) return;
@@ -342,14 +363,14 @@ export function useAutoStartTour(role: Role): void {
     // pinte. Más corto puede fallar resolviendo selectores; más largo
     // se siente lento.
     const t = window.setTimeout(() => {
-      startTour(role);
+      startTour(role, pageSteps);
     }, 500);
     return () => {
       window.clearTimeout(t);
     };
-    // Solo nos importa el rol del primer render. Si el usuario cambia
-    // de rol con el override del DemoContext durante la sesión, no
-    // re-disparamos el tour — sería invasivo.
+    // Solo nos importan los valores del PRIMER render (auto-start es
+    // un evento único). Si el usuario cambia de ruta durante la
+    // sesión, no re-disparamos — el botón "?" hace eso voluntariamente.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 }

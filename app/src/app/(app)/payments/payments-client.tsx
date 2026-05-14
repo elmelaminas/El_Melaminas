@@ -201,7 +201,7 @@ export function PaymentsClient({
       </div>
 
       {/* Totals globales */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div id="payments-totals" className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <SummaryCard label="Cobrado bruto" value={formatMXN(totals.gross)} accent="#1E40AF" />
         <SummaryCard
           label="Deducibles"
@@ -230,6 +230,7 @@ export function PaymentsClient({
             />
           </div>
           <select
+            id="payments-filter-method"
             className="select"
             value={filters.method}
             onChange={(e) => pushFilters({ method: e.target.value, page: 1 })}
@@ -313,6 +314,7 @@ export function PaymentsClient({
 
       {/* Tabla */}
       <div
+        id="payments-table"
         className="tbl-wrap"
         style={{
           opacity: pending ? 0.6 : 1,

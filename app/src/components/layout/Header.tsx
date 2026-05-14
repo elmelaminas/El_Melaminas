@@ -10,6 +10,7 @@ import { useDemo } from '@/context/DemoContext';
 import { roleLabel } from '@/data/mock';
 import { supabaseClient } from '@/lib/supabase/client';
 import { startTour } from '@/components/ui/AppTour';
+import { usePageTour } from '@/hooks/usePageTour';
 
 /**
  * Tipo de notificación que la app emite. Coincide con los valores que
@@ -88,6 +89,11 @@ export default function Header({
   onMenuClick?: () => void;
 }) {
   const { user, role } = useDemo();
+  // pageSteps = pasos del tour contextual de la ruta actual. Si hay,
+  // el botón "?" arranca ese tour y muestra un puntito azul como
+  // indicador visual de "tour disponible para esta vista".
+  const pageSteps = usePageTour();
+  const hasPageTour = pageSteps !== null;
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
@@ -293,27 +299,54 @@ export default function Header({
 
       <div className="flex items-center gap-3">
         {/* Tour guiado — botón "?" para (re)iniciar el recorrido por
-            la app. El tour conoce el rol actual y arma los pasos en
-            consecuencia. id="tour-btn" es referenciado por el último
-            paso del tour de admin que apunta a este mismo botón. */}
-        <button
-          type="button"
-          id="tour-btn"
-          onClick={() => startTour(role)}
-          className="flex items-center justify-center rounded-full hover:bg-[var(--bg-muted)]"
-          style={{
-            width: 32,
-            height: 32,
-            color: '#1B3A5C',
-            border: '2px solid var(--brand-primary)',
-            background: '#fff',
-            cursor: 'pointer',
-          }}
-          aria-label="Iniciar recorrido guiado de la app"
-          title="Ayuda — recorrido guiado"
-        >
-          <HelpCircle size={18} />
-        </button>
+            la app. Si la página actual tiene un tour propio (hook
+            usePageTour devuelve pasos), arranca ese tour contextual;
+            si no, cae al tour global por rol. Un puntito azul en la
+            esquina superior derecha del botón señala que hay un tour
+            contextual disponible para esta vista. */}
+        <div style={{ position: 'relative' }}>
+          <button
+            type="button"
+            id="tour-btn"
+            onClick={() => startTour(role, pageSteps)}
+            className="flex items-center justify-center rounded-full hover:bg-[var(--bg-muted)]"
+            style={{
+              width: 32,
+              height: 32,
+              color: '#1B3A5C',
+              border: '2px solid var(--brand-primary)',
+              background: '#fff',
+              cursor: 'pointer',
+            }}
+            aria-label={
+              hasPageTour
+                ? 'Ayuda contextual de esta vista'
+                : 'Iniciar recorrido guiado de la app'
+            }
+            title={
+              hasPageTour
+                ? 'Tour contextual disponible para esta vista'
+                : 'Ayuda — recorrido guiado'
+            }
+          >
+            <HelpCircle size={18} />
+          </button>
+          {hasPageTour && (
+            <span
+              aria-hidden="true"
+              style={{
+                position: 'absolute',
+                top: -2,
+                right: -2,
+                width: 10,
+                height: 10,
+                borderRadius: 9999,
+                background: 'var(--brand-secondary, #2E74B5)',
+                border: '2px solid #fff',
+              }}
+            />
+          )}
+        </div>
 
         {/* Notifications */}
         <div className="relative">

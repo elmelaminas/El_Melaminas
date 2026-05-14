@@ -295,7 +295,7 @@ export function NewLeadForm({
           <Section title="Origen del Lead" subtitle="¿Cómo llegó este cliente?">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Field label="Canal" error={errors.channel?.message}>
-                <select {...register('channel')} className="select" disabled={pending}>
+                <select id="field-channel" {...register('channel')} className="select" disabled={pending}>
                   {CHANNEL_OPTIONS.map((c) => (
                     <option key={c.value} value={c.value}>
                       {c.label}
@@ -305,7 +305,7 @@ export function NewLeadForm({
               </Field>
 
               <Field label="Vendedor(a)" error={errors.seller_id?.message}>
-                <select {...register('seller_id')} className="select" disabled={pending}>
+                <select id="field-seller" {...register('seller_id')} className="select" disabled={pending}>
                   <option value="">— sin vendedor —</option>
                   {sellers.map((s) => (
                     <option key={s.id} value={s.id}>
@@ -327,7 +327,7 @@ export function NewLeadForm({
                 label="Chofer asignado (opcional)"
                 error={errors.driver_id?.message}
               >
-                <select {...register('driver_id')} className="select" disabled={pending}>
+                <select id="field-driver" {...register('driver_id')} className="select" disabled={pending}>
                   <option value="">— Sin asignar —</option>
                   {drivers.map((d) => (
                     <option key={d.id} value={d.id}>
@@ -376,7 +376,7 @@ export function NewLeadForm({
 
           {/* Cliente */}
           <Section title="Datos del Cliente" subtitle="Contacto y dirección de entrega.">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div id="field-client" className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Field label="Nombre completo" error={errors.client_name?.message}>
                 <input
                   {...register('client_name')}
@@ -396,7 +396,7 @@ export function NewLeadForm({
                   disabled={pending}
                 />
               </Field>
-              <div className="md:col-span-2">
+              <div id="field-address" className="md:col-span-2">
                 <Field label="Dirección" error={errors.address?.message}>
                   <textarea
                     {...register('address')}
@@ -431,6 +431,7 @@ export function NewLeadForm({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Field label="Número de hojas (auto)">
                 <input
+                  id="field-sheets"
                   className="input"
                   type="number"
                   value={totalSheets}
@@ -446,6 +447,7 @@ export function NewLeadForm({
               </Field>
               <Field label="Costo por hoja" error={errors.cost_per_sheet?.message}>
                 <select
+                  id="field-cost"
                   {...register('cost_per_sheet', { valueAsNumber: true })}
                   className="select"
                   disabled={pending}
@@ -460,7 +462,7 @@ export function NewLeadForm({
             </div>
 
             {/* Colores list */}
-            <div className="mt-4">
+            <div id="field-colors" className="mt-4">
               <label className="label">Colores</label>
               {errors.colors?.message && (
                 <p
@@ -525,7 +527,7 @@ export function NewLeadForm({
             </div>
 
             {/* Cubrecanto (estructurado): tipo + metros, total derivado */}
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div id="field-edgebanding" className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
               <Field
                 label="Cubrecanto"
                 error={errors.edge_banding_type?.message}
@@ -578,7 +580,7 @@ export function NewLeadForm({
 
             {/* Cortes — solo cuando product_type='con_corte' */}
             {watchedProductType === 'con_corte' && (
-              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div id="field-cuts" className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                 <Field
                   label="Número de cortes"
                   error={errors.cuts_count?.message}
@@ -660,6 +662,7 @@ export function NewLeadForm({
             subtitle="Cotización, contrato o cualquier PDF asociado al pedido (opcional, máx. 10 MB)."
           >
             <div
+              id="field-pdf"
               className="rounded-lg border p-4 flex items-start gap-3"
               style={{
                 borderColor: pdfFile
@@ -751,6 +754,7 @@ export function NewLeadForm({
                 <span className="font-semibold">{fields.length}</span>
               </div>
               <div
+                id="field-total"
                 className="border-t pt-3 mt-2"
                 style={{ borderColor: 'var(--border)' }}
               >
@@ -810,6 +814,7 @@ export function NewLeadForm({
                 Cancelar
               </Link>
               <button
+                id="btn-save-lead"
                 type="submit"
                 className="btn btn-primary flex-1"
                 disabled={pending}
