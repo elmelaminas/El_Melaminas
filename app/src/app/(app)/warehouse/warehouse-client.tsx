@@ -198,7 +198,7 @@ export function WarehouseClient({
       </div>
 
       {/* Stock table */}
-      <div className="tbl-wrap">
+      <div id="stock-table" className="tbl-wrap">
         <div
           className="px-6 py-4 border-b flex items-center justify-between"
           style={{ borderColor: 'var(--border)' }}
@@ -320,7 +320,7 @@ export function WarehouseClient({
           confirma que la mercancía está físicamente preparada y el
           server hace el "salida" definitivo (stock_total -= qty,
           stock_committed -= qty, inserta movement type='salida'). */}
-      <div className="tbl-wrap">
+      <div id="stock-exit-section" className="tbl-wrap">
         <div
           className="px-6 py-4 border-b flex items-center justify-between"
           style={{ borderColor: 'var(--border)' }}
@@ -366,7 +366,7 @@ export function WarehouseClient({
       </div>
 
       {/* Movements (últimos N) */}
-      <div className="tbl-wrap">
+      <div id="movements-table" className="tbl-wrap">
         <div
           className="px-6 py-4 border-b flex items-center justify-between"
           style={{ borderColor: 'var(--border)' }}

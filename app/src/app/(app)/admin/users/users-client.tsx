@@ -41,12 +41,16 @@ export function UsersClient({ initialUsers }: { initialUsers: UserRow[] }) {
             Roles, permisos y estado de las cuentas del sistema.
           </p>
         </div>
-        <button onClick={() => setShowNew(true)} className="btn btn-primary">
+        <button
+          id="btn-new-user"
+          onClick={() => setShowNew(true)}
+          className="btn btn-primary"
+        >
           <Plus size={16} /> Nuevo Usuario
         </button>
       </div>
 
-      <div className="tbl-wrap">
+      <div id="users-table" className="tbl-wrap">
         <div className="overflow-x-auto">
           <table className="tbl">
             <thead>

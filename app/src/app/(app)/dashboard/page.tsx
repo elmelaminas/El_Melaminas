@@ -341,14 +341,16 @@ export default async function DashboardPage({
               Métricas de {monthLabel} {anio}
             </p>
           </div>
-          <MonthYearFilter mes={mes} anio={anio} />
+          <div id="dashboard-filter">
+            <MonthYearFilter mes={mes} anio={anio} />
+          </div>
         </div>
 
         {/* Metric cards (6) — todas clickeables. Cada href incluye los
             mismos `mes`/`anio` activos para que el drill-down respete el
             filtro del dashboard, EXCEPTO "Stock bajo" que va a /warehouse
             sin params (el stock es estado actual, no tiene rango de mes). */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+        <div id="dashboard-metrics" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
           <MetricCard
             icon={<ClipboardList size={20} />}
             iconBg="#DBEAFE"
@@ -406,7 +408,7 @@ export default async function DashboardPage({
         </div>
 
         {/* Chart de canales (últimos 7 días) */}
-        <div className="card p-6">
+        <div id="dashboard-chart" className="card p-6">
           <div className="flex items-center justify-between mb-5">
             <div>
               <h3 className="font-semibold">Leads por canal</h3>

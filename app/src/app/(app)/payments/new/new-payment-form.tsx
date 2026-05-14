@@ -223,6 +223,7 @@ export function NewPaymentForm({
                 style={{ color: 'var(--text-tertiary)' }}
               />
               <input
+                id="field-lead-search"
                 placeholder="Busca por cliente, teléfono o ID…"
                 className="input"
                 style={{ paddingLeft: 36 }}
@@ -322,6 +323,7 @@ export function NewPaymentForm({
               <div>
                 <label className="label">Monto que paga</label>
                 <input
+                  id="field-amount"
                   type="number"
                   className="input"
                   value={amount}
@@ -334,6 +336,7 @@ export function NewPaymentForm({
               <div>
                 <label className="label">Método de pago</label>
                 <select
+                  id="field-method"
                   className="select"
                   value={method}
                   onChange={(e) =>
@@ -351,6 +354,7 @@ export function NewPaymentForm({
               <div>
                 <label className="label">Tipo de pago</label>
                 <select
+                  id="field-payment-type"
                   className="select"
                   value={paymentType}
                   onChange={(e) =>
@@ -368,7 +372,7 @@ export function NewPaymentForm({
             </div>
 
             {/* Deducibles */}
-            <div className="mt-6">
+            <div id="field-deductibles" className="mt-6">
               <div className="flex items-center justify-between mb-2">
                 <label className="label" style={{ marginBottom: 0 }}>
                   Deducibles
@@ -433,7 +437,7 @@ export function NewPaymentForm({
             </div>
 
             {/* Evidencia */}
-            <div className="mt-6">
+            <div id="field-evidence" className="mt-6">
               <label className="label">Evidencia del pago (opcional)</label>
               <div
                 className="dropzone flex flex-col items-center gap-2"

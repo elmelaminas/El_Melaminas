@@ -97,6 +97,7 @@ export function CajaClient({
         style={{ borderBottom: '1px solid var(--border)' }}
       >
         <TabButton
+          id="tab-por-validar"
           active={tab === 'por-validar'}
           onClick={() => selectTab('por-validar')}
         >
@@ -114,6 +115,7 @@ export function CajaClient({
           </span>
         </TabButton>
         <TabButton
+          id="tab-validados"
           active={tab === 'validados'}
           onClick={() => selectTab('validados')}
         >
@@ -477,13 +479,18 @@ function TabButton({
   active,
   onClick,
   children,
+  id,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
+  /** id DOM opcional — usado por el tour contextual para anclar
+   *  popovers a un tab específico. */
+  id?: string;
 }) {
   return (
     <button
+      id={id}
       type="button"
       onClick={onClick}
       className="flex items-center gap-2 px-4 py-2 text-sm font-medium"

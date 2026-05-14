@@ -253,6 +253,7 @@ export function EntregasClient({
       <div className="card p-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <select
+            id="entregas-filter-driver"
             className="select"
             value={filters.driver}
             onChange={(e) => pushFilters({ driver: e.target.value })}
@@ -315,11 +316,13 @@ export function EntregasClient({
           Se renderiza ARRIBA de la tabla general porque es la operación
           de planeación más frecuente del admin (organizar el día
           antes de empezar la jornada). */}
-      <RouteSection
-        routeDate={routeDate}
-        candidates={routeCandidates}
-        onChangeDate={pushRouteDate}
-      />
+      <div id="entregas-date">
+        <RouteSection
+          routeDate={routeDate}
+          candidates={routeCandidates}
+          onChangeDate={pushRouteDate}
+        />
+      </div>
 
       {/* Modal de issues — montado fuera de la tabla para overlay
           fullscreen sin restricciones de overflow del tbl-wrap. */}
@@ -350,6 +353,7 @@ export function EntregasClient({
 
       {/* Tabla */}
       <div
+        id="entregas-table"
         className="tbl-wrap"
         style={{
           opacity: pending ? 0.6 : 1,

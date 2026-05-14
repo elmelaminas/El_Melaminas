@@ -29,6 +29,33 @@ import type { TourStep } from '@/components/ui/AppTour';
  * en consola, no crash).
  */
 const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
+  '/dashboard': [
+    {
+      element: '#dashboard-filter',
+      popover: {
+        title: '📅 Filtro de mes',
+        description:
+          'Cambia el mes y año para ver las métricas de cualquier período.',
+      },
+    },
+    {
+      element: '#dashboard-metrics',
+      popover: {
+        title: '📊 Métricas',
+        description:
+          'Haz clic en cualquier recuadro para ver el detalle desglosado de esa métrica.',
+      },
+    },
+    {
+      element: '#dashboard-chart',
+      popover: {
+        title: '📈 Leads por canal',
+        description:
+          'Distribución de leads de los últimos 7 días por canal de origen.',
+      },
+    },
+  ],
+
   '/leads/new': [
     {
       element: '#field-channel',
