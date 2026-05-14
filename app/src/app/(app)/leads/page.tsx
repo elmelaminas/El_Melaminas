@@ -44,6 +44,18 @@ const PAYMENT_VALUES = [
   'cancelado',
 ] as const;
 
+// Filtro por color de fila (tabs encima de la tabla). Valores cubren
+// los 4 automáticos + 2 manuales. 'all' / vacío = sin filtro.
+const COLOR_FILTER_VALUES = [
+  'all',
+  'azul',
+  'rosa',
+  'naranja',
+  'amarillo',
+  'verde',
+  'morado',
+] as const;
+
 type RawSearchParams = {
   q?: string | string[];
   channel?: string | string[];
@@ -54,6 +66,8 @@ type RawSearchParams = {
   /** Año 4-dígitos — pareja de `mes`. Ambos deben venir juntos para filtrar. */
   anio?: string | string[];
   page?: string | string[];
+  /** Tab de color (ver COLOR_FILTER_VALUES). 'all' o vacío = sin filtro. */
+  color_filter?: string | string[];
 };
 
 /** Devuelve `value` si está en la lista, o `''` en caso contrario. */
@@ -93,6 +107,13 @@ export default async function LeadsPage({
     const channel = whitelist(pickStr(raw.channel), CHANNEL_VALUES);
     const delivery = whitelist(pickStr(raw.delivery), DELIVERY_VALUES);
     const payment = whitelist(pickStr(raw.payment), PAYMENT_VALUES);
+    const colorFilterRaw = whitelist(pickStr(raw.color_filter), COLOR_FILTER_VALUES);
+    // 'all' y '' son equivalentes (sin filtro). Normalizamos a '' para
+    // simplificar el ramo `if (colorFilter)` abajo.
+    const colorFilter: '' | Exclude<typeof colorFilterRaw, 'all' | ''> =
+      colorFilterRaw === 'all' || colorFilterRaw === ''
+        ? ''
+        : (colorFilterRaw as Exclude<typeof colorFilterRaw, 'all' | ''>);
     const pageNumber = Math.max(1, Number(pickStr(raw.page)) || 1);
 
     // Filtro mes/anio (ambos opcionales pero deben venir JUNTOS para
@@ -153,6 +174,56 @@ export default async function LeadsPage({
       query = query.or(
         `client_name.ilike.*${qInput}*,phone.ilike.*${qInput}*`,
       );
+    }
+
+    // Filtro por color (tab). Cada color combina su REGLA AUTOMÁTICA
+    // con el match manual `row_color = X`. Naranja necesita un pre-query
+    // para obtener los lead_ids con pago contra_entrega — un set pequeño
+    // en la práctica (negocio típico).
+    if (colorFilter === 'azul') {
+      query = query.or('product_type.eq.con_corte,row_color.eq.azul');
+    } else if (colorFilter === 'rosa') {
+      query = query.or('sale_type.eq.venta_empleado,row_color.eq.rosa');
+    } else if (colorFilter === 'amarillo') {
+      // "Pagado sin entregar" + override manual amarillo. PostgREST
+      // permite `and()` anidado dentro de `.or()` para combinar
+      // condiciones de distintas columnas.
+      query = query.or(
+        'row_color.eq.amarillo,and(payment_status.eq.pagado,delivery_status.neq.entregado)',
+      );
+    } else if (colorFilter === 'naranja') {
+      // Pre-query: lead_ids con AL MENOS un pago contra_entrega. Set
+      // limitado en la práctica; si crece a miles, considerar moverlo
+      // a un VIEW en Postgres con índice.
+      const { data: ceLeads, error: ceErr } = await admin
+        .from('payments')
+        .select('lead_id')
+        .eq('payment_type', 'contra_entrega');
+      if (ceErr) {
+        return (
+          <ErrorState
+            message={`Error leyendo pagos contra entrega: ${ceErr.message}`}
+          />
+        );
+      }
+      const ceIds = Array.from(
+        new Set(
+          (ceLeads ?? [])
+            .map((p) => p.lead_id)
+            .filter((x): x is string => !!x),
+        ),
+      );
+      if (ceIds.length > 0) {
+        // `id.in.(uuid1,uuid2,...)` dentro de `.or()`. PostgREST acepta
+        // UUIDs sin comillas dentro de `()`.
+        query = query.or(`row_color.eq.naranja,id.in.(${ceIds.join(',')})`);
+      } else {
+        query = query.eq('row_color', 'naranja');
+      }
+    } else if (colorFilter === 'verde') {
+      query = query.eq('row_color', 'verde');
+    } else if (colorFilter === 'morado') {
+      query = query.eq('row_color', 'morado');
     }
 
     const start = (pageNumber - 1) * PAGE_SIZE;
@@ -251,6 +322,7 @@ export default async function LeadsPage({
       payment,
       mes: monthFilterActive ? mes : 0,
       anio: monthFilterActive ? anio : 0,
+      color_filter: colorFilter,
     };
 
     return (

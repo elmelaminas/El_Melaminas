@@ -27,6 +27,8 @@ import {
   getLeadRowStyle,
   LeadRowLegend,
   RowColorPickerCell,
+  LEAD_ROW_COLORS,
+  LEAD_ROW_BORDERS,
 } from '@/components/ui/lead-row-color';
 import { updateLeadColorAction } from './actions';
 
@@ -68,6 +70,16 @@ async function colorActionAdapter(formData: FormData) {
   return updateLeadColorAction({ status: 'idle' }, formData);
 }
 
+/** Valores del tab de color. '' = sin filtro (tab "Todos"). */
+export type ColorFilterValue =
+  | ''
+  | 'azul'
+  | 'rosa'
+  | 'naranja'
+  | 'amarillo'
+  | 'verde'
+  | 'morado';
+
 export type FiltersState = {
   q: string;
   channel: '' | 'whatsapp' | 'tiktok' | 'google' | 'tienda';
@@ -81,6 +93,9 @@ export type FiltersState = {
   mes: number;
   /** Año 4-dígitos; 0 = sin filtro. */
   anio: number;
+  /** Tab activo de color de fila ('' = "Todos"). Combina las reglas
+   *  automáticas + el override manual `row_color`. */
+  color_filter: ColorFilterValue;
 };
 
 const CHANNEL_OPTS: { value: FiltersState['channel']; label: string }[] = [
@@ -204,6 +219,7 @@ export function LeadsClient({
       page: number;
       mes: number;
       anio: number;
+      color_filter: string;
     }>,
   ) {
     const merged = {
@@ -218,6 +234,9 @@ export function LeadsClient({
       // usa el botón "Limpiar filtros".
       mes: next.mes ?? filters.mes,
       anio: next.anio ?? filters.anio,
+      // Tab de color: se preserva igual que el resto al cambiar otros
+      // filtros. Solo el botón "Limpiar filtros" lo regresa a "Todos".
+      color_filter: next.color_filter ?? filters.color_filter,
     };
     const params = new URLSearchParams();
     if (merged.q) params.set('q', merged.q);
@@ -228,6 +247,7 @@ export function LeadsClient({
       params.set('mes', String(merged.mes));
       params.set('anio', String(merged.anio));
     }
+    if (merged.color_filter) params.set('color_filter', merged.color_filter);
     if (merged.page > 1) params.set('page', String(merged.page));
     const qs = params.toString();
     startTransition(() => {
@@ -242,10 +262,59 @@ export function LeadsClient({
           filters.channel ||
           filters.delivery ||
           filters.payment ||
-          (filters.mes > 0 && filters.anio > 0),
+          (filters.mes > 0 && filters.anio > 0) ||
+          filters.color_filter,
       ),
     [filters],
   );
+
+  // Definición de los tabs de color. Cada uno con su label, valor de
+  // searchParam y color asociado para el resaltado visual del tab
+  // activo.
+  const COLOR_TABS: {
+    value: ColorFilterValue;
+    label: string;
+    bg?: string;
+    border?: string;
+  }[] = [
+    { value: '', label: 'Todos' },
+    {
+      value: 'azul',
+      label: '🔵 Con corte',
+      bg: LEAD_ROW_COLORS.azul,
+      border: LEAD_ROW_BORDERS.azul,
+    },
+    {
+      value: 'rosa',
+      label: '🌸 Venta empleado',
+      bg: LEAD_ROW_COLORS.rosa,
+      border: LEAD_ROW_BORDERS.rosa,
+    },
+    {
+      value: 'naranja',
+      label: '🟠 Contra entrega',
+      bg: LEAD_ROW_COLORS.naranja,
+      border: LEAD_ROW_BORDERS.naranja,
+    },
+    {
+      value: 'amarillo',
+      label: '🟡 Pagado sin entregar',
+      bg: LEAD_ROW_COLORS.amarillo,
+      border: LEAD_ROW_BORDERS.amarillo,
+    },
+    {
+      value: 'verde',
+      label: '🟢 Verde',
+      bg: LEAD_ROW_COLORS.verde,
+      border: LEAD_ROW_BORDERS.verde,
+    },
+    {
+      value: 'morado',
+      label: '🟣 Morado',
+      bg: LEAD_ROW_COLORS.morado,
+      border: LEAD_ROW_BORDERS.morado,
+    },
+  ];
 
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const end = Math.min(page * pageSize, total);
@@ -359,6 +428,7 @@ export function LeadsClient({
                   payment: '',
                   mes: 0,
                   anio: 0,
+                  color_filter: '',
                   page: 1,
                 });
               }}
@@ -382,6 +452,48 @@ export function LeadsClient({
         <div id="leads-legend" className="mt-3">
           <LeadRowLegend />
         </div>
+      </div>
+
+      {/* Tabs de filtro por color (debajo de la leyenda, encima de la
+          tabla). Cada tab combina la regla automática del color con
+          su override manual. Click → push searchParam `color_filter`. */}
+      <div
+        role="tablist"
+        aria-label="Filtrar por color de fila"
+        className="flex items-center gap-2 flex-wrap"
+      >
+        {COLOR_TABS.map((tab) => {
+          const isActive = filters.color_filter === tab.value;
+          return (
+            <button
+              key={tab.value || 'all'}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => pushFilters({ color_filter: tab.value, page: 1 })}
+              disabled={pending}
+              className="btn"
+              style={{
+                padding: '6px 12px',
+                fontSize: '0.8125rem',
+                fontWeight: 500,
+                // Activo: fondo del color del tab + borde sólido del
+                // mismo tono. Inactivo: fondo neutro + borde gris.
+                background: isActive
+                  ? tab.bg ?? 'var(--brand-primary)'
+                  : 'var(--bg-subtle)',
+                color: isActive ? '#1F2937' : 'var(--text-secondary)',
+                border: isActive
+                  ? `2px solid ${tab.border ?? 'var(--brand-primary)'}`
+                  : '2px solid transparent',
+                borderRadius: 9999,
+                cursor: pending ? 'not-allowed' : 'pointer',
+              }}
+            >
+              {tab.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Tabla */}
