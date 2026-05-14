@@ -1,19 +1,36 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
-import { EditLeadForm, type DriverOption } from './edit-form';
+import {
+  EditLeadForm,
+  type EditLeadFormData,
+} from './edit-form';
+import type {
+  SellerOption,
+  ColorOption,
+  DriverOption,
+} from '../../new/new-lead-form';
 
 /**
- * Página /leads/[id]/edit — admin edita fecha y chofer de un lead.
+ * Página /leads/[id]/edit — admin edita TODOS los campos del lead.
  *
- * Tres SELECTs en paralelo:
+ * SELECTs en paralelo:
  *   1. profile del user logueado (verificar role=admin).
- *   2. lead a editar (con sus valores actuales para hidratar el form).
- *   3. choferes activos para el dropdown.
+ *   2. lead con todos sus campos editables.
+ *   3. lead_colors del lead (cantidad por color).
+ *   4. sellers activos.
+ *   5. colors activos.
+ *   6. drivers activos (más, si el lead apunta a uno inactivo lo
+ *      añadimos al final para que el select no quede desincronizado).
  *
- * Triple defensa de acceso (middleware + este page + el server action).
- * El page chequea role aquí ANTES de renderizar para que un user con
- * role distinto no vea el form ni siquiera por un tick (seguridad +
- * UX consistente con el resto del proyecto).
+ * Triple defensa de acceso: middleware → este page → server action.
+ * El page rechaza con ErrorState ANTES de renderizar el form si el
+ * caller no es admin.
+ *
+ * Bloqueos visibles desde el page (no solo desde el action):
+ *   - lead.deleted_at != NULL → cancelado.
+ *   - delivery_status === 'entregado' o 'cancelado' → ya cerró.
+ * El form igual se renderiza para casos edge, pero el action rechazará
+ * con mensaje claro si llega a enviarse.
  */
 export const dynamic = 'force-dynamic';
 
@@ -38,7 +55,14 @@ export default async function EditLeadPage({
 
     const admin = supabaseAdmin();
 
-    const [profileResult, leadResult, driversResult] = await Promise.all([
+    const [
+      profileResult,
+      leadResult,
+      lcResult,
+      sellersResult,
+      colorsResult,
+      driversResult,
+    ] = await Promise.all([
       admin
         .from('profiles')
         .select('role')
@@ -46,9 +70,29 @@ export default async function EditLeadPage({
         .maybeSingle(),
       admin
         .from('leads')
-        .select('id, client_name, sale_date, driver_id')
+        .select(
+          `id, client_name, phone, address, maps_url, channel, seller_id,
+           sale_place, sale_type, sale_date, purchase_type, product_type,
+           cost_per_sheet, cuts_count, edge_banding_type,
+           edge_banding_meters, driver_id, document_url,
+           delivery_status, deleted_at`,
+        )
         .eq('id', id)
         .maybeSingle(),
+      admin
+        .from('lead_colors')
+        .select('color_id, quantity')
+        .eq('lead_id', id),
+      admin
+        .from('sellers')
+        .select('id, name')
+        .eq('is_active', true)
+        .order('name', { ascending: true }),
+      admin
+        .from('colors')
+        .select('id, name')
+        .eq('is_active', true)
+        .order('name', { ascending: true }),
       admin
         .from('profiles')
         .select('id, full_name')
@@ -79,6 +123,37 @@ export default async function EditLeadPage({
     if (!leadResult.data) {
       return <ErrorState message="Lead no encontrado." />;
     }
+    if (leadResult.data.deleted_at) {
+      return (
+        <ErrorState message="Este lead está cancelado y no se puede editar." />
+      );
+    }
+    if (leadResult.data.delivery_status === 'entregado') {
+      return (
+        <ErrorState message="Este lead ya fue entregado y no se puede editar." />
+      );
+    }
+    if (lcResult.error) {
+      return (
+        <ErrorState
+          message={`Error leyendo colores del lead: ${lcResult.error.message}`}
+        />
+      );
+    }
+    if (sellersResult.error) {
+      return (
+        <ErrorState
+          message={`Error leyendo sellers: ${sellersResult.error.message}`}
+        />
+      );
+    }
+    if (colorsResult.error) {
+      return (
+        <ErrorState
+          message={`Error leyendo colors: ${colorsResult.error.message}`}
+        />
+      );
+    }
     if (driversResult.error) {
       return (
         <ErrorState
@@ -87,13 +162,22 @@ export default async function EditLeadPage({
       );
     }
 
+    const sellers: SellerOption[] = (sellersResult.data ?? []).map((s) => ({
+      id: s.id,
+      name: s.name,
+    }));
+    const colors: ColorOption[] = (colorsResult.data ?? []).map((c) => ({
+      id: c.id,
+      name: c.name,
+    }));
     const drivers: DriverOption[] = (driversResult.data ?? []).map((d) => ({
       id: d.id,
       name: d.full_name ?? '(sin nombre)',
     }));
 
-    // Si el lead apunta a un chofer inactivo (no en `drivers`), lo
-    // agregamos al final para que el select no se muestre desincronizado.
+    // Lead con chofer inactivo: agregarlo al final para que el select
+    // no muestre value disconnect. Mismo patrón que tenía el editor
+    // anterior cuando solo era 2 campos.
     const currentDriverId = leadResult.data.driver_id ?? '';
     if (currentDriverId && !drivers.some((d) => d.id === currentDriverId)) {
       const { data: inactive } = await admin
@@ -109,12 +193,90 @@ export default async function EditLeadPage({
       }
     }
 
+    // Si seller asignado al lead está inactivo, lo añadimos también.
+    const currentSellerId = leadResult.data.seller_id ?? '';
+    if (currentSellerId && !sellers.some((s) => s.id === currentSellerId)) {
+      const { data: inactive } = await admin
+        .from('sellers')
+        .select('name')
+        .eq('id', currentSellerId)
+        .maybeSingle();
+      if (inactive) {
+        sellers.push({
+          id: currentSellerId,
+          name: `${inactive.name ?? '(sin nombre)'} (inactivo)`,
+        });
+      }
+    }
+
+    // lead_colors → array de { color_id, quantity, new_name: '' } que
+    // el form espera. Filtramos por quantity > 0 por seguridad.
+    const leadColors = (lcResult.data ?? [])
+      .filter(
+        (r): r is { color_id: string; quantity: number } =>
+          !!r.color_id && Number(r.quantity ?? 0) > 0,
+      )
+      .map((r) => ({
+        color_id: r.color_id,
+        quantity: Number(r.quantity),
+        new_name: '',
+      }));
+
+    // `lead-documents` es bucket PÚBLICO — la URL guardada funciona
+    // directo en el browser. Si en el futuro se cambia a privado,
+    // habría que pasar por signEvidenceUrl como en payments-evidence.
+    const formData: EditLeadFormData = {
+      leadId: leadResult.data.id,
+      initialDocumentUrl: leadResult.data.document_url ?? null,
+      initialValues: {
+        client_name: leadResult.data.client_name ?? '',
+        phone: leadResult.data.phone ?? '',
+        address: leadResult.data.address ?? '',
+        maps_url: leadResult.data.maps_url ?? '',
+        channel:
+          (leadResult.data.channel as
+            | 'whatsapp'
+            | 'tiktok'
+            | 'google'
+            | 'tienda') ?? 'whatsapp',
+        seller_id: leadResult.data.seller_id ?? '',
+        driver_id: leadResult.data.driver_id ?? '',
+        sale_place:
+          (leadResult.data.sale_place as 'online' | 'en_fabrica') ?? 'online',
+        sale_type:
+          (leadResult.data.sale_type as
+            | 'primer_contacto'
+            | 'recompra'
+            | 'seguimiento'
+            | 'venta_empleado') ?? 'primer_contacto',
+        sale_date: leadResult.data.sale_date ?? '',
+        purchase_type:
+          (leadResult.data.purchase_type as 'domicilio' | 'fabrica') ??
+          'domicilio',
+        product_type:
+          (leadResult.data.product_type as 'con_corte' | 'sin_corte') ??
+          'con_corte',
+        cost_per_sheet:
+          Number(leadResult.data.cost_per_sheet ?? 350) as 350 | 600 | 2200,
+        cuts_count:
+          leadResult.data.cuts_count == null
+            ? null
+            : Number(leadResult.data.cuts_count),
+        edge_banding_type:
+          (leadResult.data.edge_banding_type as '' | '19mm' | '3.5mm') ?? '',
+        edge_banding_meters:
+          leadResult.data.edge_banding_meters == null
+            ? null
+            : Number(leadResult.data.edge_banding_meters),
+        colors: leadColors,
+      },
+    };
+
     return (
       <EditLeadForm
-        leadId={leadResult.data.id}
-        clientName={leadResult.data.client_name ?? ''}
-        initialSaleDate={leadResult.data.sale_date ?? ''}
-        initialDriverId={currentDriverId}
+        formData={formData}
+        sellers={sellers}
+        colors={colors}
         drivers={drivers}
       />
     );

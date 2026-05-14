@@ -29,6 +29,7 @@ import {
   type LeadCreateInput,
 } from './schema';
 import { saveLeadAction, uploadLeadDocumentAction } from './actions';
+import { updateLeadFullAction } from '../[id]/edit/actions';
 import { formatMXN } from '@/data/mock';
 
 export type SellerOption = { id: string; name: string };
@@ -53,13 +54,28 @@ export function NewLeadForm({
   sellers,
   colors,
   drivers,
+  mode = 'create',
+  leadId,
+  initialValues,
+  initialDocumentUrl,
 }: {
   sellers: SellerOption[];
   colors: ColorOption[];
   drivers: DriverOption[];
+  /** 'create' → saveLeadAction + redirect a /leads. 'edit' →
+   *  updateLeadFullAction(leadId, values) + redirect a /leads. */
+  mode?: 'create' | 'edit';
+  /** Requerido cuando mode='edit'. Lo ignoramos en 'create'. */
+  leadId?: string;
+  /** Valores precargados (modo edit). En create defaults vacíos. */
+  initialValues?: Partial<LeadCreateInput>;
+  /** URL del PDF actual del lead (modo edit). Si el usuario sube
+   *  uno nuevo, reemplaza al actual. Si no, se mantiene el existente. */
+  initialDocumentUrl?: string | null;
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
+  const isEdit = mode === 'edit';
 
   // PDF adjunto (opcional). El File NO entra al schema RHF — se maneja
   // como state local y se sube DESPUÉS del save exitoso del lead.
@@ -84,31 +100,38 @@ export function NewLeadForm({
     formState: { errors },
   } = useForm<LeadCreateInput>({
     resolver: zodResolver(LeadCreateSchema),
+    // En edit, los initialValues sobreescriben los defaults de
+    // creación. Cada campo cae al default si initialValues no tiene
+    // ese key (Partial). Cubrecanto default es '' (string vacío) en
+    // schema para que el dropdown muestre "Sin cubrecanto".
     defaultValues: {
-      channel: 'whatsapp',
-      seller_id: sellers[0]?.id ?? '',
-      driver_id: '', // Default sin asignar; el admin/seller decide al crear.
-      sale_type: 'primer_contacto',
-      sale_date: today,
-      client_name: '',
-      phone: '',
-      address: '',
-      maps_url: '',
-      cost_per_sheet: COST_PER_SHEET_OPTIONS[0]?.value ?? 350,
-      // Cortes: como product_type default es 'con_corte', vamos a pedirlo
-      // visible desde el inicio. Si el user cambia a sin_corte se resetea.
-      cuts_count: null,
-      cuts_total: null,
-      // Cubrecanto: '' = "Sin cubrecanto" (no requiere metros).
-      edge_banding_type: '',
-      edge_banding_meters: null,
-      edge_banding_total: null,
-      product_type: 'con_corte',
-      purchase_type: 'domicilio',
-      sale_place: 'online',
-      colors: [
-        { color_id: colors[0]?.id ?? '', quantity: 1, new_name: '' },
-      ],
+      channel: initialValues?.channel ?? 'whatsapp',
+      seller_id: initialValues?.seller_id ?? sellers[0]?.id ?? '',
+      driver_id: initialValues?.driver_id ?? '',
+      sale_type: initialValues?.sale_type ?? 'primer_contacto',
+      sale_date: initialValues?.sale_date ?? today,
+      client_name: initialValues?.client_name ?? '',
+      phone: initialValues?.phone ?? '',
+      address: initialValues?.address ?? '',
+      maps_url: initialValues?.maps_url ?? '',
+      cost_per_sheet:
+        initialValues?.cost_per_sheet ??
+        COST_PER_SHEET_OPTIONS[0]?.value ??
+        350,
+      cuts_count: initialValues?.cuts_count ?? null,
+      cuts_total: initialValues?.cuts_total ?? null,
+      edge_banding_type: initialValues?.edge_banding_type ?? '',
+      edge_banding_meters: initialValues?.edge_banding_meters ?? null,
+      edge_banding_total: initialValues?.edge_banding_total ?? null,
+      product_type: initialValues?.product_type ?? 'con_corte',
+      purchase_type: initialValues?.purchase_type ?? 'domicilio',
+      sale_place: initialValues?.sale_place ?? 'online',
+      colors:
+        initialValues?.colors && initialValues.colors.length > 0
+          ? initialValues.colors
+          : [
+              { color_id: colors[0]?.id ?? '', quantity: 1, new_name: '' },
+            ],
     },
   });
 
@@ -124,6 +147,10 @@ export function NewLeadForm({
   const watchedCutsCount = watch('cuts_count');
   const watchedEdgeType = watch('edge_banding_type');
   const watchedEdgeMeters = watch('edge_banding_meters');
+  // purchase_type='fabrica' → cliente recoge en taller; ocultamos
+  // dirección y URL Google Maps en la sección Cliente (no aplican).
+  const watchedPurchaseType = watch('purchase_type');
+  const isDomicilio = watchedPurchaseType !== 'fabrica';
 
   const totalSheets = useMemo(
     () =>
@@ -154,17 +181,26 @@ export function NewLeadForm({
   const onValidSubmit = (values: LeadCreateInput) => {
     clearErrors('root.serverError');
     setPdfWarning(null);
-    console.log('[NewLeadForm] enviando saveLeadAction…', values);
+    console.log(
+      `[NewLeadForm] enviando ${isEdit ? 'updateLeadFullAction' : 'saveLeadAction'}…`,
+      values,
+    );
 
     startTransition(async () => {
       try {
-        const result = await saveLeadAction(values);
+        // Branch por modo. En edit el server reusa el lead_id existente
+        // y reajusta colores+stock con TxnLog. En create crea uno nuevo.
+        const result =
+          isEdit && leadId
+            ? await updateLeadFullAction(leadId, values)
+            : await saveLeadAction(values);
         console.log('[NewLeadForm] respuesta:', result);
 
         if (result.status === 'success') {
-          // Si hay PDF, lo subimos antes de navegar. La subida es
-          // non-fatal: si falla, mostramos warning y navegamos igual
-          // (el lead ya está creado).
+          // PDF: en ambos modos, si el usuario adjuntó archivo, lo
+          // subimos para reemplazar/setear el document_url. La subida
+          // es non-fatal — si falla, lead/edit ya están guardados, solo
+          // mostramos warning y NO navegamos.
           if (pdfFile && pdfFile.size > 0) {
             try {
               const fd = new FormData();
@@ -179,14 +215,13 @@ export function NewLeadForm({
                   '[NewLeadForm] upload PDF falló (no fatal):',
                   upRes,
                 );
-                // Mostramos warning pero NO bloqueamos la navegación —
-                // el lead ya está creado y guardado.
+                const actionLabel = isEdit ? 'Lead actualizado' : 'Lead creado';
                 setPdfWarning(
                   upRes.status === 'error'
-                    ? `Lead creado, pero el PDF no se pudo subir: ${upRes.message}`
-                    : 'Lead creado, pero el PDF no se pudo subir.',
+                    ? `${actionLabel}, pero el PDF no se pudo subir: ${upRes.message}`
+                    : `${actionLabel}, pero el PDF no se pudo subir.`,
                 );
-                return; // No navegamos para que el usuario vea el warning.
+                return;
               }
             } catch (uploadErr) {
               console.error(
@@ -197,11 +232,11 @@ export function NewLeadForm({
                 uploadErr instanceof Error
                   ? uploadErr.message
                   : 'Error de red al subir PDF';
-              setPdfWarning(`Lead creado, pero el PDF no se pudo subir: ${msg}`);
+              const actionLabel = isEdit ? 'Lead actualizado' : 'Lead creado';
+              setPdfWarning(`${actionLabel}, pero el PDF no se pudo subir: ${msg}`);
               return;
             }
           }
-          // Vamos al listado; cuando exista /leads/[id] redirigimos ahí.
           router.push('/leads');
           router.refresh();
           return;
@@ -281,9 +316,15 @@ export function NewLeadForm({
           <ArrowLeft size={18} />
         </Link>
         <div>
-          <h1 className="text-2xl font-bold">Nuevo Lead</h1>
+          <h1 className="text-2xl font-bold">
+            {isEdit
+              ? `Editando lead de ${initialValues?.client_name ?? '(sin nombre)'}`
+              : 'Nuevo Lead'}
+          </h1>
           <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-            Registra un nuevo cliente y los detalles de su pedido.
+            {isEdit
+              ? 'Modifica los datos. El stock se reajusta automáticamente.'
+              : 'Registra un nuevo cliente y los detalles de su pedido.'}
           </p>
         </div>
       </div>
@@ -371,6 +412,29 @@ export function NewLeadForm({
                   />
                 </div>
               </Field>
+
+              {/* purchase_type vive en "Origen del Lead" porque
+                  condiciona la sección Cliente: si es 'fabrica' se
+                  ocultan dirección y URL Maps. Antes vivía en
+                  "Detalle del Pedido", pero la decisión de a domicilio
+                  vs en fábrica se toma al inicio (al hablar con el
+                  cliente), no al detallar el pedido. */}
+              <Field
+                label="Tipo de compra"
+                error={errors.purchase_type?.message}
+              >
+                <select
+                  {...register('purchase_type')}
+                  className="select"
+                  disabled={pending}
+                >
+                  {PURCHASE_TYPE_OPTIONS.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </Field>
             </div>
           </Section>
 
@@ -396,30 +460,39 @@ export function NewLeadForm({
                   disabled={pending}
                 />
               </Field>
-              <div id="field-address" className="md:col-span-2">
-                <Field label="Dirección" error={errors.address?.message}>
-                  <textarea
-                    {...register('address')}
-                    className="textarea"
-                    rows={2}
-                    placeholder="Calle, número, colonia, alcaldía…"
-                    disabled={pending}
-                  />
-                </Field>
-              </div>
-              <div className="md:col-span-2">
-                <Field
-                  label="URL Google Maps (opcional)"
-                  error={errors.maps_url?.message}
-                >
-                  <input
-                    {...register('maps_url')}
-                    className="input"
-                    placeholder="https://maps.google.com/…"
-                    disabled={pending}
-                  />
-                </Field>
-              </div>
+              {/* Dirección y URL Maps solo aplican cuando la compra es
+                  A DOMICILIO. En fábrica el cliente recoge en el
+                  taller — los campos quedan ocultos pero su valor
+                  RHF se preserva en state por si el usuario vuelve a
+                  cambiar a domicilio. */}
+              {isDomicilio && (
+                <>
+                  <div id="field-address" className="md:col-span-2">
+                    <Field label="Dirección" error={errors.address?.message}>
+                      <textarea
+                        {...register('address')}
+                        className="textarea"
+                        rows={2}
+                        placeholder="Calle, número, colonia, alcaldía…"
+                        disabled={pending}
+                      />
+                    </Field>
+                  </div>
+                  <div className="md:col-span-2">
+                    <Field
+                      label="URL Google Maps (opcional)"
+                      error={errors.maps_url?.message}
+                    >
+                      <input
+                        {...register('maps_url')}
+                        className="input"
+                        placeholder="https://maps.google.com/…"
+                        disabled={pending}
+                      />
+                    </Field>
+                  </div>
+                </>
+              )}
             </div>
           </Section>
 
@@ -611,6 +684,8 @@ export function NewLeadForm({
               </div>
             )}
 
+            {/* purchase_type se movió a "Origen del Lead" — acá ya
+                no aparece. */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
               <Field label="Tipo de producto" error={errors.product_type?.message}>
                 <select
@@ -619,19 +694,6 @@ export function NewLeadForm({
                   disabled={pending}
                 >
                   {PRODUCT_TYPE_OPTIONS.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="Tipo de compra" error={errors.purchase_type?.message}>
-                <select
-                  {...register('purchase_type')}
-                  className="select"
-                  disabled={pending}
-                >
-                  {PURCHASE_TYPE_OPTIONS.map((t) => (
                     <option key={t.value} value={t.value}>
                       {t.label}
                     </option>
@@ -656,11 +718,41 @@ export function NewLeadForm({
 
           {/* Documento adjunto (Grupo 3). PDF opcional asociado al lead.
               Se sube al bucket lead-documents después de que el lead
-              se crea exitosamente. Max 10 MB, solo .pdf. */}
+              se crea/actualiza. Max 10 MB, solo .pdf. En edit mode si
+              el lead ya tiene PDF, se muestra un link al actual; subir
+              uno nuevo lo reemplaza. */}
           <Section
             title="Documento adjunto"
-            subtitle="Cotización, contrato o cualquier PDF asociado al pedido (opcional, máx. 10 MB)."
+            subtitle={
+              isEdit && initialDocumentUrl
+                ? 'Cotización o contrato (opcional). Subir uno nuevo reemplaza al actual.'
+                : 'Cotización, contrato o cualquier PDF asociado al pedido (opcional, máx. 10 MB).'
+            }
           >
+            {isEdit && initialDocumentUrl && !pdfFile && (
+              <div
+                className="mb-3 text-xs flex items-center gap-2 flex-wrap"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                <FileText
+                  size={14}
+                  style={{ color: 'var(--brand-secondary)' }}
+                />
+                <span>PDF actual:</span>
+                <a
+                  href={initialDocumentUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:underline"
+                  style={{
+                    color: 'var(--brand-secondary)',
+                    fontWeight: 500,
+                  }}
+                >
+                  Ver documento adjunto
+                </a>
+              </div>
+            )}
             <div
               id="field-pdf"
               className="rounded-lg border p-4 flex items-start gap-3"
@@ -825,6 +917,8 @@ export function NewLeadForm({
                     <Loader size={16} className="animate-spin" />
                     <span style={{ marginLeft: 6 }}>Guardando…</span>
                   </>
+                ) : isEdit ? (
+                  'Guardar cambios'
                 ) : (
                   'Guardar Lead'
                 )}

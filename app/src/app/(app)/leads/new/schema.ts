@@ -169,11 +169,16 @@ export const LeadCreateSchema = z.object({
     .trim()
     .min(7, 'Teléfono debe tener al menos 7 dígitos')
     .max(20, 'Teléfono demasiado largo'),
+  // Dirección OPCIONAL a nivel de tipo. La obligatoriedad real se
+  // valida con un superRefine abajo en función de `purchase_type`:
+  //   purchase_type='domicilio' → dirección requerida (min 3 chars).
+  //   purchase_type='fabrica'    → opcional (cliente recoge en taller).
   address: z
     .string()
     .trim()
-    .min(3, 'Dirección requerida')
-    .max(500, 'Dirección demasiado larga'),
+    .max(500, 'Dirección demasiado larga')
+    .optional()
+    .or(z.literal('')),
   maps_url: z
     .string()
     .trim()
@@ -265,6 +270,20 @@ export const LeadCreateSchema = z.object({
   {
     message: 'Los metros son requeridos cuando seleccionas cubrecanto',
     path: ['edge_banding_meters'],
+  },
+)
+.refine(
+  // Si la compra es A DOMICILIO la dirección es obligatoria. Si es
+  // EN FÁBRICA el cliente recoge en el taller — no se requiere.
+  (d) => {
+    if (d.purchase_type === 'domicilio') {
+      return typeof d.address === 'string' && d.address.trim().length >= 3;
+    }
+    return true;
+  },
+  {
+    message: 'Dirección requerida cuando la compra es a domicilio',
+    path: ['address'],
   },
 );
 

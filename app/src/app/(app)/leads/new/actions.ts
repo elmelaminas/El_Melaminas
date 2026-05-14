@@ -289,7 +289,9 @@ export async function saveLeadAction(
       .insert({
         client_name: data.client_name,
         phone: data.phone,
-        address: data.address,
+        // address es opcional cuando purchase_type='fabrica'; convertimos
+        // '' a null para que la columna no quede con string vacío.
+        address: emptyToNull(data.address),
         maps_url: emptyToNull(data.maps_url),
         channel: data.channel,
         seller_id: emptyToNull(data.seller_id),
