@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { supabaseServer } from '@/lib/supabase/server';
 import type { Role } from '@/data/mock';
 import { UsersClient, type UserRow } from './users-client';
 
@@ -25,6 +26,17 @@ export default async function AdminUsersPage() {
   // var falta sin abrir Vercel logs, lo capturamos y devolvemos texto.
   try {
     const admin = supabaseAdmin();
+
+    // Caller actual: el cliente lo necesita para ocultar el botón
+    // "Eliminar" en su propia fila (la action también lo bloquea, pero
+    // mejor no mostrarlo de entrada). Si la lectura de auth falla,
+    // pasamos null — la UI mostrará el botón en todas las filas y la
+    // action devolverá error al intentar auto-eliminarse.
+    const userClient = await supabaseServer();
+    const {
+      data: { user: currentUser },
+    } = await userClient.auth.getUser();
+    const currentUserId = currentUser?.id ?? null;
 
     const [profilesResult, usersResult] = await Promise.all([
       admin
@@ -54,7 +66,7 @@ export default async function AdminUsersPage() {
       email: emailById.get(p.id) ?? '—',
     }));
 
-    return <UsersClient initialUsers={rows} />;
+    return <UsersClient initialUsers={rows} currentUserId={currentUserId} />;
   } catch (err) {
     const message =
       err instanceof Error ? err.message : 'Error desconocido al cargar usuarios';

@@ -305,6 +305,146 @@ export async function updateUserAction(
 }
 
 /**
+ * Elimina un usuario PERMANENTEMENTE: borra de `auth.users` y por
+ * cascade el row de `profiles`. Operación irreversible.
+ *
+ * Guards (en este orden):
+ *   1. `profile_id` debe ser un UUID no vacío.
+ *   2. Caller autenticado.
+ *   3. Caller con rol admin o admin2 (defensa en profundidad — el
+ *      middleware ya bloquea /admin/users a no-admins).
+ *   4. Anti-self-delete: no puedes borrarte a ti mismo. Si te
+ *      equivocas y te dejas fuera, nadie te puede restaurar sin
+ *      acceso a DB.
+ *   5. "Último admin": si el target es role='admin' y es el único
+ *      admin ACTIVO restante, refusal. Esto evita dejar el sistema
+ *      sin admin operativo. (admin2 no cuenta para este check — son
+ *      roles distintos con responsabilidades distintas.)
+ *
+ * Tras `auth.admin.deleteUser`, Postgres aplica CASCADE sobre
+ * `profiles.id → auth.users.id` y la fila del profile se va sola.
+ * Si por alguna razón el cascade no existe (deploy parcial), el
+ * profile queda huérfano; loguamos pero retornamos success porque
+ * el usuario de auth sí se borró (no puede iniciar sesión).
+ *
+ * Misma política de errores que el resto del módulo.
+ */
+export async function deleteUserAction(
+  profile_id: string,
+): Promise<{ status: 'success' } | { status: 'error'; message: string }> {
+  try {
+    if (typeof profile_id !== 'string' || profile_id.length === 0) {
+      return { status: 'error', message: 'profile_id inválido.' };
+    }
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return {
+        status: 'error',
+        message: 'Sesión no válida. Vuelve a iniciar sesión.',
+      };
+    }
+
+    const admin = supabaseAdmin();
+
+    // Role del caller.
+    const { data: callerProfile, error: callerErr } = await admin
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (callerErr) {
+      console.error(
+        '[deleteUserAction] no se pudo leer rol del caller:',
+        callerErr,
+      );
+      return {
+        status: 'error',
+        message: `No se pudo verificar tu rol: ${callerErr.message}`,
+      };
+    }
+    if (callerProfile?.role !== 'admin' && callerProfile?.role !== 'admin2') {
+      return {
+        status: 'error',
+        message: 'Solo un administrador puede eliminar usuarios.',
+      };
+    }
+
+    if (profile_id === user.id) {
+      return {
+        status: 'error',
+        message: 'No puedes eliminarte a ti mismo.',
+      };
+    }
+
+    // Leer el target para conocer su rol — necesario para la regla
+    // del último admin. Si no existe, falla con mensaje claro.
+    const { data: target, error: targetErr } = await admin
+      .from('profiles')
+      .select('role')
+      .eq('id', profile_id)
+      .maybeSingle();
+    if (targetErr) {
+      return {
+        status: 'error',
+        message: `No se pudo leer el usuario a eliminar: ${targetErr.message}`,
+      };
+    }
+    if (!target) {
+      return { status: 'error', message: 'Usuario no encontrado.' };
+    }
+
+    // Regla "debe quedar al menos un admin activo". Solo aplica si el
+    // target ES admin. Contamos los admins ACTIVOS — un admin con
+    // is_active=false no puede iniciar sesión, así que tampoco
+    // "cuenta" para esta regla.
+    if (target.role === 'admin') {
+      const { count, error: countErr } = await admin
+        .from('profiles')
+        .select('id', { count: 'exact', head: true })
+        .eq('role', 'admin')
+        .eq('is_active', true);
+      if (countErr) {
+        return {
+          status: 'error',
+          message: `No se pudo contar administradores: ${countErr.message}`,
+        };
+      }
+      if ((count ?? 0) <= 1) {
+        return {
+          status: 'error',
+          message: 'Debe haber al menos un administrador activo.',
+        };
+      }
+    }
+
+    // Borrar de auth.users. El CASCADE limpia `profiles`. Si el
+    // cascade no está, dejamos huérfano el profile pero el auth user
+    // ya está fuera — preferimos eso a quedar a medias.
+    const { error: delErr } = await admin.auth.admin.deleteUser(profile_id);
+    if (delErr) {
+      console.error('[deleteUserAction] auth deleteUser falló:', delErr);
+      return {
+        status: 'error',
+        message: `No se pudo eliminar el usuario: ${delErr.message}`,
+      };
+    }
+
+    revalidatePath('/admin/users');
+    return { status: 'success' };
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Error desconocido al eliminar';
+    console.error('[deleteUserAction] excepción no controlada:', err);
+    return { status: 'error', message };
+  }
+}
+
+/**
  * Genera un password temporal de 32 hex chars usando WebCrypto. Disponible
  * globalmente en Node 18+ que es lo que pide Next 16.
  */

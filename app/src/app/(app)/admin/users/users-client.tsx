@@ -2,10 +2,10 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
-import { Plus, Pencil } from 'lucide-react';
+import { Plus, Pencil, Trash2, Loader } from 'lucide-react';
 import type { Role } from '@/data/mock';
 import { RoleBadge } from '@/components/ui/Badges';
-import { toggleUserActiveAction } from './actions';
+import { toggleUserActiveAction, deleteUserAction } from './actions';
 import { NewUserModal } from './new-user-modal';
 import { EditUserModal } from './edit-user-modal';
 
@@ -18,7 +18,17 @@ export type UserRow = {
   is_active: boolean;
 };
 
-export function UsersClient({ initialUsers }: { initialUsers: UserRow[] }) {
+export function UsersClient({
+  initialUsers,
+  currentUserId,
+}: {
+  initialUsers: UserRow[];
+  /** UUID del usuario autenticado. Se usa para ocultar el botón de
+   *  eliminar en su propia fila — la action también lo bloquea, pero
+   *  evitarlo en UI es mejor UX. `null` si no se pudo leer la sesión
+   *  (caso edge: la action devolverá error al intentar). */
+  currentUserId: string | null;
+}) {
   const router = useRouter();
   // Mantenemos copia local para reflejar cambios optimistas del toggle. Tras
   // cada acción server, revalidatePath dispara un re-render con datos frescos
@@ -75,12 +85,20 @@ export function UsersClient({ initialUsers }: { initialUsers: UserRow[] }) {
                   <UserRowItem
                     key={u.id}
                     user={u}
+                    isSelf={u.id === currentUserId}
                     onToggle={(next) =>
                       setUsers((prev) =>
                         prev.map((x) => (x.id === u.id ? { ...x, is_active: next } : x)),
                       )
                     }
                     onEdit={() => setEditingUser(u)}
+                    onDelete={() => {
+                      // Optimista: removemos la fila inmediatamente.
+                      // router.refresh() refresca props desde el server
+                      // por si algo hubiera quedado desincronizado.
+                      setUsers((prev) => prev.filter((x) => x.id !== u.id));
+                      router.refresh();
+                    }}
                   />
                 ))
               )}
@@ -121,22 +139,36 @@ export function UsersClient({ initialUsers }: { initialUsers: UserRow[] }) {
 
 function UserRowItem({
   user,
+  isSelf,
   onToggle,
   onEdit,
+  onDelete,
 }: {
   user: UserRow;
+  /** El row corresponde al usuario autenticado — ocultamos botón de
+   *  eliminar (la action también lo rechaza). */
+  isSelf: boolean;
   onToggle: (nextActive: boolean) => void;
   onEdit: () => void;
+  /** Callback que el padre usa para retirar la fila optimistamente
+   *  cuando deleteUserAction retorna success. */
+  onDelete: () => void;
 }) {
-  const [pending, startTransition] = useTransition();
+  const [togglePending, startToggle] = useTransition();
+  const [deletePending, startDelete] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  // null = botón normal; 'confirm' = mostrando "¿Eliminar a {nombre}?".
+  // El padre quita la fila en `onDelete`; un error post-confirmación
+  // se pinta debajo del row.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const handleToggle = () => {
     const nextActive = !user.is_active;
     setError(null);
     // Optimista: actualizamos UI antes; revertimos si la action falla.
     onToggle(nextActive);
-    startTransition(async () => {
+    startToggle(async () => {
       const result = await toggleUserActiveAction(user.id, nextActive);
       if (!result.ok) {
         onToggle(!nextActive);
@@ -145,60 +177,172 @@ function UserRowItem({
     });
   };
 
+  const handleConfirmDelete = () => {
+    setDeleteError(null);
+    startDelete(async () => {
+      const result = await deleteUserAction(user.id);
+      if (result.status === 'success') {
+        // El padre retira la fila optimistamente y dispara
+        // router.refresh para sincronizar.
+        onDelete();
+        return;
+      }
+      setDeleteError(result.message);
+      setConfirmingDelete(false);
+    });
+  };
+
   return (
-    <tr>
-      <td>
-        <div className="flex items-center gap-3">
-          <div
-            className="flex items-center justify-center"
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 9999,
-              background: 'var(--brand-primary)',
-              color: '#fff',
-              fontWeight: 700,
-              fontSize: '0.8125rem',
-            }}
-          >
-            {user.full_name.charAt(0).toUpperCase()}
-          </div>
-          <div>
-            <div className="font-medium">{user.full_name}</div>
-            <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-              ID #{user.id.slice(0, 8)}
+    <>
+      <tr>
+        <td>
+          <div className="flex items-center gap-3">
+            <div
+              className="flex items-center justify-center"
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 9999,
+                background: 'var(--brand-primary)',
+                color: '#fff',
+                fontWeight: 700,
+                fontSize: '0.8125rem',
+              }}
+            >
+              {user.full_name.charAt(0).toUpperCase()}
+            </div>
+            <div>
+              <div className="font-medium">{user.full_name}</div>
+              <div className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+                ID #{user.id.slice(0, 8)}
+              </div>
             </div>
           </div>
-        </div>
-      </td>
-      <td className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-        {user.email}
-      </td>
-      <td><RoleBadge role={user.role} /></td>
-      <td className="text-sm">{user.phone ?? '—'}</td>
-      <td>
-        <Toggle checked={user.is_active} disabled={pending} onChange={handleToggle} />
-        {error && (
-          <div className="text-xs mt-1" style={{ color: 'var(--danger, #dc2626)' }}>
-            {error}
-          </div>
-        )}
-      </td>
-      <td>
-        <div className="flex justify-end gap-1">
-          <button
-            type="button"
-            onClick={onEdit}
-            className="btn btn-ghost"
-            style={{ padding: '6px' }}
-            aria-label={`Editar usuario ${user.full_name}`}
-            title="Editar nombre, teléfono y rol"
-          >
-            <Pencil size={16} />
-          </button>
-        </div>
-      </td>
-    </tr>
+        </td>
+        <td className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+          {user.email}
+        </td>
+        <td><RoleBadge role={user.role} /></td>
+        <td className="text-sm">{user.phone ?? '—'}</td>
+        <td>
+          <Toggle
+            checked={user.is_active}
+            disabled={togglePending || deletePending}
+            onChange={handleToggle}
+          />
+          {error && (
+            <div className="text-xs mt-1" style={{ color: 'var(--danger, #dc2626)' }}>
+              {error}
+            </div>
+          )}
+        </td>
+        <td>
+          {confirmingDelete ? (
+            // Confirm inline en la columna Acciones. Reemplaza los
+            // íconos hasta que el admin decida.
+            <div className="flex items-center justify-end gap-2 flex-wrap">
+              <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                ¿Eliminar a <strong>{user.full_name}</strong>?
+              </span>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={deletePending}
+                className="btn"
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '0.75rem',
+                  background: '#DC2626',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+                aria-label={`Confirmar eliminación de ${user.full_name}`}
+              >
+                {deletePending ? (
+                  <Loader size={12} className="animate-spin" />
+                ) : null}
+                Sí, eliminar
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingDelete(false)}
+                disabled={deletePending}
+                className="btn"
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '0.75rem',
+                  background: 'var(--bg-subtle)',
+                  color: 'var(--text-secondary)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 6,
+                }}
+              >
+                Cancelar
+              </button>
+            </div>
+          ) : (
+            <div className="flex justify-end gap-1">
+              <button
+                type="button"
+                onClick={onEdit}
+                className="btn btn-ghost"
+                style={{ padding: '6px' }}
+                aria-label={`Editar usuario ${user.full_name}`}
+                title="Editar nombre, teléfono y rol"
+              >
+                <Pencil size={16} />
+              </button>
+              {/* El botón "Eliminar" se oculta en la fila del usuario
+                  autenticado — anti-self-delete enforced también en
+                  el server. */}
+              {!isSelf && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDeleteError(null);
+                    setConfirmingDelete(true);
+                  }}
+                  disabled={deletePending}
+                  className="btn btn-ghost"
+                  style={{ padding: '6px', color: '#DC2626' }}
+                  aria-label={`Eliminar usuario ${user.full_name}`}
+                  title="Eliminar usuario"
+                >
+                  {deletePending ? (
+                    <Loader size={16} className="animate-spin" />
+                  ) : (
+                    <Trash2 size={16} />
+                  )}
+                </button>
+              )}
+            </div>
+          )}
+        </td>
+      </tr>
+      {deleteError && (
+        <tr>
+          <td colSpan={6} style={{ paddingTop: 0 }}>
+            <div
+              role="alert"
+              className="text-xs"
+              style={{
+                color: 'var(--danger, #dc2626)',
+                background: 'var(--danger-bg, rgba(220,38,38,0.08))',
+                border: '1px solid rgba(220,38,38,0.25)',
+                padding: '6px 10px',
+                borderRadius: 6,
+              }}
+            >
+              <strong>No se pudo eliminar.</strong> {deleteError}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
