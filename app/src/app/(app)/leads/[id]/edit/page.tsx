@@ -81,7 +81,7 @@ export default async function EditLeadPage({
         .maybeSingle(),
       admin
         .from('lead_colors')
-        .select('color_id, quantity')
+        .select('color_id, quantity, cost_per_sheet')
         .eq('lead_id', id),
       admin
         .from('sellers')
@@ -212,18 +212,45 @@ export default async function EditLeadPage({
       }
     }
 
-    // lead_colors → array de { color_id, quantity, new_name: '' } que
-    // el form espera. Filtramos por quantity > 0 por seguridad.
+    // lead_colors → array de { color_id, quantity, new_name, cost_per_sheet }
+    // que el form espera. Filtramos por quantity > 0 por seguridad.
+    //
+    // `cost_per_sheet`: para leads antiguos creados antes de la
+    // migración, `lead_colors.cost_per_sheet` es null. En ese caso
+    // caemos al `leads.cost_per_sheet` legacy. Si ese tampoco es un
+    // valor válido del catálogo (350/600/2200), default a 350.
+    const ALLOWED_COSTS = [350, 600, 2200] as const;
+    const legacyLeadCost = Number(leadResult.data.cost_per_sheet ?? 350);
+    const fallbackCost: 350 | 600 | 2200 = (
+      ALLOWED_COSTS as readonly number[]
+    ).includes(legacyLeadCost)
+      ? (legacyLeadCost as 350 | 600 | 2200)
+      : 350;
+    type RawLc = {
+      color_id: string;
+      quantity: number;
+      cost_per_sheet: number | null;
+    };
     const leadColors = (lcResult.data ?? [])
       .filter(
-        (r): r is { color_id: string; quantity: number } =>
+        (r): r is RawLc =>
           !!r.color_id && Number(r.quantity ?? 0) > 0,
       )
-      .map((r) => ({
-        color_id: r.color_id,
-        quantity: Number(r.quantity),
-        new_name: '',
-      }));
+      .map((r) => {
+        const rawCost =
+          r.cost_per_sheet == null
+            ? fallbackCost
+            : Number(r.cost_per_sheet);
+        const cost = (ALLOWED_COSTS as readonly number[]).includes(rawCost)
+          ? (rawCost as 350 | 600 | 2200)
+          : fallbackCost;
+        return {
+          color_id: r.color_id,
+          quantity: Number(r.quantity),
+          new_name: '',
+          cost_per_sheet: cost,
+        };
+      });
 
     // `lead-documents` es bucket PÚBLICO — la URL guardada funciona
     // directo en el browser. Si en el futuro se cambia a privado,
@@ -259,8 +286,6 @@ export default async function EditLeadPage({
         product_type:
           (leadResult.data.product_type as 'con_corte' | 'sin_corte') ??
           'con_corte',
-        cost_per_sheet:
-          Number(leadResult.data.cost_per_sheet ?? 350) as 350 | 600 | 2200,
         cuts_count:
           leadResult.data.cuts_count == null
             ? null

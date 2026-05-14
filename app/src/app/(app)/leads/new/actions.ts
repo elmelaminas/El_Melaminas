@@ -107,9 +107,29 @@ export async function saveLeadAction(
     //    cliente — el usuario sumó "Negra 5" y "Negra 3", insertamos una
     //    sola fila "Negra 8". Para colores nuevos, deduplicamos por
     //    normalized_name (case+accent-insensitive).
+    //
+    //    `cost_per_sheet` ahora vive POR FILA. Al deduplicar:
+    //      - quantity: se SUMA.
+    //      - cost_per_sheet: se conserva el de la PRIMERA fila vista
+    //        (el usuario que mete el mismo color dos veces con costos
+    //        distintos es un caso raro; la primera ocurrencia "manda").
+    //    El total_amount se calcula PRE-DEDUPE sumando qty * cost de
+    //    todas las filas del input, así no perdemos precisión en el
+    //    cobro si por algún motivo hubo costos mixtos.
     type ColorBucket =
-      | { kind: 'existing'; color_id: string; quantity: number }
-      | { kind: 'new'; new_name: string; normalized: string; quantity: number };
+      | {
+          kind: 'existing';
+          color_id: string;
+          quantity: number;
+          cost_per_sheet: number;
+        }
+      | {
+          kind: 'new';
+          new_name: string;
+          normalized: string;
+          quantity: number;
+          cost_per_sheet: number;
+        };
 
     const bucketsByKey = new Map<string, ColorBucket>();
     for (const row of data.colors) {
@@ -120,12 +140,14 @@ export async function saveLeadAction(
         const existing = bucketsByKey.get(key);
         if (existing && existing.kind === 'new') {
           existing.quantity += row.quantity;
+          // cost_per_sheet: no se cambia (first-wins).
         } else {
           bucketsByKey.set(key, {
             kind: 'new',
             new_name: name,
             normalized,
             quantity: row.quantity,
+            cost_per_sheet: row.cost_per_sheet,
           });
         }
       } else {
@@ -138,6 +160,7 @@ export async function saveLeadAction(
             kind: 'existing',
             color_id: row.color_id,
             quantity: row.quantity,
+            cost_per_sheet: row.cost_per_sheet,
           });
         }
       }
@@ -169,7 +192,12 @@ export async function saveLeadAction(
         if (b.kind === 'new') {
           const id = idByNorm.get(b.normalized);
           if (id) {
-            buckets[i] = { kind: 'existing', color_id: id, quantity: b.quantity };
+            buckets[i] = {
+              kind: 'existing',
+              color_id: id,
+              quantity: b.quantity,
+              cost_per_sheet: b.cost_per_sheet,
+            };
           }
         }
       }
@@ -230,23 +258,51 @@ export async function saveLeadAction(
               message: `No se pudo resolver el id del color nuevo "${b.new_name}".`,
             };
           }
-          buckets[i] = { kind: 'existing', color_id: id, quantity: b.quantity };
+          buckets[i] = {
+            kind: 'existing',
+            color_id: id,
+            quantity: b.quantity,
+            cost_per_sheet: b.cost_per_sheet,
+          };
         }
       }
     }
 
-    // En este punto todos los buckets son { kind: 'existing', color_id, quantity }
-    type ResolvedColor = { color_id: string; quantity: number };
+    // En este punto todos los buckets son { kind: 'existing', color_id, quantity, cost_per_sheet }
+    type ResolvedColor = {
+      color_id: string;
+      quantity: number;
+      cost_per_sheet: number;
+    };
     const resolvedColors: ResolvedColor[] = buckets.map((b) => {
       if (b.kind !== 'existing') {
         // Imposible si la lógica anterior es correcta, pero satisface al type-checker.
         throw new Error('bucket no resuelto: ' + JSON.stringify(b));
       }
-      return { color_id: b.color_id, quantity: b.quantity };
+      return {
+        color_id: b.color_id,
+        quantity: b.quantity,
+        cost_per_sheet: b.cost_per_sheet,
+      };
     });
 
     // ── 5. INSERT lead
     const sheets_count = resolvedColors.reduce((s, c) => s + c.quantity, 0);
+
+    // Subtotal de hojas: SUM(qty * cost_per_sheet) sobre las filas que
+    // el USUARIO envió (PRE-dedupe). Si por algún motivo el dedupe
+    // colapsa filas con costos distintos, el cobro al cliente sigue
+    // siendo el exacto que vio en pantalla.
+    const sheetsSubtotal = data.colors.reduce(
+      (s, c) => s + Number(c.quantity ?? 0) * Number(c.cost_per_sheet ?? 0),
+      0,
+    );
+
+    // Para compatibilidad con consumidores del campo `leads.cost_per_sheet`
+    // (reportes, /payments, /admin/entregas vista resumida), guardamos
+    // ahí el costo de la PRIMERA fila — basta como representante.
+    const legacyCostPerSheet =
+      data.colors[0]?.cost_per_sheet ?? 350;
 
     // Recalcular cuts_total y edge_banding_total en el server (NUNCA
     // confiar en los valores que mande el cliente). Reglas:
@@ -276,13 +332,11 @@ export async function saveLeadAction(
         ? edgeMeters * EDGE_BANDING_RATE[edgeType]
         : null;
 
-    // total_amount = hojas + cortes + cubrecanto. Coherente con lo que
-    // muestra el resumen sticky del form para que el usuario y la DB
-    // coincidan.
+    // total_amount = subtotal hojas (qty*cost por fila) + cortes +
+    // cubrecanto. Coherente con lo que muestra el resumen sticky del
+    // form para que el usuario y la DB coincidan.
     const total_amount =
-      sheets_count * data.cost_per_sheet +
-      (cutsTotal ?? 0) +
-      (edgeTotal ?? 0);
+      sheetsSubtotal + (cutsTotal ?? 0) + (edgeTotal ?? 0);
 
     const { data: leadRow, error: leadErr } = await admin
       .from('leads')
@@ -300,7 +354,7 @@ export async function saveLeadAction(
         sale_date: data.sale_date,
         purchase_type: data.purchase_type,
         product_type: data.product_type,
-        cost_per_sheet: data.cost_per_sheet,
+        cost_per_sheet: legacyCostPerSheet,
         // Cortes (solo si con_corte):
         cuts_count: cutsCount,
         cuts_total: cutsTotal,
@@ -335,11 +389,17 @@ export async function saveLeadAction(
       await admin.from('leads').delete().eq('id', leadId);
     });
 
-    // ── 6. INSERT lead_colors (bulk)
+    // ── 6. INSERT lead_colors (bulk) — incluye cost_per_sheet por fila.
+    //    Requiere migración manual:
+    //      ALTER TABLE lead_colors ADD COLUMN IF NOT EXISTS cost_per_sheet integer;
+    //    Si la columna no existe todavía, el INSERT falla con un error
+    //    "column does not exist" — lo visible para el usuario es el
+    //    mensaje del rollback. Que Sergio corra el SQL antes del deploy.
     const lcInserts = resolvedColors.map((c) => ({
       lead_id: leadId,
       color_id: c.color_id,
       quantity: c.quantity,
+      cost_per_sheet: c.cost_per_sheet,
     }));
     const { error: lcErr } = await admin.from('lead_colors').insert(lcInserts);
     if (lcErr) {

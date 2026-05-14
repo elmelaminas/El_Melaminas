@@ -156,15 +156,22 @@ export async function updateLeadFullAction(
     const stockWasCommitted = leadRow.stock_committed === true;
 
     // ── 3. Dedupe + resolución de colores nuevos (MISMO patrón que
-    //    saveLeadAction). Agrupa duplicados, busca colores existentes
-    //    por normalized_name, crea los realmente nuevos.
+    //    saveLeadAction). Agrupa duplicados (sumando quantity, first-wins
+    //    en cost_per_sheet), busca colores existentes por
+    //    normalized_name, crea los realmente nuevos.
     type ColorBucket =
-      | { kind: 'existing'; color_id: string; quantity: number }
+      | {
+          kind: 'existing';
+          color_id: string;
+          quantity: number;
+          cost_per_sheet: number;
+        }
       | {
           kind: 'new';
           new_name: string;
           normalized: string;
           quantity: number;
+          cost_per_sheet: number;
         };
 
     const bucketsByKey = new Map<string, ColorBucket>();
@@ -182,6 +189,7 @@ export async function updateLeadFullAction(
             new_name: name,
             normalized,
             quantity: row.quantity,
+            cost_per_sheet: row.cost_per_sheet,
           });
         }
       } else {
@@ -194,6 +202,7 @@ export async function updateLeadFullAction(
             kind: 'existing',
             color_id: row.color_id,
             quantity: row.quantity,
+            cost_per_sheet: row.cost_per_sheet,
           });
         }
       }
@@ -230,6 +239,7 @@ export async function updateLeadFullAction(
               kind: 'existing',
               color_id: id,
               quantity: b.quantity,
+              cost_per_sheet: b.cost_per_sheet,
             };
           }
         }
@@ -283,23 +293,36 @@ export async function updateLeadFullAction(
             kind: 'existing',
             color_id: id,
             quantity: b.quantity,
+            cost_per_sheet: b.cost_per_sheet,
           };
         }
       }
     }
 
-    type ResolvedColor = { color_id: string; quantity: number };
+    type ResolvedColor = {
+      color_id: string;
+      quantity: number;
+      cost_per_sheet: number;
+    };
     const resolvedColors: ResolvedColor[] = buckets.map((b) => {
       if (b.kind !== 'existing') {
         throw new Error('bucket no resuelto: ' + JSON.stringify(b));
       }
-      return { color_id: b.color_id, quantity: b.quantity };
+      return {
+        color_id: b.color_id,
+        quantity: b.quantity,
+        cost_per_sheet: b.cost_per_sheet,
+      };
     });
 
-    // ── 4. Leer lead_colors actuales (los viejos).
+    // ── 4. Leer lead_colors actuales (los viejos). Incluimos
+    //    cost_per_sheet para que el snapshot de rollback restaure los
+    //    valores exactos previos. Si la columna no existe en DB (pre
+    //    migración), Supabase devuelve null en cost_per_sheet — tratado
+    //    como undefined en el snapshot.
     const { data: oldLcRows, error: oldLcErr } = await admin
       .from('lead_colors')
-      .select('color_id, quantity')
+      .select('color_id, quantity, cost_per_sheet')
       .eq('lead_id', leadId);
     if (oldLcErr) {
       return {
@@ -307,10 +330,16 @@ export async function updateLeadFullAction(
         message: `No se pudieron leer los colores actuales: ${oldLcErr.message}`,
       };
     }
-    const oldColors = (oldLcRows ?? []).filter(
-      (r): r is { color_id: string; quantity: number } =>
-        !!r.color_id && Number(r.quantity ?? 0) > 0,
-    );
+    type OldLcRow = {
+      color_id: string;
+      quantity: number;
+      cost_per_sheet: number | null;
+    };
+    const oldColors: OldLcRow[] = (oldLcRows ?? [])
+      .filter(
+        (r): r is OldLcRow =>
+          !!r.color_id && Number(r.quantity ?? 0) > 0,
+      );
 
     // ── 5. Si el stock está comprometido, LIBERAR los viejos primero.
     if (stockWasCommitted) {
@@ -394,6 +423,7 @@ export async function updateLeadFullAction(
       lead_id: leadId,
       color_id: o.color_id,
       quantity: o.quantity,
+      cost_per_sheet: o.cost_per_sheet,
     }));
     const { error: delErr } = await admin
       .from('lead_colors')
@@ -412,11 +442,12 @@ export async function updateLeadFullAction(
       }
     });
 
-    // ── 7. INSERT nuevos lead_colors.
+    // ── 7. INSERT nuevos lead_colors (incluye cost_per_sheet por fila).
     const lcInserts = resolvedColors.map((c) => ({
       lead_id: leadId,
       color_id: c.color_id,
       quantity: c.quantity,
+      cost_per_sheet: c.cost_per_sheet,
     }));
     const { error: lcInsErr } = await admin
       .from('lead_colors')
@@ -513,6 +544,19 @@ export async function updateLeadFullAction(
       0,
     );
 
+    // Subtotal hojas: SUM(qty * cost) sobre las filas que el USUARIO
+    // envió (PRE-dedupe) — preserva el costo exacto si hubo costos
+    // mixtos en filas duplicadas.
+    const sheetsSubtotal = data.colors.reduce(
+      (s, c) => s + Number(c.quantity ?? 0) * Number(c.cost_per_sheet ?? 0),
+      0,
+    );
+
+    // Compat: `leads.cost_per_sheet` se mantiene como representante (el
+    // costo de la primera fila). El desglose real está en
+    // `lead_colors.cost_per_sheet`.
+    const legacyCostPerSheet = data.colors[0]?.cost_per_sheet ?? 350;
+
     const cutsCount =
       data.product_type === 'con_corte' &&
       typeof data.cuts_count === 'number' &&
@@ -537,9 +581,7 @@ export async function updateLeadFullAction(
         : null;
 
     const total_amount =
-      sheets_count * data.cost_per_sheet +
-      (cutsTotal ?? 0) +
-      (edgeTotal ?? 0);
+      sheetsSubtotal + (cutsTotal ?? 0) + (edgeTotal ?? 0);
 
     const { error: leadUpdErr } = await admin
       .from('leads')
@@ -556,7 +598,7 @@ export async function updateLeadFullAction(
         sale_date: data.sale_date,
         purchase_type: data.purchase_type,
         product_type: data.product_type,
-        cost_per_sheet: data.cost_per_sheet,
+        cost_per_sheet: legacyCostPerSheet,
         cuts_count: cutsCount,
         cuts_total: cutsTotal,
         edge_banding_type: edgeType,

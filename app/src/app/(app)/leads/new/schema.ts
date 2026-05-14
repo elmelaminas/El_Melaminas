@@ -111,6 +111,15 @@ export const NEW_COLOR_SENTINEL = '__new__';
  * Una fila del editor de colores en la UI. RHF maneja un array de estos
  * con useFieldArray. Validamos con `.refine(...)` que `new_name` esté
  * presente cuando `color_id === NEW_COLOR_SENTINEL`.
+ *
+ * `cost_per_sheet` es POR FILA (cada color puede tener su propio
+ * precio). Antes vivía en el nivel raíz del lead como "costo único";
+ * ahora cada color carga su tarifa. El `total_amount` del lead se
+ * calcula como SUM(quantity * cost_per_sheet) por cada fila + cortes +
+ * cubrecanto. Para compatibilidad con el resto del sistema, el server
+ * sigue escribiendo `leads.cost_per_sheet` usando el costo del PRIMER
+ * color (suficiente para reportes generales; el desglose real vive en
+ * `lead_colors.cost_per_sheet`).
  */
 export const ColorRowSchema = z
   .object({
@@ -120,6 +129,13 @@ export const ColorRowSchema = z
       .number({ invalid_type_error: 'Cantidad debe ser un número' })
       .int('Cantidad debe ser entero')
       .positive('Cantidad debe ser ≥ 1'),
+    cost_per_sheet: z
+      .number({ invalid_type_error: 'Costo por hoja inválido' })
+      .int('Costo debe ser entero')
+      .refine(
+        (v) => (COST_PER_SHEET_VALUES as readonly number[]).includes(v),
+        { message: 'Costo por hoja debe ser uno de los valores permitidos' },
+      ),
   })
   .refine(
     (v) => {
@@ -187,13 +203,11 @@ export const LeadCreateSchema = z.object({
     .or(z.literal('')),
 
   // Pedido
-  cost_per_sheet: z
-    .number({ invalid_type_error: 'Costo por hoja inválido' })
-    .int('Costo debe ser entero')
-    .refine(
-      (v) => (COST_PER_SHEET_VALUES as readonly number[]).includes(v),
-      { message: 'Costo por hoja debe ser uno de los valores permitidos' },
-    ),
+  //
+  // `cost_per_sheet` se MOVIÓ a ColorRowSchema: cada color tiene su
+  // propio costo. El server escribe `leads.cost_per_sheet` con el costo
+  // del primer color por compatibilidad con reportes/queries existentes,
+  // y `lead_colors.cost_per_sheet` con el costo real de cada fila.
 
   // Cortes — solo aplica cuando product_type='con_corte'.
   // `cuts_total` lo recalcula el server desde `cuts_count * CUT_RATE`;

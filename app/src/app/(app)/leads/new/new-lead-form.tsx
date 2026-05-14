@@ -126,10 +126,6 @@ export function NewLeadForm({
       phone: initialValues?.phone ?? '',
       address: initialValues?.address ?? '',
       maps_url: initialValues?.maps_url ?? '',
-      cost_per_sheet:
-        initialValues?.cost_per_sheet ??
-        COST_PER_SHEET_OPTIONS[0]?.value ??
-        350,
       cuts_count: initialValues?.cuts_count ?? null,
       cuts_total: initialValues?.cuts_total ?? null,
       edge_banding_type: initialValues?.edge_banding_type ?? '',
@@ -138,11 +134,19 @@ export function NewLeadForm({
       product_type: initialValues?.product_type ?? 'con_corte',
       purchase_type: initialValues?.purchase_type ?? 'domicilio',
       sale_place: initialValues?.sale_place ?? 'online',
+      // `cost_per_sheet` ahora vive POR FILA dentro de cada color.
+      // Default: primer valor del catálogo ($350).
       colors:
         initialValues?.colors && initialValues.colors.length > 0
           ? initialValues.colors
           : [
-              { color_id: colors[0]?.id ?? '', quantity: 1, new_name: '' },
+              {
+                color_id: colors[0]?.id ?? '',
+                quantity: 1,
+                new_name: '',
+                cost_per_sheet:
+                  COST_PER_SHEET_OPTIONS[0]?.value ?? 350,
+              },
             ],
     },
   });
@@ -154,7 +158,6 @@ export function NewLeadForm({
 
   // Valores observados para reactividad de campos condicionales y resumen.
   const watchedColors = watch('colors');
-  const watchedCostPerSheet = watch('cost_per_sheet');
   const watchedProductType = watch('product_type');
   const watchedCutsCount = watch('cuts_count');
   const watchedEdgeType = watch('edge_banding_type');
@@ -173,6 +176,22 @@ export function NewLeadForm({
     [watchedColors],
   );
 
+  // Subtotal de hojas: SUM(quantity * cost_per_sheet) por cada fila.
+  // El costo por hoja vive POR FILA (cada color puede tener tarifa
+  // distinta). Si una fila no tiene costo todavía (ej. RHF en flush),
+  // contribuye 0 — el form Zod lo rechazará al submit.
+  const sheetsSubtotal = useMemo(
+    () =>
+      (watchedColors ?? []).reduce((s, c) => {
+        const qty = Number.isFinite(c?.quantity) ? Number(c.quantity) : 0;
+        const cost = Number.isFinite(c?.cost_per_sheet)
+          ? Number(c.cost_per_sheet)
+          : 0;
+        return s + qty * cost;
+      }, 0),
+    [watchedColors],
+  );
+
   // Cálculos auxiliares para mostrar en pantalla (el server recalcula).
   const cutsTotal =
     watchedProductType === 'con_corte' &&
@@ -186,9 +205,9 @@ export function NewLeadForm({
         EDGE_BANDING_RATE[watchedEdgeType]
       : 0;
 
-  // El total a cobrar suma hojas + cortes + cubrecanto.
-  const total =
-    totalSheets * (Number(watchedCostPerSheet) || 0) + cutsTotal + edgeTotal;
+  // El total a cobrar suma hojas (por costo de cada fila) + cortes +
+  // cubrecanto.
+  const total = sheetsSubtotal + cutsTotal + edgeTotal;
 
   const onValidSubmit = (values: LeadCreateInput) => {
     clearErrors('root.serverError');
@@ -571,19 +590,21 @@ export function NewLeadForm({
                   Suma automática de las hojas por color
                 </div>
               </Field>
-              <Field label="Costo por hoja" error={errors.cost_per_sheet?.message}>
-                <select
+              <Field label="Subtotal hojas (auto)">
+                <input
                   id="field-cost"
-                  {...register('cost_per_sheet', { valueAsNumber: true })}
-                  className="select"
-                  disabled={pending}
+                  className="input"
+                  type="text"
+                  value={formatMXN(sheetsSubtotal)}
+                  readOnly
+                  style={{ background: 'var(--bg-muted)' }}
+                />
+                <div
+                  className="text-[11px] mt-1"
+                  style={{ color: 'var(--text-tertiary)' }}
                 >
-                  {COST_PER_SHEET_OPTIONS.map((c) => (
-                    <option key={c.value} value={c.value}>
-                      {c.label}
-                    </option>
-                  ))}
-                </select>
+                  Suma de cantidad × costo de cada color
+                </div>
               </Field>
             </div>
 
@@ -610,8 +631,9 @@ export function NewLeadForm({
                     borderBottom: '1px solid var(--border)',
                   }}
                 >
-                  <div className="col-span-3">Cantidad</div>
-                  <div className="col-span-7">Color</div>
+                  <div className="col-span-2">Cantidad</div>
+                  <div className="col-span-5">Color</div>
+                  <div className="col-span-3">Costo</div>
                   <div className="col-span-2 text-right">Acción</div>
                 </div>
 
@@ -635,13 +657,27 @@ export function NewLeadForm({
                 >
                   <button
                     type="button"
-                    onClick={() =>
+                    onClick={() => {
+                      // Heredamos el costo de la última fila para
+                      // ergonomía: si el usuario lleva 3 colores a $600,
+                      // el 4° default a $600 también. Si no hay filas
+                      // previas (caso teórico), cae al primer valor del
+                      // catálogo.
+                      const last =
+                        watchedColors && watchedColors.length > 0
+                          ? watchedColors[watchedColors.length - 1]
+                          : undefined;
+                      const defaultCost =
+                        last?.cost_per_sheet ??
+                        COST_PER_SHEET_OPTIONS[0]?.value ??
+                        350;
                       append({
                         color_id: colors[0]?.id ?? '',
                         quantity: 1,
                         new_name: '',
-                      })
-                    }
+                        cost_per_sheet: defaultCost,
+                      });
+                    }}
                     className="btn btn-outline"
                     style={{ padding: '6px 12px' }}
                     disabled={pending}
@@ -990,10 +1026,8 @@ export function NewLeadForm({
                 <span className="font-semibold">{totalSheets}</span>
               </div>
               <div className="flex justify-between">
-                <span style={{ color: 'var(--text-secondary)' }}>Costo por hoja</span>
-                <span className="font-semibold">
-                  {formatMXN(Number(watchedCostPerSheet) || 0)}
-                </span>
+                <span style={{ color: 'var(--text-secondary)' }}>Subtotal hojas</span>
+                <span className="font-semibold">{formatMXN(sheetsSubtotal)}</span>
               </div>
               <div className="flex justify-between">
                 <span style={{ color: 'var(--text-secondary)' }}>Colores</span>
@@ -1123,7 +1157,7 @@ function ColorRowFields({
       className="grid grid-cols-12 items-start gap-3 px-4 py-2 border-t"
       style={{ borderColor: 'var(--border)' }}
     >
-      <div className="col-span-3">
+      <div className="col-span-2">
         <input
           {...register(`colors.${idx}.quantity`, { valueAsNumber: true })}
           type="number"
@@ -1141,7 +1175,7 @@ function ColorRowFields({
         )}
       </div>
 
-      <div className="col-span-7 flex flex-col gap-2">
+      <div className="col-span-5 flex flex-col gap-2">
         <select
           {...register(`colors.${idx}.color_id`)}
           className="select"
@@ -1181,6 +1215,30 @@ function ColorRowFields({
               </p>
             )}
           </>
+        )}
+      </div>
+
+      {/* Costo por hoja POR FILA — cada color puede tener tarifa
+          distinta. Valores permitidos coinciden con COST_PER_SHEET_OPTIONS. */}
+      <div className="col-span-3">
+        <select
+          {...register(`colors.${idx}.cost_per_sheet`, { valueAsNumber: true })}
+          className="select"
+          disabled={disabled}
+        >
+          {COST_PER_SHEET_OPTIONS.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+        {rowErrors?.cost_per_sheet?.message && (
+          <p
+            className="text-xs mt-1"
+            style={{ color: 'var(--danger, #dc2626)' }}
+          >
+            {rowErrors.cost_per_sheet.message}
+          </p>
         )}
       </div>
 

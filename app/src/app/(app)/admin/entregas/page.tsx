@@ -124,7 +124,8 @@ export default async function EntregasPage({
          delivery_status, payment_status, sale_date, created_at,
          driver_id, sale_type, product_type, row_color,
          failed_delivery_reason, failed_delivery_photo_url, stock_returned,
-         lead_colors ( quantity, colors ( name ) )`,
+         cost_per_sheet,
+         lead_colors ( quantity, cost_per_sheet, colors ( name ) )`,
       )
       .is('deleted_at', null);
 
@@ -211,9 +212,11 @@ export default async function EntregasPage({
       failed_delivery_reason: string | null;
       failed_delivery_photo_url: string | null;
       stock_returned: boolean | null;
+      cost_per_sheet: number | string | null;
       lead_colors:
         | {
             quantity: number | null;
+            cost_per_sheet: number | null;
             colors: { name: string } | { name: string }[] | null;
           }[]
         | null;
@@ -223,12 +226,20 @@ export default async function EntregasPage({
       const total = Number(l.total_amount ?? 0);
       const paid = paidByLead.get(l.id) ?? 0;
       const adeudo = Math.max(0, total - paid);
+      // Fallback: si lead_colors.cost_per_sheet es null (lead viejo
+      // pre-migración), usamos el costo del lead como representante de
+      // la fila — al menos algo a mostrar en el desglose.
+      const legacyCost = Number(l.cost_per_sheet ?? 0);
       const colors = (l.lead_colors ?? [])
         .map((lc) => {
           const colorObj = Array.isArray(lc.colors) ? lc.colors[0] : lc.colors;
           return {
             color_name: colorObj?.name ?? '(sin nombre)',
             quantity: Number(lc.quantity ?? 0),
+            cost_per_sheet:
+              lc.cost_per_sheet == null
+                ? legacyCost
+                : Number(lc.cost_per_sheet),
           };
         })
         .filter((c) => c.quantity > 0);
@@ -439,7 +450,8 @@ export default async function EntregasPage({
         .select(
           `id, client_name, address, sale_date, driver_id,
            delivery_status, delivery_order, delivery_date,
-           lead_colors ( quantity, colors ( name ) )`,
+           cost_per_sheet,
+           lead_colors ( quantity, cost_per_sheet, colors ( name ) )`,
         )
         .in('delivery_status', ['pendiente', 'en_transito'])
         .is('deleted_at', null)
@@ -464,14 +476,17 @@ export default async function EntregasPage({
           delivery_status: string | null;
           delivery_order: number | null;
           delivery_date: string | null;
+          cost_per_sheet: number | string | null;
           lead_colors:
             | {
                 quantity: number | null;
+                cost_per_sheet: number | null;
                 colors: { name: string } | { name: string }[] | null;
               }[]
             | null;
         };
         for (const r of (routeRows ?? []) as RawRouteRow[]) {
+          const legacyCost = Number(r.cost_per_sheet ?? 0);
           const colors = (r.lead_colors ?? [])
             .map((lc) => {
               const colorObj = Array.isArray(lc.colors)
@@ -480,6 +495,10 @@ export default async function EntregasPage({
               return {
                 color_name: colorObj?.name ?? '(sin nombre)',
                 quantity: Number(lc.quantity ?? 0),
+                cost_per_sheet:
+                  lc.cost_per_sheet == null
+                    ? legacyCost
+                    : Number(lc.cost_per_sheet),
               };
             })
             .filter((c) => c.quantity > 0);

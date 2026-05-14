@@ -91,7 +91,7 @@ export type EntregaRow = {
    *  `failed_delivery_reason` está y esto es false, la fila se pinta
    *  ROJA (alerta operativa) y aparece el botón "Devolver al stock". */
   stock_returned: boolean;
-  colors: { color_name: string; quantity: number }[];
+  colors: { color_name: string; quantity: number; cost_per_sheet: number }[];
 };
 
 export type DriverOption = { id: string; name: string };
@@ -122,7 +122,7 @@ export type RouteCandidate = {
   driver_name: string | null;
   delivery_order: number | null;
   assigned_to_this_date: boolean;
-  colors: { color_name: string; quantity: number }[];
+  colors: { color_name: string; quantity: number; cost_per_sheet: number }[];
 };
 
 /**
@@ -449,10 +449,18 @@ function Row({
   onOpenFailed: () => void;
   onOpenEvidence: (ev: DeliveryEvidence) => void;
 }) {
+  // Desglose con costo por fila: "5× Malta ($350) + 3× Parota ($600)".
+  // Si la fila no tiene cost (lead antiguo sin migrar), omitimos el "($X)".
   const colorsLabel =
     r.colors.length === 0
       ? '—'
-      : r.colors.map((c) => `${c.quantity}× ${c.color_name}`).join(', ');
+      : r.colors
+          .map((c) =>
+            c.cost_per_sheet > 0
+              ? `${c.quantity}× ${c.color_name} (${formatMXN(c.cost_per_sheet)})`
+              : `${c.quantity}× ${c.color_name}`,
+          )
+          .join(' + ');
   const issueCount = issues.length;
   const hasFailed = Boolean(r.failed_delivery_reason);
 
@@ -1308,12 +1316,20 @@ function RouteSection({
                         className="text-xs truncate"
                         style={{ color: 'var(--text-tertiary)' }}
                         title={c.colors
-                          .map((cc) => `${cc.quantity}× ${cc.color_name}`)
-                          .join(', ')}
+                          .map((cc) =>
+                            cc.cost_per_sheet > 0
+                              ? `${cc.quantity}× ${cc.color_name} (${formatMXN(cc.cost_per_sheet)})`
+                              : `${cc.quantity}× ${cc.color_name}`,
+                          )
+                          .join(' + ')}
                       >
                         {c.colors
-                          .map((cc) => `${cc.quantity}× ${cc.color_name}`)
-                          .join(', ')}
+                          .map((cc) =>
+                            cc.cost_per_sheet > 0
+                              ? `${cc.quantity}× ${cc.color_name} (${formatMXN(cc.cost_per_sheet)})`
+                              : `${cc.quantity}× ${cc.color_name}`,
+                          )
+                          .join(' + ')}
                       </div>
                     )}
                   </div>
