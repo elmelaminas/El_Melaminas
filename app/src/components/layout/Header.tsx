@@ -11,6 +11,7 @@ import { roleLabel } from '@/data/mock';
 import { supabaseClient } from '@/lib/supabase/client';
 import { startTour } from '@/components/ui/AppTour';
 import { usePageTour } from '@/hooks/usePageTour';
+import { useFaviconBadge } from '@/hooks/useFaviconBadge';
 
 /**
  * Tipo de notificación que la app emite. Coincide con los valores que
@@ -25,7 +26,13 @@ type NotificationType =
   | 'entrega_confirmada'
   | 'stock_bajo'
   | 'efectivo_pendiente'
-  | 'efectivo_recibido';
+  | 'efectivo_recibido'
+  // Tipos agregados con los flujos de issues/delivery/route/exit.
+  | 'issue_reported'
+  | 'delivery_failed'
+  | 'stock_returned'
+  | 'ruta_asignada'
+  | 'mercancia_lista';
 
 interface NotificationRow {
   id: string;
@@ -44,6 +51,13 @@ const TYPE_DOT: Record<NotificationType, string> = {
   stock_bajo: 'bg-[#D97706]', // warning amarillo
   efectivo_pendiente: 'bg-[#F59E0B]', // brand-accent — algo que requiere acción
   efectivo_recibido: 'bg-[#16A34A]', // success verde — flujo completado
+  // Nuevos: cada uno con su tono propio para que el admin distinga
+  // de un vistazo el tipo sin leer el título.
+  issue_reported: 'bg-[#DC2626]', // rojo — atención inmediata
+  delivery_failed: 'bg-[#EA580C]', // naranja oscuro — falla operativa
+  stock_returned: 'bg-[#16A34A]', // verde — paso completado
+  ruta_asignada: 'bg-[#2563EB]', // azul medio — info logística
+  mercancia_lista: 'bg-[#7C3AED]', // morado — alerta del almacén al chofer
 };
 
 /** Mapa type → título humano (la DB solo guarda `message`, generamos title). */
@@ -54,6 +68,11 @@ const TYPE_TITLE: Record<NotificationType, string> = {
   stock_bajo: 'Stock bajo',
   efectivo_pendiente: 'Efectivo pendiente',
   efectivo_recibido: 'Efectivo recibido',
+  issue_reported: '⚠️ Faltante / Detalle reportado',
+  delivery_failed: '🚫 Entrega fallida',
+  stock_returned: '📦 Stock devuelto',
+  ruta_asignada: '🗺️ Ruta del día asignada',
+  mercancia_lista: '✅ Mercancía lista para entrega',
 };
 
 const PAGE_SIZE = 20;
@@ -198,6 +217,11 @@ export default function Header({
     () => notifications.filter((n) => !n.is_read).length,
     [notifications],
   );
+
+  // Sincroniza el favicon de la pestaña con el contador de no leídas.
+  // Patrón Gmail/Slack: el usuario ve "hay algo nuevo" sin tener la
+  // pestaña activa. Al cambiar `unread` el hook re-pinta el icono.
+  useFaviconBadge(unread);
 
   /**
    * Marcar una notificación como leída.
