@@ -590,22 +590,6 @@ export function NewLeadForm({
                   Suma automática de las hojas por color
                 </div>
               </Field>
-              <Field label="Subtotal hojas (auto)">
-                <input
-                  id="field-cost"
-                  className="input"
-                  type="text"
-                  value={formatMXN(sheetsSubtotal)}
-                  readOnly
-                  style={{ background: 'var(--bg-muted)' }}
-                />
-                <div
-                  className="text-[11px] mt-1"
-                  style={{ color: 'var(--text-tertiary)' }}
-                >
-                  Suma de cantidad × costo de cada color
-                </div>
-              </Field>
             </div>
 
             {/* Colores list */}
