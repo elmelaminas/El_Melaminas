@@ -324,10 +324,14 @@ export const LeadCreateSchema = z.object({
     .number({ invalid_type_error: 'Precio del catálogo inválido' })
     .min(0, 'El precio del catálogo no puede ser negativo'),
 
-  /** Costo del cubrecanto adicional (input manual) cuando
-   *  `has_cubrecanto=true`. Distinto de `edge_banding_total` que es
-   *  el cálculo estructurado metros × tarifa dentro de la sección
-   *  hojas. */
+  /** PRECIO UNITARIO (por metro/pieza) del cubrecanto manual,
+   *  ingresado cuando `has_cubrecanto=true`. El total contribuido
+   *  al `total_amount` del lead es:
+   *    edgebanding_manual_cost × SUM(edgebanding_colors[].quantity)
+   *  Si no se agregan colores, contribuye el precio unitario solo
+   *  (interpretado como pago fijo de 1 unidad). Distinto de
+   *  `edge_banding_total` que es el cálculo estructurado metros ×
+   *  tarifa dentro de la sección hojas. */
   edgebanding_manual_cost: z
     .number({ invalid_type_error: 'Costo del cubrecanto inválido' })
     .min(0, 'No puede ser negativo')

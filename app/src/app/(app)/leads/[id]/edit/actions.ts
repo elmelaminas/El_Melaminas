@@ -602,12 +602,29 @@ export async function updateLeadFullAction(
         ? edgeMeters * EDGE_BANDING_RATE[edgeType]
         : null;
 
-    const edgebandingManualCost =
+    // `edgebanding_manual_cost` ahora es el PRECIO UNITARIO por
+    // metro/pieza. El total cubrecanto = unitario × suma de
+    // cantidades en `edgebanding_colors`. Sin colores, contribuye
+    // el unitario (pago fijo de 1 unidad). Mismo cálculo que en
+    // saveLeadAction.
+    const edgebandingUnitCost =
       hasCubrecantoManual &&
       typeof data.edgebanding_manual_cost === 'number' &&
       data.edgebanding_manual_cost > 0
         ? data.edgebanding_manual_cost
-        : null;
+        : 0;
+    const edgebandingQtySum = hasCubrecantoManual
+      ? (data.edgebanding_colors ?? []).reduce(
+          (s, c) => s + Number(c.quantity ?? 0),
+          0,
+        )
+      : 0;
+    const edgebandingManualCost =
+      edgebandingUnitCost === 0
+        ? null
+        : edgebandingQtySum > 0
+          ? edgebandingUnitCost * edgebandingQtySum
+          : edgebandingUnitCost;
 
     const catalogPrice = hasCatalogo
       ? Number(data.catalog_price ?? 500)
@@ -659,7 +676,10 @@ export async function updateLeadFullAction(
         has_cubrecanto: hasCubrecantoManual,
         has_catalogo: hasCatalogo,
         catalog_price: hasCatalogo ? catalogPrice : 0,
-        edgebanding_manual_cost: edgebandingManualCost ?? 0,
+        // Persistimos el PRECIO UNITARIO (no el total ya calculado),
+        // para que la edición posterior recomponga el total
+        // multiplicando por la nueva suma de cantidades.
+        edgebanding_manual_cost: edgebandingUnitCost,
         // stock_committed: true cuando el lead AHORA tiene hojas,
         // false cuando no. Coherente con los pasos 5/8 que liberan
         // o comprometen el inventario según el toggle.

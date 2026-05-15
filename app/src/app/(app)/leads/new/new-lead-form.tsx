@@ -234,17 +234,37 @@ export function NewLeadForm({
   const watchedHasCatalogo = watch('has_catalogo');
   const watchedCatalogPrice = watch('catalog_price');
   const watchedManualCubre = watch('edgebanding_manual_cost');
+  const watchedEdgeColors = watch('edgebanding_colors');
 
   const catalogPrice = watchedHasCatalogo
     ? typeof watchedCatalogPrice === 'number' && watchedCatalogPrice >= 0
       ? watchedCatalogPrice
       : 0
     : 0;
-  const manualCubrecantoCost = watchedHasCubrecanto
+  // Cubrecanto manual: `edgebanding_manual_cost` es el precio UNITARIO
+  // por metro/pieza. Para el total multiplicamos por la suma de
+  // cantidades en `edgebanding_colors`. Si no hay colores definidos
+  // todavía, caemos al precio unitario solo (se interpreta como un
+  // pago fijo de 1 unidad). Política: si hay precio sin colores,
+  // contribuye el precio bruto; si hay colores y precio, contribuye
+  // precio × suma(qty).
+  const manualCubrecantoUnitCost = watchedHasCubrecanto
     ? typeof watchedManualCubre === 'number' && watchedManualCubre > 0
       ? watchedManualCubre
       : 0
     : 0;
+  const edgeColorsTotalQty = watchedHasCubrecanto
+    ? (watchedEdgeColors ?? []).reduce((s, c) => {
+        const qty = Number.isFinite(c?.quantity) ? Number(c.quantity) : 0;
+        return s + qty;
+      }, 0)
+    : 0;
+  const manualCubrecantoCost =
+    manualCubrecantoUnitCost === 0
+      ? 0
+      : edgeColorsTotalQty > 0
+        ? manualCubrecantoUnitCost * edgeColorsTotalQty
+        : manualCubrecantoUnitCost; // sin colores: precio = total bruto
 
   const totalSheets = useMemo(
     () =>
@@ -989,7 +1009,7 @@ export function NewLeadForm({
             {watchedHasCubrecanto && (
               <div id="field-cubrecanto-manual" className="mt-6 flex flex-col gap-4">
                 <Field
-                  label="Costo del cubrecanto (ingreso manual)"
+                  label="Costo por metro/pieza de cubrecanto"
                   error={errors.edgebanding_manual_cost?.message}
                 >
                   <input
@@ -997,7 +1017,7 @@ export function NewLeadForm({
                     min={0}
                     step="1"
                     className="input"
-                    placeholder="Ej. 850"
+                    placeholder="Ej. 350"
                     disabled={pending}
                     {...register('edgebanding_manual_cost', {
                       setValueAs: (v) => {
@@ -1011,7 +1031,9 @@ export function NewLeadForm({
                     className="text-[11px] mt-1"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
-                    Ingresa el costo total del cubrecanto adicional.
+                    Se multiplica por la cantidad total de los colores
+                    de cubrecanto. Si no agregas colores, se cobra como
+                    monto único.
                   </div>
                 </Field>
 
@@ -1358,9 +1380,9 @@ export function NewLeadForm({
                 <div className="flex justify-between">
                   <span style={{ color: 'var(--text-secondary)' }}>
                     + Cubrecanto
-                    {edgeFields.length > 0
-                      ? ` (${edgeFields.length} ${edgeFields.length === 1 ? 'color' : 'colores'})`
-                      : ' adicional'}
+                    {edgeColorsTotalQty > 0
+                      ? ` (${edgeColorsTotalQty} ${edgeColorsTotalQty === 1 ? 'pieza' : 'piezas'} × ${formatMXN(manualCubrecantoUnitCost)})`
+                      : ''}
                   </span>
                   <span className="font-semibold">
                     {formatMXN(manualCubrecantoCost)}

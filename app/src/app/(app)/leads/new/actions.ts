@@ -348,15 +348,33 @@ export async function saveLeadAction(
         : null;
 
     // Cubrecanto manual (sección independiente). Solo cuando
-    // has_cubrecanto=true y el costo es > 0. NO confundir con
-    // `edgeTotal` que es el cálculo estructurado dentro de la
+    // has_cubrecanto=true y el costo unitario es > 0. NO confundir
+    // con `edgeTotal` que es el cálculo estructurado dentro de la
     // sección hojas.
-    const edgebandingManualCost =
+    //
+    // `edgebanding_manual_cost` ahora es el PRECIO UNITARIO por
+    // metro/pieza. Multiplicamos por la suma de `quantity` en
+    // `edgebanding_colors`. Sin colores definidos, contribuye el
+    // precio unitario solo (interpretado como pago fijo de 1
+    // unidad — coherente con el resumen del form).
+    const edgebandingUnitCost =
       hasCubrecantoManual &&
       typeof data.edgebanding_manual_cost === 'number' &&
       data.edgebanding_manual_cost > 0
         ? data.edgebanding_manual_cost
-        : null;
+        : 0;
+    const edgebandingQtySum = hasCubrecantoManual
+      ? (data.edgebanding_colors ?? []).reduce(
+          (s, c) => s + Number(c.quantity ?? 0),
+          0,
+        )
+      : 0;
+    const edgebandingManualCost =
+      edgebandingUnitCost === 0
+        ? null
+        : edgebandingQtySum > 0
+          ? edgebandingUnitCost * edgebandingQtySum
+          : edgebandingUnitCost;
 
     // Catálogo: precio fijo (default $500 en el form) sumado al total.
     const catalogPrice = hasCatalogo
@@ -420,7 +438,12 @@ export async function saveLeadAction(
         has_cubrecanto: hasCubrecantoManual,
         has_catalogo: hasCatalogo,
         catalog_price: hasCatalogo ? catalogPrice : 0,
-        edgebanding_manual_cost: edgebandingManualCost ?? 0,
+        // `edgebanding_manual_cost` se persiste como el PRECIO UNITARIO
+        // (por metro/pieza). El total contribuido al `total_amount` es
+        // unit × sum(edgebanding_colors.quantity), pero la columna
+        // guarda el unitario para que el cálculo sea reproducible al
+        // editar el lead.
+        edgebanding_manual_cost: edgebandingUnitCost,
         // driver_id se asigna aquí (antes vivía en /payments/new). Si el
         // usuario no eligió uno se queda null y el chofer puede asignarse
         // después editando el lead. /driver filtra por driver_id = uid().
