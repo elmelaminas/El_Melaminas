@@ -271,6 +271,32 @@ export function NewLeadForm({
     [watchedColors],
   );
 
+  // Para el resumen: lista de filas normalizada (nombre + qty + cost)
+  // y bandera "hay costos mixtos" para decidir si mostramos desglose
+  // por fila o una sola línea agregada.
+  const colorBreakdown = useMemo(() => {
+    const items = (watchedColors ?? [])
+      .map((c) => {
+        const qty = Number.isFinite(c?.quantity) ? Number(c.quantity) : 0;
+        const cost = Number.isFinite(c?.cost_per_sheet)
+          ? Number(c.cost_per_sheet)
+          : 0;
+        // Resolver nombre: si es NEW_COLOR_SENTINEL, usar new_name;
+        // si no, buscar en el catálogo `colors` por id.
+        let name: string;
+        if (c?.color_id === NEW_COLOR_SENTINEL) {
+          name = (c.new_name ?? '').trim() || 'Nuevo color';
+        } else {
+          name =
+            colors.find((cat) => cat.id === c?.color_id)?.name ?? 'Color';
+        }
+        return { name, qty, cost, line: qty * cost };
+      })
+      .filter((r) => r.qty > 0 && r.cost > 0);
+    const uniqueCosts = new Set(items.map((r) => r.cost));
+    return { items, mixed: uniqueCosts.size > 1 };
+  }, [watchedColors, colors]);
+
   // Cálculos auxiliares para mostrar en pantalla (el server recalcula).
   const cutsTotal =
     watchedProductType === 'con_corte' &&
@@ -1262,14 +1288,54 @@ export function NewLeadForm({
             <div className="space-y-2 text-sm">
               {watchedHasHojas && (
                 <>
-                  <div className="flex justify-between">
-                    <span style={{ color: 'var(--text-secondary)' }}>
-                      Hojas{totalSheets > 0 ? ` (${totalSheets})` : ''}
-                    </span>
-                    <span className="font-semibold">
-                      {formatMXN(sheetsSubtotal)}
-                    </span>
-                  </div>
+                  {colorBreakdown.mixed && colorBreakdown.items.length > 0 ? (
+                    // Costos mixtos entre colores → desglose línea
+                    // por línea + subtotal sumado abajo. Solo entra
+                    // este branch cuando hay ≥2 costos distintos
+                    // (uniqueCosts.size > 1). Con un solo costo, el
+                    // branch de abajo agrega todo en una línea.
+                    <>
+                      {colorBreakdown.items.map((it, i) => (
+                        <div
+                          key={`hojas-row-${i}`}
+                          className="flex justify-between"
+                        >
+                          <span
+                            style={{ color: 'var(--text-secondary)' }}
+                            className="truncate"
+                            title={`${it.name} ${it.qty} × ${formatMXN(it.cost)}`}
+                          >
+                            {it.name} {it.qty} × {formatMXN(it.cost)}
+                          </span>
+                          <span className="font-semibold">
+                            {formatMXN(it.line)}
+                          </span>
+                        </div>
+                      ))}
+                      <div
+                        className="flex justify-between border-t pt-2 mt-1"
+                        style={{ borderColor: 'var(--border)' }}
+                      >
+                        <span style={{ color: 'var(--text-secondary)' }}>
+                          Subtotal hojas
+                        </span>
+                        <span className="font-semibold">
+                          {formatMXN(sheetsSubtotal)}
+                        </span>
+                      </div>
+                    </>
+                  ) : (
+                    // Caso simple: un solo costo en juego (o ningún
+                    // color completo aún). Una línea agregada.
+                    <div className="flex justify-between">
+                      <span style={{ color: 'var(--text-secondary)' }}>
+                        Hojas{totalSheets > 0 ? ` (${totalSheets} × ${formatMXN(colorBreakdown.items[0]?.cost ?? 0)})` : ''}
+                      </span>
+                      <span className="font-semibold">
+                        {formatMXN(sheetsSubtotal)}
+                      </span>
+                    </div>
+                  )}
                   {cutsTotal > 0 && (
                     <div className="flex justify-between">
                       <span style={{ color: 'var(--text-secondary)' }}>

@@ -445,11 +445,16 @@ export async function saveLeadAction(
     //    pedido es solo cubrecanto/catálogo no hay materiales que
     //    asignar y saltamos los pasos 6-8 enteros.
     if (hasHojas) {
+    // Persistimos `cost_per_sheet` (columna anterior) y `unit_cost`
+    // (nueva columna pedida en el spec). Ambas son la fuente para
+    // calcular el subtotal correcto: SUM(quantity × cost) por fila.
+    // El total_amount del lead ya se calcula así arriba (PRE-dedupe).
     const lcInserts = resolvedColors.map((c) => ({
       lead_id: leadId,
       color_id: c.color_id,
       quantity: c.quantity,
       cost_per_sheet: c.cost_per_sheet,
+      unit_cost: c.cost_per_sheet,
     }));
     const { error: lcErr } = await admin.from('lead_colors').insert(lcInserts);
     if (lcErr) {

@@ -85,7 +85,7 @@ export default async function EditLeadPage({
         .maybeSingle(),
       admin
         .from('lead_colors')
-        .select('color_id, quantity, cost_per_sheet')
+        .select('color_id, quantity, cost_per_sheet, unit_cost')
         .eq('lead_id', id),
       admin
         .from('sellers')
@@ -238,6 +238,7 @@ export default async function EditLeadPage({
       color_id: string;
       quantity: number;
       cost_per_sheet: number | null;
+      unit_cost: number | null;
     };
     const leadColors = (lcResult.data ?? [])
       .filter(
@@ -245,10 +246,15 @@ export default async function EditLeadPage({
           !!r.color_id && Number(r.quantity ?? 0) > 0,
       )
       .map((r) => {
+        // Preferimos `unit_cost` (columna nueva) sobre `cost_per_sheet`
+        // (columna legacy). Si ninguna trae valor, caemos al
+        // `leads.cost_per_sheet` representante.
         const rawCost =
-          r.cost_per_sheet == null
-            ? fallbackCost
-            : Number(r.cost_per_sheet);
+          r.unit_cost != null
+            ? Number(r.unit_cost)
+            : r.cost_per_sheet == null
+              ? fallbackCost
+              : Number(r.cost_per_sheet);
         const cost = (ALLOWED_COSTS as readonly number[]).includes(rawCost)
           ? (rawCost as 350 | 600 | 2200)
           : fallbackCost;

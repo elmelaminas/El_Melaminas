@@ -323,7 +323,7 @@ export async function updateLeadFullAction(
     //    como undefined en el snapshot.
     const { data: oldLcRows, error: oldLcErr } = await admin
       .from('lead_colors')
-      .select('color_id, quantity, cost_per_sheet')
+      .select('color_id, quantity, cost_per_sheet, unit_cost')
       .eq('lead_id', leadId);
     if (oldLcErr) {
       return {
@@ -335,6 +335,7 @@ export async function updateLeadFullAction(
       color_id: string;
       quantity: number;
       cost_per_sheet: number | null;
+      unit_cost: number | null;
     };
     const oldColors: OldLcRow[] = (oldLcRows ?? [])
       .filter(
@@ -425,6 +426,7 @@ export async function updateLeadFullAction(
       color_id: o.color_id,
       quantity: o.quantity,
       cost_per_sheet: o.cost_per_sheet,
+      unit_cost: o.unit_cost,
     }));
     const { error: delErr } = await admin
       .from('lead_colors')
@@ -443,12 +445,17 @@ export async function updateLeadFullAction(
       }
     });
 
-    // ── 7. INSERT nuevos lead_colors (incluye cost_per_sheet por fila).
+    // ── 7. INSERT nuevos lead_colors (incluye cost_per_sheet +
+    //    unit_cost por fila). Mantenemos ambas columnas: cost_per_sheet
+    //    (existente) por compat con queries antiguas y unit_cost (la
+    //    columna agregada en este fix) para reflejar el costo POR
+    //    HOJA real de cada color.
     const lcInserts = resolvedColors.map((c) => ({
       lead_id: leadId,
       color_id: c.color_id,
       quantity: c.quantity,
       cost_per_sheet: c.cost_per_sheet,
+      unit_cost: c.cost_per_sheet,
     }));
     const { error: lcInsErr } = await admin
       .from('lead_colors')
