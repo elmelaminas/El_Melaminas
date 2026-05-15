@@ -149,6 +149,40 @@ export const ColorRowSchema = z
 
 export type ColorRowInput = z.infer<typeof ColorRowSchema>;
 
+/**
+ * Una fila de cubrecanto (color + cantidad/metros). Estructura
+ * parecida a ColorRowSchema pero SIN `cost_per_sheet` — el costo del
+ * cubrecanto se ingresa manualmente como total libre en
+ * `edgebanding_manual_cost`, no por fila.
+ *
+ * `color_id` puede ser un UUID o el sentinel NEW_COLOR_SENTINEL; en
+ * el segundo caso `new_name` debe traer un nombre nuevo (mín. 2
+ * chars). Mismo patrón que `ColorRowSchema`.
+ */
+export const EdgebandingColorRowSchema = z
+  .object({
+    color_id: z.string().min(1, 'Selecciona un color'),
+    new_name: z.string().trim().max(60, 'Nombre demasiado largo').optional(),
+    quantity: z
+      .number({ invalid_type_error: 'Cantidad debe ser un número' })
+      .int('Cantidad debe ser entero')
+      .positive('Cantidad debe ser ≥ 1'),
+  })
+  .refine(
+    (v) => {
+      if (v.color_id === NEW_COLOR_SENTINEL) {
+        return typeof v.new_name === 'string' && v.new_name.trim().length >= 2;
+      }
+      return true;
+    },
+    {
+      message: 'Ingresa el nombre del color nuevo (mín. 2 caracteres)',
+      path: ['new_name'],
+    },
+  );
+
+export type EdgebandingColorRowInput = z.infer<typeof EdgebandingColorRowSchema>;
+
 // ─── Lead create ────────────────────────────────────────────────────────
 
 export const LeadCreateSchema = z.object({
@@ -301,6 +335,14 @@ export const LeadCreateSchema = z.object({
   // es true se exige al menos un color; si es false la lista puede
   // estar vacía (refine cross-field abajo).
   colors: z.array(ColorRowSchema),
+
+  /**
+   * Colores del cubrecanto (informativo). Se persiste en
+   * `lead_edgebanding_colors` cuando has_cubrecanto=true. El costo
+   * total sigue viniendo de `edgebanding_manual_cost`; estos colores
+   * NO comprometen inventario.
+   */
+  edgebanding_colors: z.array(EdgebandingColorRowSchema),
 })
 .refine(
   // Al menos uno de los 3 tipos de pedido debe estar activo.

@@ -171,6 +171,10 @@ export function NewLeadForm({
       has_catalogo: initialValues?.has_catalogo ?? false,
       catalog_price: initialValues?.catalog_price ?? 500,
       edgebanding_manual_cost: initialValues?.edgebanding_manual_cost ?? null,
+      // Lista de colores del cubrecanto. Vacío por default; el usuario
+      // agrega filas explícitamente desde la sección Cubrecanto cuando
+      // `has_cubrecanto=true`.
+      edgebanding_colors: initialValues?.edgebanding_colors ?? [],
       // `cost_per_sheet` ahora vive POR FILA dentro de cada color.
       // Default: primer valor del catálogo ($350).
       colors:
@@ -191,6 +195,17 @@ export function NewLeadForm({
   const { fields, append, remove } = useFieldArray({
     control,
     name: 'colors',
+  });
+
+  // Segundo useFieldArray para los colores de cubrecanto. Renombrado
+  // a `edgeFields/.../edgeRemove` para no chocar con el de hojas.
+  const {
+    fields: edgeFields,
+    append: edgeAppend,
+    remove: edgeRemove,
+  } = useFieldArray({
+    control,
+    name: 'edgebanding_colors',
   });
 
   // Valores observados para reactividad de campos condicionales y resumen.
@@ -941,11 +956,12 @@ export function NewLeadForm({
             )}
 
             {/* ── SECCIÓN CUBRECANTO MANUAL ───────────────────────
-                Visible solo si has_cubrecanto. Costo libre, distinto
-                del cubrecanto estructurado (metros × tarifa) que
-                vive dentro de la sección Hojas. */}
+                Visible solo si has_cubrecanto. Costo libre (input
+                manual) + lista de colores informativa que el chofer
+                ve en la entrega. Los colores NO comprometen
+                inventario; salen de un stock distinto al de hojas. */}
             {watchedHasCubrecanto && (
-              <div id="field-cubrecanto-manual" className="mt-6">
+              <div id="field-cubrecanto-manual" className="mt-6 flex flex-col gap-4">
                 <Field
                   label="Costo del cubrecanto (ingreso manual)"
                   error={errors.edgebanding_manual_cost?.message}
@@ -972,6 +988,82 @@ export function NewLeadForm({
                     Ingresa el costo total del cubrecanto adicional.
                   </div>
                 </Field>
+
+                {/* Tabla de colores de cubrecanto (mismo patrón que la
+                    tabla de hojas). Sin columna de costo — el costo
+                    total ya se ingresa arriba como monto manual. */}
+                <div id="field-edgebanding-colors">
+                  <label className="label">Colores de cubrecanto</label>
+                  {errors.edgebanding_colors?.message && (
+                    <p
+                      className="text-xs mb-2"
+                      style={{ color: 'var(--danger, #dc2626)' }}
+                    >
+                      {errors.edgebanding_colors.message}
+                    </p>
+                  )}
+                  <div
+                    className="rounded-lg border"
+                    style={{ borderColor: 'var(--border)' }}
+                  >
+                    <div
+                      className="grid grid-cols-12 px-4 py-2 text-xs font-semibold uppercase tracking-wide"
+                      style={{
+                        background: 'var(--bg-subtle)',
+                        color: 'var(--text-secondary)',
+                        borderBottom: '1px solid var(--border)',
+                      }}
+                    >
+                      <div className="col-span-3">Cantidad</div>
+                      <div className="col-span-7">Color</div>
+                      <div className="col-span-2 text-right">Acción</div>
+                    </div>
+
+                    {edgeFields.length === 0 && (
+                      <div
+                        className="px-4 py-3 text-xs"
+                        style={{ color: 'var(--text-tertiary)' }}
+                      >
+                        Sin colores agregados. Usa el botón de abajo
+                        para registrar los colores del cubrecanto.
+                      </div>
+                    )}
+
+                    {edgeFields.map((field, idx) => (
+                      <EdgebandingColorRowFields
+                        key={field.id}
+                        idx={idx}
+                        register={register}
+                        watch={watch}
+                        errors={errors}
+                        colors={colors}
+                        disabled={pending}
+                        onRemove={() => edgeRemove(idx)}
+                      />
+                    ))}
+
+                    <div
+                      className="px-4 py-3 border-t"
+                      style={{ borderColor: 'var(--border)' }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          edgeAppend({
+                            color_id: colors[0]?.id ?? '',
+                            new_name: '',
+                            quantity: 1,
+                          })
+                        }
+                        className="btn btn-outline"
+                        style={{ padding: '6px 12px' }}
+                        disabled={pending}
+                      >
+                        <Plus size={14} /> Agregar color de cubrecanto
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -1199,7 +1291,10 @@ export function NewLeadForm({
               {watchedHasCubrecanto && manualCubrecantoCost > 0 && (
                 <div className="flex justify-between">
                   <span style={{ color: 'var(--text-secondary)' }}>
-                    + Cubrecanto adicional
+                    + Cubrecanto
+                    {edgeFields.length > 0
+                      ? ` (${edgeFields.length} ${edgeFields.length === 1 ? 'color' : 'colores'})`
+                      : ' adicional'}
                   </span>
                   <span className="font-semibold">
                     {formatMXN(manualCubrecantoCost)}
@@ -1444,6 +1539,121 @@ function ColorRowFields({
           aria-label="Eliminar color"
           disabled={disabled || !canRemove}
           title={!canRemove ? 'Debe haber al menos un color' : undefined}
+        >
+          <X size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Una fila del editor de colores de CUBRECANTO. Misma UX que
+ * `ColorRowFields` pero sin la columna de costo (el cubrecanto cobra
+ * por monto total libre, no por fila). Comparte el patrón de
+ * NEW_COLOR_SENTINEL para colores nuevos.
+ */
+function EdgebandingColorRowFields({
+  idx,
+  register,
+  watch,
+  errors,
+  colors,
+  disabled,
+  onRemove,
+}: {
+  idx: number;
+  register: ReturnType<typeof useForm<LeadCreateInput>>['register'];
+  watch: ReturnType<typeof useForm<LeadCreateInput>>['watch'];
+  errors: FieldErrors<LeadCreateInput>;
+  colors: ColorOption[];
+  disabled: boolean;
+  onRemove: () => void;
+}) {
+  const colorIdValue = watch(`edgebanding_colors.${idx}.color_id`);
+  const isNew = colorIdValue === NEW_COLOR_SENTINEL;
+
+  const rowErrors = (errors.edgebanding_colors as
+    | Record<number, Record<string, { message?: string }>>
+    | undefined)?.[idx];
+
+  return (
+    <div
+      className="grid grid-cols-12 items-start gap-3 px-4 py-2 border-t"
+      style={{ borderColor: 'var(--border)' }}
+    >
+      <div className="col-span-3">
+        <input
+          {...register(`edgebanding_colors.${idx}.quantity`, {
+            valueAsNumber: true,
+          })}
+          type="number"
+          min={1}
+          className="input"
+          placeholder="metros"
+          disabled={disabled}
+        />
+        {rowErrors?.quantity?.message && (
+          <p
+            className="text-xs mt-1"
+            style={{ color: 'var(--danger, #dc2626)' }}
+          >
+            {rowErrors.quantity.message}
+          </p>
+        )}
+      </div>
+
+      <div className="col-span-7 flex flex-col gap-2">
+        <select
+          {...register(`edgebanding_colors.${idx}.color_id`)}
+          className="select"
+          disabled={disabled}
+        >
+          <option value="">— selecciona —</option>
+          {colors.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+          <option value={NEW_COLOR_SENTINEL}>+ Nuevo color…</option>
+        </select>
+        {rowErrors?.color_id?.message && (
+          <p
+            className="text-xs"
+            style={{ color: 'var(--danger, #dc2626)' }}
+          >
+            {rowErrors.color_id.message}
+          </p>
+        )}
+
+        {isNew && (
+          <>
+            <input
+              {...register(`edgebanding_colors.${idx}.new_name`)}
+              className="input"
+              placeholder="Nombre del color nuevo (ej. Carbón)"
+              disabled={disabled}
+            />
+            {rowErrors?.new_name?.message && (
+              <p
+                className="text-xs"
+                style={{ color: 'var(--danger, #dc2626)' }}
+              >
+                {rowErrors.new_name.message}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+
+      <div className="col-span-2 flex justify-end">
+        <button
+          type="button"
+          onClick={onRemove}
+          className="btn btn-danger-outline"
+          style={{ padding: '6px 10px' }}
+          aria-label="Eliminar color de cubrecanto"
+          disabled={disabled}
         >
           <X size={14} />
         </button>

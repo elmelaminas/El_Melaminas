@@ -92,6 +92,10 @@ export type EntregaRow = {
    *  ROJA (alerta operativa) y aparece el botón "Devolver al stock". */
   stock_returned: boolean;
   colors: { color_name: string; quantity: number; cost_per_sheet: number }[];
+  /** Colores del cubrecanto (informativos para el chofer). Vacío
+   *  cuando el lead no incluye cubrecanto o todavía no tiene colores
+   *  registrados. */
+  edgebanding_colors: { color_name: string; quantity: number }[];
 };
 
 export type DriverOption = { id: string; name: string };
@@ -576,6 +580,22 @@ function Row({
         <div className="truncate" title={colorsLabel}>
           {colorsLabel}
         </div>
+        {/* Colores del cubrecanto que el chofer debe llevar. Solo se
+            muestra si el lead tiene alguno registrado. */}
+        {r.edgebanding_colors.length > 0 && (
+          <div
+            className="text-xs mt-1 truncate"
+            style={{ color: '#92400E', fontWeight: 500 }}
+            title={r.edgebanding_colors
+              .map((c) => `${c.quantity}m ${c.color_name}`)
+              .join(', ')}
+          >
+            📏 Cubrecanto:{' '}
+            {r.edgebanding_colors
+              .map((c) => `${c.color_name} ${c.quantity}m`)
+              .join(', ')}
+          </div>
+        )}
       </td>
       <td data-label="Dirección" className="text-sm" style={{ color: 'var(--text-secondary)', maxWidth: 240 }}>
         <div className="truncate" title={r.address}>

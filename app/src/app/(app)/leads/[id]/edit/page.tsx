@@ -62,6 +62,7 @@ export default async function EditLeadPage({
       sellersResult,
       colorsResult,
       driversResult,
+      ecResult,
     ] = await Promise.all([
       admin
         .from('profiles')
@@ -102,6 +103,10 @@ export default async function EditLeadPage({
         .eq('role', 'driver')
         .eq('is_active', true)
         .order('full_name', { ascending: true }),
+      admin
+        .from('lead_edgebanding_colors')
+        .select('color_id, quantity')
+        .eq('lead_id', id),
     ]);
 
     if (profileResult.error) {
@@ -255,6 +260,29 @@ export default async function EditLeadPage({
         };
       });
 
+    // Colores de cubrecanto del lead. Mismo shape que el form
+    // (color_id + new_name + quantity) — new_name siempre '' al
+    // editar, se llenará solo si el usuario agrega filas nuevas.
+    // Non-fatal: si la tabla aún no existe (migración pendiente),
+    // tratamos como lista vacía y loguamos.
+    if (ecResult.error) {
+      console.error(
+        '[EditLeadPage] lead_edgebanding_colors select falló (no fatal):',
+        ecResult.error,
+      );
+    }
+    type RawEc = { color_id: string; quantity: number };
+    const edgebandingColors = (ecResult.data ?? [])
+      .filter(
+        (r): r is RawEc =>
+          !!r.color_id && Number(r.quantity ?? 0) > 0,
+      )
+      .map((r) => ({
+        color_id: r.color_id,
+        quantity: Number(r.quantity),
+        new_name: '',
+      }));
+
     // `lead-documents` es bucket PÚBLICO — la URL guardada funciona
     // directo en el browser. Si en el futuro se cambia a privado,
     // habría que pasar por signEvidenceUrl como en payments-evidence.
@@ -330,6 +358,7 @@ export default async function EditLeadPage({
             ? null
             : Number(leadResult.data.edgebanding_manual_cost),
         colors: leadColors,
+        edgebanding_colors: edgebandingColors,
       },
     };
 

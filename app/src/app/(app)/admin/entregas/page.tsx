@@ -125,7 +125,8 @@ export default async function EntregasPage({
          driver_id, sale_type, product_type, row_color,
          failed_delivery_reason, failed_delivery_photo_url, stock_returned,
          cost_per_sheet,
-         lead_colors ( quantity, cost_per_sheet, colors ( name ) )`,
+         lead_colors ( quantity, cost_per_sheet, colors ( name ) ),
+         lead_edgebanding_colors ( quantity, colors ( name ) )`,
       )
       .is('deleted_at', null);
 
@@ -220,6 +221,12 @@ export default async function EntregasPage({
             colors: { name: string } | { name: string }[] | null;
           }[]
         | null;
+      lead_edgebanding_colors:
+        | {
+            quantity: number | null;
+            colors: { name: string } | { name: string }[] | null;
+          }[]
+        | null;
     };
 
     const rows: EntregaRow[] = ((leadsData ?? []) as RawLead[]).map((l) => {
@@ -240,6 +247,18 @@ export default async function EntregasPage({
               lc.cost_per_sheet == null
                 ? legacyCost
                 : Number(lc.cost_per_sheet),
+          };
+        })
+        .filter((c) => c.quantity > 0);
+      // Colores del cubrecanto — informativos para el chofer
+      // (qué llevar). No tienen costo asociado por fila; el costo
+      // está en `edgebanding_manual_cost` a nivel de lead.
+      const edgebandingColors = (l.lead_edgebanding_colors ?? [])
+        .map((lc) => {
+          const colorObj = Array.isArray(lc.colors) ? lc.colors[0] : lc.colors;
+          return {
+            color_name: colorObj?.name ?? '(sin nombre)',
+            quantity: Number(lc.quantity ?? 0),
           };
         })
         .filter((c) => c.quantity > 0);
@@ -270,6 +289,7 @@ export default async function EntregasPage({
         // pinta la fila roja y muestra el botón.
         stock_returned: l.stock_returned ?? false,
         colors,
+        edgebanding_colors: edgebandingColors,
       };
     });
 

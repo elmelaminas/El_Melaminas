@@ -19,7 +19,8 @@
       "Bash(node -e \"const Z = require\\('./node_modules/zod'\\); console.log\\('z keys:', Object.keys\\(Z.z\\).filter\\(k=>['string','email','url','uuid','enum','object'].includes\\(k\\)\\)\\); console.log\\('z.string keys after trim/toLowerCase:', Object.keys\\(Z.z.string\\(\\).trim\\(\\).toLowerCase\\(\\)\\).filter\\(k=>['email','url','uuid','min','max'].includes\\(k\\)\\)\\); console.log\\('z.string\\(\\).email exists?', typeof Z.z.string\\(\\).email\\);\")",
       "Bash(node --input-type=module -e ' *)",
       "Bash(npm run *)",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(grep -n \"^}$\\\\|^function \" \"src/app/\\(app\\)/leads/new/actions.ts\")"
     ]
   }
 }

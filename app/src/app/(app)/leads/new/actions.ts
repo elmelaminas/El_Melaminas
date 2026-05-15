@@ -19,6 +19,7 @@ import {
   normalizeName,
   emptyToNull,
 } from './schema';
+import { resolveEdgebandingColors } from './edge-helpers';
 
 // NB: este archivo solo puede exportar async functions porque tiene
 // `'use server'`. Schema, tipos y enum maps viven en `./schema`.
@@ -549,6 +550,48 @@ export async function saveLeadAction(
     }
     } // ← fin del bloque if (hasHojas)
 
+    // ── 8b. Colores del cubrecanto (informativo, sin compromiso de
+    //    inventario). Solo cuando has_cubrecanto. Resolución de
+    //    colores nuevos similar a hojas: dedupe por normalized_name,
+    //    INSERT en `colors` los realmente nuevos, INSERT en
+    //    `lead_edgebanding_colors`.
+    if (hasCubrecantoManual && data.edgebanding_colors.length > 0) {
+      const resolved = await resolveEdgebandingColors(
+        admin,
+        data.edgebanding_colors,
+        txn,
+      );
+      if (resolved.kind === 'error') {
+        await txn.rollback('resolución colores cubrecanto falló');
+        return { status: 'error', message: resolved.message };
+      }
+      if (resolved.rows.length > 0) {
+        const ecInserts = resolved.rows.map((c) => ({
+          lead_id: leadId,
+          color_id: c.color_id,
+          quantity: c.quantity,
+        }));
+        const { error: ecErr } = await admin
+          .from('lead_edgebanding_colors')
+          .insert(ecInserts);
+        if (ecErr) {
+          // Non-fatal: si la tabla aún no existe (migración pendiente),
+          // el lead ya está creado. Loguamos y seguimos.
+          console.error(
+            '[saveLeadAction] lead_edgebanding_colors insert falló (no fatal):',
+            ecErr,
+          );
+        } else {
+          txn.push(async () => {
+            await admin
+              .from('lead_edgebanding_colors')
+              .delete()
+              .eq('lead_id', leadId);
+          });
+        }
+      }
+    }
+
     // ── 9. Notificaciones a admins (best-effort, no fatal).
     //    Si la tabla `notifications` no existe / RLS bloquea / cualquier
     //    otro error, lo logueamos pero el lead ya está creado y exitoso.
@@ -956,3 +999,4 @@ export async function deleteLeadDocumentAction(
     return { status: 'error', message };
   }
 }
+

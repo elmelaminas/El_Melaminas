@@ -13,6 +13,7 @@ import {
   normalizeName,
   emptyToNull,
 } from '../../new/schema';
+import { resolveEdgebandingColors } from '../../new/edge-helpers';
 
 /**
  * `updateLeadFullAction(leadId, input)` — admin edita TODOS los campos
@@ -664,6 +665,57 @@ export async function updateLeadFullAction(
         status: 'error',
         message: `No se pudo actualizar el lead: ${leadUpdErr.message}`,
       };
+    }
+
+    // ── 10. Colores del cubrecanto (informativos). Si has_cubrecanto,
+    //    reemplazamos la lista completa: DELETE existentes + INSERT
+    //    nuevos. Si has_cubrecanto pasó a false, solo DELETE.
+    //    Non-fatal: si la tabla no existe (migración pendiente)
+    //    loguamos y seguimos — el lead ya está actualizado.
+    try {
+      const { error: delEcErr } = await admin
+        .from('lead_edgebanding_colors')
+        .delete()
+        .eq('lead_id', leadId);
+      if (delEcErr) {
+        console.error(
+          '[updateLeadFullAction] delete edgebanding_colors falló (no fatal):',
+          delEcErr,
+        );
+      }
+      if (hasCubrecantoManual && data.edgebanding_colors.length > 0) {
+        const resolved = await resolveEdgebandingColors(
+          admin,
+          data.edgebanding_colors,
+          txn,
+        );
+        if (resolved.kind === 'error') {
+          console.error(
+            '[updateLeadFullAction] resolución colores cubrecanto falló (no fatal):',
+            resolved.message,
+          );
+        } else if (resolved.rows.length > 0) {
+          const ecInserts = resolved.rows.map((c) => ({
+            lead_id: leadId,
+            color_id: c.color_id,
+            quantity: c.quantity,
+          }));
+          const { error: ecErr } = await admin
+            .from('lead_edgebanding_colors')
+            .insert(ecInserts);
+          if (ecErr) {
+            console.error(
+              '[updateLeadFullAction] insert edgebanding_colors falló (no fatal):',
+              ecErr,
+            );
+          }
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[updateLeadFullAction] edgebanding_colors excepción (no fatal):',
+        e,
+      );
     }
 
     revalidatePath('/leads');
