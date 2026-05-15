@@ -463,8 +463,16 @@ export async function updateLeadFullAction(
       await admin.from('lead_colors').delete().eq('lead_id', leadId);
     });
 
-    // ── 8. Si el stock estaba comprometido, COMPROMETER los nuevos.
-    if (stockWasCommitted) {
+    // ── 8. COMPROMETER los nuevos cuando el lead AHORA incluye hojas.
+    //    Antes esto dependía solo de stockWasCommitted, pero ahora un
+    //    lead puede pasar de "sin hojas" → "con hojas" en una edición,
+    //    en cuyo caso no había compromiso previo pero sí debemos crear
+    //    uno. Resumen de transiciones cubiertas:
+    //      - was=true,  now=true  → release (paso 5) + commit acá
+    //      - was=true,  now=false → release (paso 5), nada acá
+    //      - was=false, now=true  → no release, commit acá
+    //      - was=false, now=false → no release, nada acá
+    if (data.has_hojas === true) {
       for (const c of resolvedColors) {
         const { data: invRow, error: invSelErr } = await admin
           .from('inventory')
@@ -539,25 +547,30 @@ export async function updateLeadFullAction(
     }
 
     // ── 9. Recalcular totales y UPDATE lead.
-    const sheets_count = resolvedColors.reduce(
-      (s, c) => s + c.quantity,
-      0,
-    );
+    //
+    // El lead puede incluir 1, 2 o 3 tipos. Mirroring de saveLeadAction:
+    // sólo cuando has_hojas se contabilizan hojas/cuts/edge estructurado.
+    const hasHojas = data.has_hojas === true;
+    const hasCubrecantoManual = data.has_cubrecanto === true;
+    const hasCatalogo = data.has_catalogo === true;
 
-    // Subtotal hojas: SUM(qty * cost) sobre las filas que el USUARIO
-    // envió (PRE-dedupe) — preserva el costo exacto si hubo costos
-    // mixtos en filas duplicadas.
-    const sheetsSubtotal = data.colors.reduce(
-      (s, c) => s + Number(c.quantity ?? 0) * Number(c.cost_per_sheet ?? 0),
-      0,
-    );
+    const sheets_count = hasHojas
+      ? resolvedColors.reduce((s, c) => s + c.quantity, 0)
+      : 0;
 
-    // Compat: `leads.cost_per_sheet` se mantiene como representante (el
-    // costo de la primera fila). El desglose real está en
-    // `lead_colors.cost_per_sheet`.
-    const legacyCostPerSheet = data.colors[0]?.cost_per_sheet ?? 350;
+    const sheetsSubtotal = hasHojas
+      ? data.colors.reduce(
+          (s, c) => s + Number(c.quantity ?? 0) * Number(c.cost_per_sheet ?? 0),
+          0,
+        )
+      : 0;
+
+    const legacyCostPerSheet = hasHojas
+      ? data.colors[0]?.cost_per_sheet ?? 350
+      : null;
 
     const cutsCount =
+      hasHojas &&
       data.product_type === 'con_corte' &&
       typeof data.cuts_count === 'number' &&
       data.cuts_count > 0
@@ -566,7 +579,8 @@ export async function updateLeadFullAction(
     const cutsTotal = cutsCount != null ? cutsCount * CUT_RATE : null;
 
     const edgeType =
-      data.edge_banding_type === '19mm' || data.edge_banding_type === '3.5mm'
+      hasHojas &&
+      (data.edge_banding_type === '19mm' || data.edge_banding_type === '3.5mm')
         ? data.edge_banding_type
         : null;
     const edgeMeters =
@@ -580,6 +594,17 @@ export async function updateLeadFullAction(
         ? edgeMeters * EDGE_BANDING_RATE[edgeType]
         : null;
 
+    const edgebandingManualCost =
+      hasCubrecantoManual &&
+      typeof data.edgebanding_manual_cost === 'number' &&
+      data.edgebanding_manual_cost > 0
+        ? data.edgebanding_manual_cost
+        : null;
+
+    const catalogPrice = hasCatalogo
+      ? Number(data.catalog_price ?? 500)
+      : 0;
+
     // Envío a domicilio: aplica solo en domicilio; en fábrica null.
     const deliveryCost =
       data.purchase_type === 'domicilio' &&
@@ -589,7 +614,12 @@ export async function updateLeadFullAction(
         : null;
 
     const total_amount =
-      sheetsSubtotal + (cutsTotal ?? 0) + (edgeTotal ?? 0) + (deliveryCost ?? 0);
+      sheetsSubtotal +
+      (cutsTotal ?? 0) +
+      (edgeTotal ?? 0) +
+      (edgebandingManualCost ?? 0) +
+      catalogPrice +
+      (deliveryCost ?? 0);
 
     const { error: leadUpdErr } = await admin
       .from('leads')
@@ -615,6 +645,16 @@ export async function updateLeadFullAction(
         delivery_cost: deliveryCost,
         sheets_count,
         total_amount,
+        // Tipos del pedido (CAMBIO 1).
+        has_hojas: hasHojas,
+        has_cubrecanto: hasCubrecantoManual,
+        has_catalogo: hasCatalogo,
+        catalog_price: hasCatalogo ? catalogPrice : 0,
+        edgebanding_manual_cost: edgebandingManualCost ?? 0,
+        // stock_committed: true cuando el lead AHORA tiene hojas,
+        // false cuando no. Coherente con los pasos 5/8 que liberan
+        // o comprometen el inventario según el toggle.
+        stock_committed: hasHojas,
         driver_id: emptyToNull(data.driver_id),
       })
       .eq('id', leadId);

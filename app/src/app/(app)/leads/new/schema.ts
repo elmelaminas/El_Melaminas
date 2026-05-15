@@ -261,26 +261,104 @@ export const LeadCreateSchema = z.object({
     .optional()
     .nullable(),
 
-  // Colores
-  colors: z.array(ColorRowSchema).min(1, 'Agrega al menos un color al pedido'),
+  // ── Tipos de pedido (selección múltiple) ────────────────────────
+  //
+  // Un lead puede incluir 1, 2 o los 3 tipos simultáneamente. Al
+  // menos uno debe estar activo (validado con superRefine abajo).
+  //
+  // - has_hojas      → la sección de colores/hojas/cortes/cubrecanto
+  //                    estructurado aplica. Si false, no se
+  //                    compromete inventario y `colors` se ignora.
+  // - has_cubrecanto → cubrecanto adicional (manual, fuera del
+  //                    cálculo por metros). Costo libre en
+  //                    `edgebanding_manual_cost`.
+  // - has_catalogo   → suma `catalog_price` al total (default $500).
+  has_hojas: z.boolean(),
+  has_cubrecanto: z.boolean(),
+  has_catalogo: z.boolean(),
+
+  /** Precio del catálogo cuando `has_catalogo=true`. Default $500
+   *  pero el admin puede ajustarlo si aplica descuento o markup.
+   *  El form siempre lo provee (RHF defaultValues), por eso no
+   *  necesitamos `.default()` aquí (que rompería el resolver de
+   *  RHF al hacer el campo `T | undefined` en el input type). */
+  catalog_price: z
+    .number({ invalid_type_error: 'Precio del catálogo inválido' })
+    .min(0, 'El precio del catálogo no puede ser negativo'),
+
+  /** Costo del cubrecanto adicional (input manual) cuando
+   *  `has_cubrecanto=true`. Distinto de `edge_banding_total` que es
+   *  el cálculo estructurado metros × tarifa dentro de la sección
+   *  hojas. */
+  edgebanding_manual_cost: z
+    .number({ invalid_type_error: 'Costo del cubrecanto inválido' })
+    .min(0, 'No puede ser negativo')
+    .optional()
+    .nullable(),
+
+  // Colores: la lista vive en el schema siempre; el server decide
+  // si crear lead_colors/inventory según `has_hojas`. Si has_hojas
+  // es true se exige al menos un color; si es false la lista puede
+  // estar vacía (refine cross-field abajo).
+  colors: z.array(ColorRowSchema),
 })
 .refine(
-  // Si el producto es "Con corte", cuts_count es obligatorio ≥ 1.
+  // Al menos uno de los 3 tipos de pedido debe estar activo.
+  (d) => d.has_hojas || d.has_cubrecanto || d.has_catalogo,
+  {
+    message: 'El pedido debe incluir al menos un tipo (hojas, cubrecanto o catálogo).',
+    path: ['has_hojas'],
+  },
+)
+.refine(
+  // Si has_hojas=true, debe haber al menos un color con su costo.
   (d) => {
+    if (!d.has_hojas) return true;
+    return d.colors && d.colors.length > 0;
+  },
+  {
+    message: 'Agrega al menos un color al pedido cuando incluye hojas.',
+    path: ['colors'],
+  },
+)
+.refine(
+  // Si has_cubrecanto=true (sección manual), el costo debe ser > 0.
+  // El input visible es `edgebanding_manual_cost` — no confundir
+  // con `edge_banding_total` (cálculo estructurado dentro de hojas).
+  (d) => {
+    if (!d.has_cubrecanto) return true;
+    return (
+      typeof d.edgebanding_manual_cost === 'number' &&
+      d.edgebanding_manual_cost > 0
+    );
+  },
+  {
+    message: 'Ingresa el costo del cubrecanto adicional.',
+    path: ['edgebanding_manual_cost'],
+  },
+)
+.refine(
+  // Si el producto es "Con corte" Y el pedido incluye hojas,
+  // cuts_count es obligatorio ≥ 1. Sin hojas (catálogo/cubrecanto
+  // sueltos), product_type no aplica y no exigimos cortes.
+  (d) => {
+    if (!d.has_hojas) return true;
     if (d.product_type === 'con_corte') {
       return typeof d.cuts_count === 'number' && d.cuts_count >= 1;
     }
     return true;
   },
   {
-    message: 'El número de cortes es requerido cuando el producto es "Con corte"',
+    message:
+      'El número de cortes es requerido cuando el producto es "Con corte"',
     path: ['cuts_count'],
   },
 )
 .refine(
-  // Si se eligió un tipo de cubrecanto (no vacío/null), los metros
-  // deben venir definidos y > 0.
+  // Si has_hojas y se eligió un tipo de cubrecanto estructurado (no
+  // vacío/null), los metros deben venir definidos y > 0.
   (d) => {
+    if (!d.has_hojas) return true;
     const typeIsSet = d.edge_banding_type && d.edge_banding_type !== '';
     if (typeIsSet) {
       return (

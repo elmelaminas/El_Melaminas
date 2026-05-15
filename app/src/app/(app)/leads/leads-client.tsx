@@ -68,6 +68,12 @@ export type LeadRow = {
    *  Origen: `leads.document_urls` con fallback a `[document_url]`
    *  cuando solo existe el campo legacy (resuelto en page.tsx). */
   document_urls: string[];
+  /** Tipos del pedido (CAMBIO 1). Un lead puede tener 1, 2 o 3
+   *  simultáneamente. Cada uno se muestra como badge pequeño en la
+   *  columna Cliente. */
+  has_hojas: boolean;
+  has_cubrecanto: boolean;
+  has_catalogo: boolean;
 };
 
 /**
@@ -603,8 +609,51 @@ export function LeadsClient({
                           />
                         )}
                       </div>
+                      {(l.has_hojas || l.has_cubrecanto || l.has_catalogo) && (
+                        <div className="flex items-center gap-1 flex-wrap mt-1">
+                          {l.has_hojas && (
+                            <span
+                              className="badge"
+                              style={{
+                                fontSize: '0.6875rem',
+                                background: '#DBEAFE',
+                                color: '#1E40AF',
+                              }}
+                              title="Incluye hojas/materiales"
+                            >
+                              📋 Hojas
+                            </span>
+                          )}
+                          {l.has_cubrecanto && (
+                            <span
+                              className="badge"
+                              style={{
+                                fontSize: '0.6875rem',
+                                background: '#FEF3C7',
+                                color: '#92400E',
+                              }}
+                              title="Incluye cubrecanto adicional"
+                            >
+                              📏 Cubrecanto
+                            </span>
+                          )}
+                          {l.has_catalogo && (
+                            <span
+                              className="badge"
+                              style={{
+                                fontSize: '0.6875rem',
+                                background: '#EDE9FE',
+                                color: '#6D28D9',
+                              }}
+                              title="Incluye catálogo"
+                            >
+                              📚 Catálogo
+                            </span>
+                          )}
+                        </div>
+                      )}
                       <div
-                        className="text-xs"
+                        className="text-xs mt-1"
                         style={{ color: 'var(--text-tertiary)' }}
                       >
                         {l.phone || '—'}

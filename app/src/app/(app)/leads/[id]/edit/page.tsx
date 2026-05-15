@@ -75,6 +75,8 @@ export default async function EditLeadPage({
            sale_place, sale_type, sale_date, purchase_type, product_type,
            cost_per_sheet, cuts_count, edge_banding_type,
            edge_banding_meters, delivery_cost,
+           has_hojas, has_cubrecanto, has_catalogo,
+           catalog_price, edgebanding_manual_cost,
            driver_id, document_url, document_urls,
            delivery_status, deleted_at`,
         )
@@ -309,6 +311,24 @@ export default async function EditLeadPage({
           leadResult.data.delivery_cost == null
             ? null
             : Number(leadResult.data.delivery_cost),
+        // Tipos del pedido (CAMBIO 1). Si la columna es null (lead
+        // viejo pre-migración), inferimos has_hojas=true si hay
+        // colores cargados — comportamiento implícito anterior.
+        has_hojas:
+          leadResult.data.has_hojas == null
+            ? leadColors.length > 0
+            : Boolean(leadResult.data.has_hojas),
+        has_cubrecanto: Boolean(leadResult.data.has_cubrecanto),
+        has_catalogo: Boolean(leadResult.data.has_catalogo),
+        catalog_price:
+          leadResult.data.catalog_price == null
+            ? 500
+            : Number(leadResult.data.catalog_price),
+        edgebanding_manual_cost:
+          leadResult.data.edgebanding_manual_cost == null ||
+          Number(leadResult.data.edgebanding_manual_cost) === 0
+            ? null
+            : Number(leadResult.data.edgebanding_manual_cost),
         colors: leadColors,
       },
     };

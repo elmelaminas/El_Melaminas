@@ -147,6 +147,7 @@ export default async function LeadsPage({
         `id, client_name, phone, channel, sheets_count, total_amount,
          sale_date, created_at, delivery_status, payment_status,
          sale_type, product_type, document_url, document_urls, row_color,
+         has_hojas, has_cubrecanto, has_catalogo,
          sellers ( name )`,
         { count: 'exact' },
       )
@@ -256,6 +257,9 @@ export default async function LeadsPage({
       document_url: string | null;
       document_urls: string[] | null;
       row_color: string | null;
+      has_hojas: boolean | null;
+      has_cubrecanto: boolean | null;
+      has_catalogo: boolean | null;
       sellers: { name: string } | { name: string }[] | null;
     };
 
@@ -294,6 +298,17 @@ export default async function LeadsPage({
         document_url: r.document_url,
         document_urls: merged,
         row_color: r.row_color,
+        // Tipos del pedido (CAMBIO 1). Legacy leads sin las columnas
+        // caen a null → tratado como false en el cliente. Como
+        // fallback razonable, si el lead tiene sheets_count > 0 lo
+        // mostramos como has_hojas=true aunque la columna sea null
+        // (era el comportamiento implícito antes del refactor).
+        has_hojas:
+          r.has_hojas == null
+            ? Number(r.sheets_count ?? 0) > 0
+            : Boolean(r.has_hojas),
+        has_cubrecanto: Boolean(r.has_cubrecanto),
+        has_catalogo: Boolean(r.has_catalogo),
       };
     });
 

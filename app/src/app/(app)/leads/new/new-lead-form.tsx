@@ -130,6 +130,7 @@ export function NewLeadForm({
     setError,
     clearErrors,
     watch,
+    setValue,
     formState: { errors },
   } = useForm<LeadCreateInput>({
     resolver: zodResolver(LeadCreateSchema),
@@ -156,6 +157,20 @@ export function NewLeadForm({
       purchase_type: initialValues?.purchase_type ?? 'domicilio',
       sale_place: initialValues?.sale_place ?? 'online',
       delivery_cost: initialValues?.delivery_cost ?? null,
+      // Tipos del pedido. Default: pedido viejo asumimos has_hojas=true
+      // si tiene colores (modo edit) — el server preservaba ese flujo.
+      // En create: has_hojas=true por inercia (caso típico).
+      has_hojas:
+        initialValues?.has_hojas ??
+        (initialValues?.colors && initialValues.colors.length > 0
+          ? true
+          : !isEdit
+            ? true
+            : false),
+      has_cubrecanto: initialValues?.has_cubrecanto ?? false,
+      has_catalogo: initialValues?.has_catalogo ?? false,
+      catalog_price: initialValues?.catalog_price ?? 500,
+      edgebanding_manual_cost: initialValues?.edgebanding_manual_cost ?? null,
       // `cost_per_sheet` ahora vive POR FILA dentro de cada color.
       // Default: primer valor del catálogo ($350).
       colors:
@@ -198,6 +213,24 @@ export function NewLeadForm({
       : 0
     : 0;
 
+  // Tipos del pedido (selección múltiple — 1, 2 o 3 simultáneos).
+  const watchedHasHojas = watch('has_hojas');
+  const watchedHasCubrecanto = watch('has_cubrecanto');
+  const watchedHasCatalogo = watch('has_catalogo');
+  const watchedCatalogPrice = watch('catalog_price');
+  const watchedManualCubre = watch('edgebanding_manual_cost');
+
+  const catalogPrice = watchedHasCatalogo
+    ? typeof watchedCatalogPrice === 'number' && watchedCatalogPrice >= 0
+      ? watchedCatalogPrice
+      : 0
+    : 0;
+  const manualCubrecantoCost = watchedHasCubrecanto
+    ? typeof watchedManualCubre === 'number' && watchedManualCubre > 0
+      ? watchedManualCubre
+      : 0
+    : 0;
+
   const totalSheets = useMemo(
     () =>
       (watchedColors ?? []).reduce(
@@ -236,9 +269,16 @@ export function NewLeadForm({
         EDGE_BANDING_RATE[watchedEdgeType]
       : 0;
 
-  // El total a cobrar suma hojas (por costo de cada fila) + cortes +
-  // cubrecanto + envío.
-  const total = sheetsSubtotal + cutsTotal + edgeTotal + deliveryCost;
+  // El total a cobrar es la suma condicional de los tipos activos
+  // + el envío a domicilio (independiente de los tipos).
+  //
+  //   has_hojas       → sheets + cuts + edge_banding estructurado
+  //   has_cubrecanto  → manualCubrecantoCost (input libre)
+  //   has_catalogo    → catalogPrice
+  //   domicilio       → deliveryCost
+  const hojasTotal = watchedHasHojas ? sheetsSubtotal + cutsTotal + edgeTotal : 0;
+  const total =
+    hojasTotal + manualCubrecantoCost + catalogPrice + deliveryCost;
 
   const onValidSubmit = (values: LeadCreateInput) => {
     clearErrors('root.serverError');
@@ -647,6 +687,73 @@ export function NewLeadForm({
             title="Detalle del Pedido"
             subtitle="Materiales, costo y modalidad de venta."
           >
+            {/* Selector múltiple de tipos del pedido — 3 toggle cards.
+                Al menos uno debe estar activo (validación en submit).
+                Cada card actualiza su flag has_* en RHF, y el render
+                de las subsecciones depende de cada flag. */}
+            <div>
+              <label className="label">¿Qué incluye este pedido?</label>
+              {errors.has_hojas?.message && (
+                <p
+                  className="text-xs mb-2"
+                  style={{ color: 'var(--danger, #dc2626)' }}
+                >
+                  {errors.has_hojas.message}
+                </p>
+              )}
+              <div
+                role="group"
+                aria-label="Tipos del pedido"
+                className="grid grid-cols-1 md:grid-cols-3 gap-3"
+              >
+                <TypeToggleCard
+                  emoji="📋"
+                  title="Hojas"
+                  description="materiales"
+                  active={Boolean(watchedHasHojas)}
+                  disabled={pending}
+                  onToggle={() =>
+                    setValue('has_hojas', !watchedHasHojas, {
+                      shouldValidate: true,
+                      shouldDirty: true,
+                    })
+                  }
+                />
+                <TypeToggleCard
+                  emoji="📏"
+                  title="Cubrecanto"
+                  description="perfiles"
+                  active={Boolean(watchedHasCubrecanto)}
+                  disabled={pending}
+                  onToggle={() =>
+                    setValue('has_cubrecanto', !watchedHasCubrecanto, {
+                      shouldValidate: true,
+                      shouldDirty: true,
+                    })
+                  }
+                />
+                <TypeToggleCard
+                  emoji="📚"
+                  title="Catálogo"
+                  description={`$${watchedCatalogPrice ?? 500} fijo`}
+                  active={Boolean(watchedHasCatalogo)}
+                  disabled={pending}
+                  onToggle={() =>
+                    setValue('has_catalogo', !watchedHasCatalogo, {
+                      shouldValidate: true,
+                      shouldDirty: true,
+                    })
+                  }
+                />
+              </div>
+            </div>
+
+            {/* ── SECCIÓN HOJAS ───────────────────────────────────
+                Visible solo si has_hojas. Incluye total de hojas
+                (auto), tabla de colores con su costo, cubrecanto
+                estructurado y cortes. */}
+            {watchedHasHojas && (
+              <div className="mt-6 flex flex-col gap-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Field label="Número de hojas (auto)">
                 <input
@@ -830,10 +937,81 @@ export function NewLeadForm({
                 </Field>
               </div>
             )}
+              </div>
+            )}
 
-            {/* purchase_type se movió a "Origen del Lead" — acá ya
-                no aparece. */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+            {/* ── SECCIÓN CUBRECANTO MANUAL ───────────────────────
+                Visible solo si has_cubrecanto. Costo libre, distinto
+                del cubrecanto estructurado (metros × tarifa) que
+                vive dentro de la sección Hojas. */}
+            {watchedHasCubrecanto && (
+              <div id="field-cubrecanto-manual" className="mt-6">
+                <Field
+                  label="Costo del cubrecanto (ingreso manual)"
+                  error={errors.edgebanding_manual_cost?.message}
+                >
+                  <input
+                    type="number"
+                    min={0}
+                    step="1"
+                    className="input"
+                    placeholder="Ej. 850"
+                    disabled={pending}
+                    {...register('edgebanding_manual_cost', {
+                      setValueAs: (v) => {
+                        if (v === '' || v == null) return null;
+                        const n = Number(v);
+                        return Number.isFinite(n) ? n : null;
+                      },
+                    })}
+                  />
+                  <div
+                    className="text-[11px] mt-1"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Ingresa el costo total del cubrecanto adicional.
+                  </div>
+                </Field>
+              </div>
+            )}
+
+            {/* ── SECCIÓN CATÁLOGO ────────────────────────────────
+                Visible solo si has_catalogo. Precio default $500
+                editable. Se suma directamente al total. */}
+            {watchedHasCatalogo && (
+              <div id="field-catalogo" className="mt-6">
+                <Field
+                  label="Precio del catálogo"
+                  error={errors.catalog_price?.message}
+                >
+                  <input
+                    type="number"
+                    min={0}
+                    step="1"
+                    className="input"
+                    placeholder="500"
+                    disabled={pending}
+                    {...register('catalog_price', {
+                      setValueAs: (v) => {
+                        if (v === '' || v == null) return 0;
+                        const n = Number(v);
+                        return Number.isFinite(n) ? n : 0;
+                      },
+                    })}
+                  />
+                  <div
+                    className="text-[11px] mt-1"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Precio base $500, editable si aplica descuento.
+                  </div>
+                </Field>
+              </div>
+            )}
+
+            {/* product_type / sale_place aplican a nivel de lead
+                independientemente de los tipos activos. */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
               <Field label="Tipo de producto" error={errors.product_type?.message}>
                 <select
                   {...register('product_type')}
@@ -989,23 +1167,59 @@ export function NewLeadForm({
         <div className="xl:sticky xl:top-24 self-start">
           <div className="card p-6">
             <h3 className="font-semibold mb-4">Resumen del pedido</h3>
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between">
-                <span style={{ color: 'var(--text-secondary)' }}>Hojas totales</span>
-                <span className="font-semibold">{totalSheets}</span>
-              </div>
-              <div className="flex justify-between">
-                <span style={{ color: 'var(--text-secondary)' }}>Subtotal hojas</span>
-                <span className="font-semibold">{formatMXN(sheetsSubtotal)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span style={{ color: 'var(--text-secondary)' }}>Colores</span>
-                <span className="font-semibold">{fields.length}</span>
-              </div>
+            <div className="space-y-2 text-sm">
+              {watchedHasHojas && (
+                <>
+                  <div className="flex justify-between">
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      Hojas{totalSheets > 0 ? ` (${totalSheets})` : ''}
+                    </span>
+                    <span className="font-semibold">
+                      {formatMXN(sheetsSubtotal)}
+                    </span>
+                  </div>
+                  {cutsTotal > 0 && (
+                    <div className="flex justify-between">
+                      <span style={{ color: 'var(--text-secondary)' }}>
+                        Cortes ({watchedCutsCount ?? 0} × {formatMXN(CUT_RATE)})
+                      </span>
+                      <span className="font-semibold">{formatMXN(cutsTotal)}</span>
+                    </div>
+                  )}
+                  {edgeTotal > 0 && (
+                    <div className="flex justify-between">
+                      <span style={{ color: 'var(--text-secondary)' }}>
+                        Cubrecanto ({watchedEdgeMeters ?? 0}m)
+                      </span>
+                      <span className="font-semibold">{formatMXN(edgeTotal)}</span>
+                    </div>
+                  )}
+                </>
+              )}
+              {watchedHasCubrecanto && manualCubrecantoCost > 0 && (
+                <div className="flex justify-between">
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    + Cubrecanto adicional
+                  </span>
+                  <span className="font-semibold">
+                    {formatMXN(manualCubrecantoCost)}
+                  </span>
+                </div>
+              )}
+              {watchedHasCatalogo && (
+                <div className="flex justify-between">
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    + Catálogo
+                  </span>
+                  <span className="font-semibold">
+                    {formatMXN(catalogPrice)}
+                  </span>
+                </div>
+              )}
               {deliveryCost > 0 && (
                 <div className="flex justify-between">
                   <span style={{ color: 'var(--text-secondary)' }}>
-                    Envío a domicilio
+                    + Envío a domicilio
                   </span>
                   <span className="font-semibold">
                     {formatMXN(deliveryCost)}
@@ -1388,6 +1602,61 @@ function DocItem({
         </button>
       )}
     </li>
+  );
+}
+
+/**
+ * Tarjeta toggle para activar/desactivar un tipo del pedido
+ * (hojas / cubrecanto / catálogo). Activa: borde + fondo del color
+ * primario. Inactiva: borde gris y opacidad baja.
+ */
+function TypeToggleCard({
+  emoji,
+  title,
+  description,
+  active,
+  disabled,
+  onToggle,
+}: {
+  emoji: string;
+  title: string;
+  description: string;
+  active: boolean;
+  disabled?: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={active}
+      onClick={onToggle}
+      disabled={disabled}
+      className="flex flex-col items-center justify-center text-center gap-1 p-4 rounded-lg"
+      style={{
+        border: active
+          ? '2px solid var(--brand-primary)'
+          : '2px solid var(--border)',
+        background: active ? 'rgba(46,116,181,0.08)' : 'var(--bg-subtle)',
+        color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+        opacity: disabled ? 0.5 : active ? 1 : 0.85,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        transition: 'all 150ms ease',
+      }}
+    >
+      <span style={{ fontSize: '1.5rem' }} aria-hidden="true">
+        {active ? '☑' : '☐'}
+      </span>
+      <span style={{ fontWeight: 600 }}>
+        {emoji} {title}
+      </span>
+      <span
+        className="text-xs"
+        style={{ color: 'var(--text-tertiary)' }}
+      >
+        {description}
+      </span>
+    </button>
   );
 }
 

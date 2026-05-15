@@ -289,28 +289,39 @@ export async function saveLeadAction(
     });
 
     // ── 5. INSERT lead
-    const sheets_count = resolvedColors.reduce((s, c) => s + c.quantity, 0);
+    //
+    // El lead puede incluir 1, 2 o 3 tipos: has_hojas, has_cubrecanto,
+    // has_catalogo. Los campos relativos a hojas (colors, cuts,
+    // edge_banding estructurado) solo cuentan si has_hojas=true;
+    // si es false los descartamos antes del INSERT.
+    const hasHojas = data.has_hojas === true;
+    const hasCubrecantoManual = data.has_cubrecanto === true;
+    const hasCatalogo = data.has_catalogo === true;
 
-    // Subtotal de hojas: SUM(qty * cost_per_sheet) sobre las filas que
-    // el USUARIO envió (PRE-dedupe). Si por algún motivo el dedupe
-    // colapsa filas con costos distintos, el cobro al cliente sigue
-    // siendo el exacto que vio en pantalla.
-    const sheetsSubtotal = data.colors.reduce(
-      (s, c) => s + Number(c.quantity ?? 0) * Number(c.cost_per_sheet ?? 0),
-      0,
-    );
+    const sheets_count = hasHojas
+      ? resolvedColors.reduce((s, c) => s + c.quantity, 0)
+      : 0;
+
+    // Subtotal hojas solo si has_hojas. Sumamos pre-dedupe sobre las
+    // filas que el USUARIO envió (preservar precio mostrado).
+    const sheetsSubtotal = hasHojas
+      ? data.colors.reduce(
+          (s, c) => s + Number(c.quantity ?? 0) * Number(c.cost_per_sheet ?? 0),
+          0,
+        )
+      : 0;
 
     // Para compatibilidad con consumidores del campo `leads.cost_per_sheet`
-    // (reportes, /payments, /admin/entregas vista resumida), guardamos
-    // ahí el costo de la PRIMERA fila — basta como representante.
-    const legacyCostPerSheet =
-      data.colors[0]?.cost_per_sheet ?? 350;
+    // guardamos el costo de la PRIMERA fila (si hay) — basta como
+    // representante. Si no hay hojas, queda en null.
+    const legacyCostPerSheet = hasHojas
+      ? data.colors[0]?.cost_per_sheet ?? 350
+      : null;
 
-    // Recalcular cuts_total y edge_banding_total en el server (NUNCA
-    // confiar en los valores que mande el cliente). Reglas:
-    //   * cuts_total = cuts_count * CUT_RATE  (solo si con_corte)
-    //   * edge_banding_total = meters * RATE[type]  (solo si type definido)
+    // Cortes/cubrecanto estructurado: solo cuando has_hojas. NUNCA
+    // confiar en los totales del cliente — los recalculamos.
     const cutsCount =
+      hasHojas &&
       data.product_type === 'con_corte' &&
       typeof data.cuts_count === 'number' &&
       data.cuts_count > 0
@@ -320,7 +331,8 @@ export async function saveLeadAction(
       cutsCount != null ? cutsCount * CUT_RATE : null;
 
     const edgeType =
-      data.edge_banding_type === '19mm' || data.edge_banding_type === '3.5mm'
+      hasHojas &&
+      (data.edge_banding_type === '19mm' || data.edge_banding_type === '3.5mm')
         ? data.edge_banding_type
         : null;
     const edgeMeters =
@@ -334,6 +346,22 @@ export async function saveLeadAction(
         ? edgeMeters * EDGE_BANDING_RATE[edgeType]
         : null;
 
+    // Cubrecanto manual (sección independiente). Solo cuando
+    // has_cubrecanto=true y el costo es > 0. NO confundir con
+    // `edgeTotal` que es el cálculo estructurado dentro de la
+    // sección hojas.
+    const edgebandingManualCost =
+      hasCubrecantoManual &&
+      typeof data.edgebanding_manual_cost === 'number' &&
+      data.edgebanding_manual_cost > 0
+        ? data.edgebanding_manual_cost
+        : null;
+
+    // Catálogo: precio fijo (default $500 en el form) sumado al total.
+    const catalogPrice = hasCatalogo
+      ? Number(data.catalog_price ?? 500)
+      : 0;
+
     // Envío a domicilio: aplica solo cuando purchase_type='domicilio'.
     // En 'fabrica' lo forzamos a null aunque el cliente haya mandado
     // un valor stale.
@@ -344,11 +372,14 @@ export async function saveLeadAction(
         ? data.delivery_cost
         : null;
 
-    // total_amount = subtotal hojas (qty*cost por fila) + cortes +
-    // cubrecanto + envío. Coherente con lo que muestra el resumen
-    // sticky del form para que el usuario y la DB coincidan.
+    // total_amount: suma de los tipos activos + envío.
     const total_amount =
-      sheetsSubtotal + (cutsTotal ?? 0) + (edgeTotal ?? 0) + (deliveryCost ?? 0);
+      sheetsSubtotal +
+      (cutsTotal ?? 0) +
+      (edgeTotal ?? 0) +
+      (edgebandingManualCost ?? 0) +
+      catalogPrice +
+      (deliveryCost ?? 0);
 
     const { data: leadRow, error: leadErr } = await admin
       .from('leads')
@@ -379,6 +410,12 @@ export async function saveLeadAction(
         delivery_cost: deliveryCost,
         sheets_count,
         total_amount,
+        // Tipos del pedido + extras nuevos (CAMBIO 1).
+        has_hojas: hasHojas,
+        has_cubrecanto: hasCubrecantoManual,
+        has_catalogo: hasCatalogo,
+        catalog_price: hasCatalogo ? catalogPrice : 0,
+        edgebanding_manual_cost: edgebandingManualCost ?? 0,
         // driver_id se asigna aquí (antes vivía en /payments/new). Si el
         // usuario no eligió uno se queda null y el chofer puede asignarse
         // después editando el lead. /driver filtra por driver_id = uid().
@@ -402,12 +439,11 @@ export async function saveLeadAction(
       await admin.from('leads').delete().eq('id', leadId);
     });
 
-    // ── 6. INSERT lead_colors (bulk) — incluye cost_per_sheet por fila.
-    //    Requiere migración manual:
-    //      ALTER TABLE lead_colors ADD COLUMN IF NOT EXISTS cost_per_sheet integer;
-    //    Si la columna no existe todavía, el INSERT falla con un error
-    //    "column does not exist" — lo visible para el usuario es el
-    //    mensaje del rollback. Que Sergio corra el SQL antes del deploy.
+    // ── 6 + 7. INSERT lead_colors y comprometer inventario.
+    //    Solo cuando el lead INCLUYE hojas (has_hojas=true). Si el
+    //    pedido es solo cubrecanto/catálogo no hay materiales que
+    //    asignar y saltamos los pasos 6-8 enteros.
+    if (hasHojas) {
     const lcInserts = resolvedColors.map((c) => ({
       lead_id: leadId,
       color_id: c.color_id,
@@ -511,6 +547,7 @@ export async function saveLeadAction(
     if (flagErr) {
       console.error('[saveLeadAction] flip stock_committed falló (no fatal):', flagErr);
     }
+    } // ← fin del bloque if (hasHojas)
 
     // ── 9. Notificaciones a admins (best-effort, no fatal).
     //    Si la tabla `notifications` no existe / RLS bloquea / cualquier
