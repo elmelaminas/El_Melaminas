@@ -10,17 +10,28 @@ import {
   Loader,
   Search,
   Camera,
+  CircleCheckBig,
+  X,
 } from 'lucide-react';
 import { MethodBadge, TypeBadge } from '@/components/ui/Badges';
 import {
   formatMXN,
+  type DeliveryStatus,
   type PaymentMethod,
+  type PaymentStatus,
   type PaymentType,
 } from '@/data/mock';
 import { ImageLightbox } from '@/components/ui/ImageLightbox';
+import {
+  getLeadRowStyle,
+  LeadRowLegend,
+} from '@/components/ui/lead-row-color';
+import { liquidateLeadAction } from './actions';
 
 export type PaymentRow = {
   id: string;
+  /** lead_id necesario para liquidación + colorear la fila. */
+  lead_id: string;
   client_name: string;
   amount: number;
   net_amount: number;
@@ -36,6 +47,17 @@ export type PaymentRow = {
   // ahora vive en `leads.driver_id` (asignado al crear el lead). Para
   // mostrarlo aquí habría que JOIN payments → leads → profiles.
   deductibles: { concept: string; amount: number }[];
+  // Datos del lead asociado para colorear la fila (mismas reglas que
+  // en /leads) y calcular el adeudo.
+  lead_sale_type: string | null;
+  lead_product_type: string | null;
+  lead_payment_status: PaymentStatus;
+  lead_delivery_status: DeliveryStatus;
+  lead_row_color: string | null;
+  lead_total_amount: number;
+  /** Adeudo restante del LEAD (no del pago): total − sum(pagos
+   *  exitosos). 0 = lead totalmente pagado. */
+  adeudo: number;
 };
 
 type FiltersState = {
@@ -101,6 +123,7 @@ export function PaymentsClient({
   totalPages,
   filters,
   totals,
+  contraEntregaLeadIds,
 }: {
   payments: PaymentRow[];
   total: number;
@@ -109,7 +132,15 @@ export function PaymentsClient({
   totalPages: number;
   filters: FiltersState;
   totals: Totals;
+  /** lead_ids con AL MENOS un payment_type='contra_entrega'. Lo
+   *  convertimos a Set para lookup O(1) en la regla de color
+   *  naranja (mismo patrón que en /leads). */
+  contraEntregaLeadIds: string[];
 }) {
+  const contraEntregaSet = useMemo(
+    () => new Set(contraEntregaLeadIds),
+    [contraEntregaLeadIds],
+  );
   const router = useRouter();
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
@@ -299,6 +330,11 @@ export function PaymentsClient({
             )}
           </div>
         )}
+
+        {/* Leyenda de códigos de color — mismas reglas que /leads. */}
+        <div className="mt-3">
+          <LeadRowLegend />
+        </div>
       </div>
 
       {/* Lightbox de evidencia (overlay fullscreen). Se monta solo
@@ -331,6 +367,7 @@ export function PaymentsClient({
                 <th>Neto</th>
                 <th>Método</th>
                 <th>Tipo</th>
+                <th>Adeudo</th>
                 <th>Fecha</th>
                 <th className="text-center">Evidencia</th>
               </tr>
@@ -339,7 +376,7 @@ export function PaymentsClient({
               {payments.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={8}
+                    colSpan={9}
                     className="text-center py-8 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -349,96 +386,20 @@ export function PaymentsClient({
                   </td>
                 </tr>
               ) : (
-                payments.map((p) => {
-                  const ded = p.deductibles.reduce((a, d) => a + d.amount, 0);
-                  return (
-                    <tr key={p.id}>
-                      <td data-label="Cliente">
-                        <div className="font-medium">{p.client_name}</div>
-                        <div
-                          className="text-xs font-mono"
-                          style={{ color: 'var(--text-tertiary)' }}
-                        >
-                          #{p.id.slice(0, 8)}
-                        </div>
-                      </td>
-                      <td data-label="Monto" className="font-semibold">
-                        {formatMXN(p.amount)}
-                      </td>
-                      <td data-label="Deducibles">
-                        {ded === 0 ? (
-                          <span
-                            className="text-xs"
-                            style={{ color: 'var(--text-tertiary)' }}
-                          >
-                            —
-                          </span>
-                        ) : (
-                          <div>
-                            <div style={{ color: 'var(--danger)', fontWeight: 600 }}>
-                              -{formatMXN(ded)}
-                            </div>
-                            <div
-                              className="text-xs"
-                              style={{ color: 'var(--text-tertiary)' }}
-                            >
-                              {p.deductibles.map((d) => d.concept).join(', ')}
-                            </div>
-                          </div>
-                        )}
-                      </td>
-                      <td
-                        data-label="Neto"
-                        className="font-semibold"
-                        style={{ color: 'var(--success)' }}
-                      >
-                        {formatMXN(p.net_amount)}
-                      </td>
-                      <td data-label="Método">
-                        <MethodBadge method={METHOD_TO_BADGE[p.method]} />
-                      </td>
-                      <td data-label="Tipo">
-                        <TypeBadge type={TYPE_TO_BADGE[p.payment_type]} />
-                      </td>
-                      <td
-                        data-label="Fecha"
-                        className="text-sm"
-                        style={{ color: 'var(--text-secondary)' }}
-                      >
-                        {formatDate(p.paid_at)}
-                      </td>
-                      <td data-label="Evidencia" className="text-center">
-                        {p.evidence_photo_url ? (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setLightbox({
-                                src: p.evidence_photo_url!,
-                                alt: `Evidencia del pago de ${p.client_name}`,
-                              })
-                            }
-                            className="btn btn-ghost"
-                            style={{
-                              padding: 6,
-                              color: 'var(--brand-secondary)',
-                            }}
-                            aria-label={`Ver evidencia del pago de ${p.client_name}`}
-                            title="Ver foto del cobro"
-                          >
-                            <Camera size={16} />
-                          </button>
-                        ) : (
-                          <span
-                            className="text-xs"
-                            style={{ color: 'var(--text-tertiary)' }}
-                          >
-                            —
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
+                payments.map((p) => (
+                  <PaymentRowItem
+                    key={p.id}
+                    payment={p}
+                    contraEntregaSet={contraEntregaSet}
+                    onOpenEvidence={() =>
+                      p.evidence_photo_url &&
+                      setLightbox({
+                        src: p.evidence_photo_url,
+                        alt: `Evidencia del pago de ${p.client_name}`,
+                      })
+                    }
+                  />
+                ))
               )}
             </tbody>
           </table>
@@ -492,6 +453,261 @@ export function PaymentsClient({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Una fila de la tabla de pagos. Encapsula:
+ *   - row style según las reglas de color del lead (mismas que /leads).
+ *   - render del adeudo restante del LEAD + badge "Liquidado" o
+ *     prompt inline para liquidar.
+ *   - confirmación inline del método de pago para la liquidación
+ *     (sin modal, para no tapar el resto de la tabla).
+ */
+function PaymentRowItem({
+  payment: p,
+  contraEntregaSet,
+  onOpenEvidence,
+}: {
+  payment: PaymentRow;
+  contraEntregaSet: ReadonlySet<string>;
+  onOpenEvidence: () => void;
+}) {
+  const router = useRouter();
+  const [liqPending, startLiqTransition] = useTransition();
+  // null = ningún prompt visible; un valor = método seleccionado en
+  // el prompt inline antes de confirmar.
+  const [showLiqPrompt, setShowLiqPrompt] = useState(false);
+  const [liqMethod, setLiqMethod] = useState<PaymentRow['method']>('efectivo');
+  const [liqError, setLiqError] = useState<string | null>(null);
+  const [liqDone, setLiqDone] = useState(false);
+
+  const ded = p.deductibles.reduce((a, d) => a + d.amount, 0);
+
+  // Reglas de color del lead. Usamos un shape mínimo compatible con
+  // getLeadRowStyle: solo necesita los flags semánticos del lead.
+  const rowStyle = getLeadRowStyle(
+    {
+      id: p.lead_id,
+      row_color: p.lead_row_color,
+      sale_type: p.lead_sale_type,
+      product_type: p.lead_product_type,
+      payment_status: p.lead_payment_status,
+      delivery_status: p.lead_delivery_status,
+    },
+    contraEntregaSet,
+  );
+
+  // Estado del adeudo del LEAD asociado a este pago. `liqDone` es
+  // optimismo post-liquidación: pinta "Liquidado" inmediatamente.
+  const isLiquidated =
+    liqDone || p.adeudo <= 0 || p.lead_payment_status === 'pagado';
+
+  const handleConfirmLiquidate = () => {
+    setLiqError(null);
+    const fd = new FormData();
+    fd.set('lead_id', p.lead_id);
+    fd.set('payment_method', liqMethod);
+    startLiqTransition(async () => {
+      try {
+        const result = await liquidateLeadAction({ status: 'idle' }, fd);
+        if (result.status === 'success') {
+          setLiqDone(true);
+          setShowLiqPrompt(false);
+          router.refresh();
+        } else if (result.status === 'error') {
+          setLiqError(result.message);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Error de red';
+        setLiqError(msg);
+      }
+    });
+  };
+
+  return (
+    <tr style={rowStyle}>
+      <td data-label="Cliente">
+        <div className="font-medium">{p.client_name}</div>
+        <div
+          className="text-xs font-mono"
+          style={{ color: 'var(--text-tertiary)' }}
+        >
+          #{p.id.slice(0, 8)}
+        </div>
+      </td>
+      <td data-label="Monto" className="font-semibold">
+        {formatMXN(p.amount)}
+      </td>
+      <td data-label="Deducibles">
+        {ded === 0 ? (
+          <span className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+            —
+          </span>
+        ) : (
+          <div>
+            <div style={{ color: 'var(--danger)', fontWeight: 600 }}>
+              -{formatMXN(ded)}
+            </div>
+            <div
+              className="text-xs"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              {p.deductibles.map((d) => d.concept).join(', ')}
+            </div>
+          </div>
+        )}
+      </td>
+      <td
+        data-label="Neto"
+        className="font-semibold"
+        style={{ color: 'var(--success)' }}
+      >
+        {formatMXN(p.net_amount)}
+      </td>
+      <td data-label="Método">
+        <MethodBadge method={METHOD_TO_BADGE[p.method]} />
+      </td>
+      <td data-label="Tipo">
+        <TypeBadge type={TYPE_TO_BADGE[p.payment_type]} />
+      </td>
+      <td data-label="Adeudo">
+        {isLiquidated ? (
+          <span className="badge badge-success">✓ Liquidado</span>
+        ) : showLiqPrompt ? (
+          <div className="flex flex-col items-end gap-1.5">
+            <div
+              className="text-xs"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              Liquidar <strong>{formatMXN(p.adeudo)}</strong>
+            </div>
+            <select
+              value={liqMethod}
+              onChange={(e) =>
+                setLiqMethod(e.target.value as PaymentRow['method'])
+              }
+              disabled={liqPending}
+              className="select"
+              style={{ padding: '4px 8px', fontSize: '0.75rem' }}
+              aria-label="Método de pago para liquidación"
+            >
+              <option value="efectivo">Efectivo</option>
+              <option value="transferencia">Transferencia</option>
+              <option value="clip">Clip</option>
+            </select>
+            {liqError && (
+              <span
+                role="alert"
+                className="text-xs"
+                style={{ color: 'var(--danger, #dc2626)' }}
+              >
+                {liqError}
+              </span>
+            )}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="btn"
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '0.75rem',
+                  background: '#16A34A',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                }}
+                onClick={handleConfirmLiquidate}
+                disabled={liqPending}
+              >
+                {liqPending ? (
+                  <>
+                    <Loader size={12} className="animate-spin" />
+                    <span style={{ marginLeft: 4 }}>Liquidando…</span>
+                  </>
+                ) : (
+                  'Confirmar'
+                )}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                style={{ padding: '4px 8px', fontSize: '0.75rem' }}
+                onClick={() => {
+                  setShowLiqPrompt(false);
+                  setLiqError(null);
+                }}
+                disabled={liqPending}
+              >
+                <X size={12} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col items-end gap-1">
+            <div
+              className="text-xs"
+              style={{ color: 'var(--danger, #B91C1C)', fontWeight: 600 }}
+            >
+              {formatMXN(p.adeudo)} pendiente
+            </div>
+            {/* Solo permitimos liquidar desde rows de tipo anticipo —
+                liquidación y contra_entrega no deben volver a generar
+                otra liquidación. */}
+            {p.payment_type === 'anticipo' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setLiqError(null);
+                  setShowLiqPrompt(true);
+                }}
+                className="btn"
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '0.75rem',
+                  background: '#16A34A',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                }}
+                aria-label={`Liquidar adeudo de ${p.client_name}`}
+                title={`Liquidar ${formatMXN(p.adeudo)} restantes`}
+              >
+                <CircleCheckBig size={12} /> Liquidar
+              </button>
+            )}
+          </div>
+        )}
+      </td>
+      <td
+        data-label="Fecha"
+        className="text-sm"
+        style={{ color: 'var(--text-secondary)' }}
+      >
+        {formatDate(p.paid_at)}
+      </td>
+      <td data-label="Evidencia" className="text-center">
+        {p.evidence_photo_url ? (
+          <button
+            type="button"
+            onClick={onOpenEvidence}
+            className="btn btn-ghost"
+            style={{ padding: 6, color: 'var(--brand-secondary)' }}
+            aria-label={`Ver evidencia del pago de ${p.client_name}`}
+            title="Ver foto del cobro"
+          >
+            <Camera size={16} />
+          </button>
+        ) : (
+          <span className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+            —
+          </span>
+        )}
+      </td>
+    </tr>
   );
 }
 

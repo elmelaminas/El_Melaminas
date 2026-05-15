@@ -95,9 +95,10 @@ export default async function PaymentsPage({
     let query = admin
       .from('payments')
       .select(
-        `id, amount, net_amount, payment_method, payment_type, status, paid_at,
-         evidence_photo_url,
-         leads ( client_name )`,
+        `id, lead_id, amount, net_amount, payment_method, payment_type,
+         status, paid_at, evidence_photo_url,
+         leads ( client_name, total_amount, sale_type, product_type,
+                 payment_status, delivery_status, row_color )`,
         { count: 'exact' },
       )
       .order('paid_at', { ascending: false });
@@ -127,8 +128,18 @@ export default async function PaymentsPage({
       return <ErrorState message={`Error leyendo pagos: ${error.message}`} />;
     }
 
+    type RawLeadJoin = {
+      client_name: string;
+      total_amount: number | string | null;
+      sale_type: string | null;
+      product_type: string | null;
+      payment_status: string | null;
+      delivery_status: string | null;
+      row_color: string | null;
+    };
     type RawPayment = {
       id: string;
+      lead_id: string | null;
       amount: number | string | null;
       net_amount: number | string | null;
       payment_method: string | null;
@@ -136,7 +147,7 @@ export default async function PaymentsPage({
       status: string | null;
       paid_at: string | null;
       evidence_photo_url: string | null;
-      leads: { client_name: string } | { client_name: string }[] | null;
+      leads: RawLeadJoin | RawLeadJoin[] | null;
     };
 
     const rawRows = (data ?? []) as RawPayment[];
@@ -164,10 +175,68 @@ export default async function PaymentsPage({
       dedByPaymentId.set(d.payment_id, list);
     }
 
+    // Bulk: total pagado (status='exitoso') por lead — para calcular
+    // adeudo de cada lead visible. Una sola query, group by JS.
+    const visibleLeadIds = Array.from(
+      new Set(
+        rawRows
+          .map((r) => r.lead_id)
+          .filter((x): x is string => !!x),
+      ),
+    );
+    const paidByLead = new Map<string, number>();
+    if (visibleLeadIds.length > 0) {
+      const { data: paidRows, error: paidErr } = await admin
+        .from('payments')
+        .select('lead_id, amount')
+        .eq('status', 'exitoso')
+        .in('lead_id', visibleLeadIds);
+      if (paidErr) {
+        console.error(
+          '[PaymentsPage] paid lookup falló (no fatal):',
+          paidErr,
+        );
+      } else {
+        for (const p of paidRows ?? []) {
+          if (!p.lead_id) continue;
+          paidByLead.set(
+            p.lead_id,
+            (paidByLead.get(p.lead_id) ?? 0) + Number(p.amount ?? 0),
+          );
+        }
+      }
+    }
+
+    // Bulk: lead_ids con pago contra_entrega — para regla naranja.
+    const contraEntregaSet = new Set<string>();
+    if (visibleLeadIds.length > 0) {
+      const { data: ceRows, error: ceErr } = await admin
+        .from('payments')
+        .select('lead_id')
+        .eq('payment_type', 'contra_entrega')
+        .in('lead_id', visibleLeadIds);
+      if (ceErr) {
+        console.error(
+          '[PaymentsPage] contra_entrega lookup falló (no fatal):',
+          ceErr,
+        );
+      } else {
+        for (const p of ceRows ?? []) {
+          if (p.lead_id) contraEntregaSet.add(p.lead_id);
+        }
+      }
+    }
+    const contraEntregaLeadIds = Array.from(contraEntregaSet);
+
     const rows: PaymentRow[] = rawRows.map((r) => {
       const leadObj = Array.isArray(r.leads) ? r.leads[0] : r.leads;
+      const leadId = r.lead_id ?? '';
+      const leadTotal = Number(leadObj?.total_amount ?? 0);
+      const paidSoFar = leadId ? paidByLead.get(leadId) ?? 0 : 0;
+      const adeudo = Math.max(0, leadTotal - paidSoFar);
       return {
         id: r.id,
+        lead_id: leadId,
         client_name: leadObj?.client_name ?? '(lead no encontrado)',
         amount: Number(r.amount ?? 0),
         net_amount: Number(r.net_amount ?? 0),
@@ -182,6 +251,18 @@ export default async function PaymentsPage({
         paid_at: r.paid_at,
         evidence_photo_url: r.evidence_photo_url,
         deductibles: dedByPaymentId.get(r.id) ?? [],
+        // Datos del lead para colorear la fila + calcular adeudo.
+        lead_sale_type: leadObj?.sale_type ?? null,
+        lead_product_type: leadObj?.product_type ?? null,
+        lead_payment_status:
+          (leadObj?.payment_status as PaymentRow['lead_payment_status']) ??
+          'pendiente',
+        lead_delivery_status:
+          (leadObj?.delivery_status as PaymentRow['lead_delivery_status']) ??
+          'pendiente',
+        lead_row_color: leadObj?.row_color ?? null,
+        lead_total_amount: leadTotal,
+        adeudo,
       };
     });
 
@@ -235,6 +316,7 @@ export default async function PaymentsPage({
           deductibles: totalGross - totalNet,
           net: totalNet,
         }}
+        contraEntregaLeadIds={contraEntregaLeadIds}
       />
     );
   } catch (err) {
