@@ -155,6 +155,7 @@ export function NewLeadForm({
       product_type: initialValues?.product_type ?? 'con_corte',
       purchase_type: initialValues?.purchase_type ?? 'domicilio',
       sale_place: initialValues?.sale_place ?? 'online',
+      delivery_cost: initialValues?.delivery_cost ?? null,
       // `cost_per_sheet` ahora vive POR FILA dentro de cada color.
       // Default: primer valor del catálogo ($350).
       colors:
@@ -184,9 +185,18 @@ export function NewLeadForm({
   const watchedEdgeType = watch('edge_banding_type');
   const watchedEdgeMeters = watch('edge_banding_meters');
   // purchase_type='fabrica' → cliente recoge en taller; ocultamos
-  // dirección y URL Google Maps en la sección Cliente (no aplican).
+  // dirección, URL Google Maps y costo de envío en la sección Cliente
+  // (no aplican).
   const watchedPurchaseType = watch('purchase_type');
   const isDomicilio = watchedPurchaseType !== 'fabrica';
+  const watchedDeliveryCost = watch('delivery_cost');
+  // Costo de envío visible solo en domicilio. En fábrica contribuye 0
+  // al total aunque el RHF tenga un valor stale.
+  const deliveryCost = isDomicilio
+    ? typeof watchedDeliveryCost === 'number' && watchedDeliveryCost > 0
+      ? watchedDeliveryCost
+      : 0
+    : 0;
 
   const totalSheets = useMemo(
     () =>
@@ -227,8 +237,8 @@ export function NewLeadForm({
       : 0;
 
   // El total a cobrar suma hojas (por costo de cada fila) + cortes +
-  // cubrecanto.
-  const total = sheetsSubtotal + cutsTotal + edgeTotal;
+  // cubrecanto + envío.
+  const total = sheetsSubtotal + cutsTotal + edgeTotal + deliveryCost;
 
   const onValidSubmit = (values: LeadCreateInput) => {
     clearErrors('root.serverError');
@@ -593,6 +603,37 @@ export function NewLeadForm({
                         placeholder="https://maps.google.com/…"
                         disabled={pending}
                       />
+                    </Field>
+                  </div>
+                  <div className="md:col-span-2">
+                    <Field
+                      label="Costo de envío"
+                      error={errors.delivery_cost?.message}
+                    >
+                      <input
+                        type="number"
+                        min={0}
+                        step="1"
+                        className="input"
+                        placeholder="Ej. 150"
+                        disabled={pending}
+                        {...register('delivery_cost', {
+                          // Mapeo "" → null (y NaN → null) para que Zod
+                          // nullable lo acepte. valueAsNumber daría NaN
+                          // en input vacío y rompería la validación.
+                          setValueAs: (v) => {
+                            if (v === '' || v == null) return null;
+                            const n = Number(v);
+                            return Number.isFinite(n) ? n : null;
+                          },
+                        })}
+                      />
+                      <div
+                        className="text-[11px] mt-1"
+                        style={{ color: 'var(--text-tertiary)' }}
+                      >
+                        Se sumará al total del pedido
+                      </div>
                     </Field>
                   </div>
                 </>
@@ -960,6 +1001,16 @@ export function NewLeadForm({
                 <span style={{ color: 'var(--text-secondary)' }}>Colores</span>
                 <span className="font-semibold">{fields.length}</span>
               </div>
+              {deliveryCost > 0 && (
+                <div className="flex justify-between">
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    Envío a domicilio
+                  </span>
+                  <span className="font-semibold">
+                    {formatMXN(deliveryCost)}
+                  </span>
+                </div>
+              )}
               <div
                 id="field-total"
                 className="border-t pt-3 mt-2"

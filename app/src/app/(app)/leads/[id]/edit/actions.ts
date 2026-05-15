@@ -580,8 +580,16 @@ export async function updateLeadFullAction(
         ? edgeMeters * EDGE_BANDING_RATE[edgeType]
         : null;
 
+    // Envío a domicilio: aplica solo en domicilio; en fábrica null.
+    const deliveryCost =
+      data.purchase_type === 'domicilio' &&
+      typeof data.delivery_cost === 'number' &&
+      data.delivery_cost > 0
+        ? data.delivery_cost
+        : null;
+
     const total_amount =
-      sheetsSubtotal + (cutsTotal ?? 0) + (edgeTotal ?? 0);
+      sheetsSubtotal + (cutsTotal ?? 0) + (edgeTotal ?? 0) + (deliveryCost ?? 0);
 
     const { error: leadUpdErr } = await admin
       .from('leads')
@@ -604,6 +612,7 @@ export async function updateLeadFullAction(
         edge_banding_type: edgeType,
         edge_banding_meters: edgeMeters,
         edge_banding_total: edgeTotal,
+        delivery_cost: deliveryCost,
         sheets_count,
         total_amount,
         driver_id: emptyToNull(data.driver_id),

@@ -252,6 +252,15 @@ export const LeadCreateSchema = z.object({
   purchase_type: z.enum(PURCHASE_TYPE_VALUES, { message: 'Tipo de compra inválido' }),
   sale_place: z.enum(SALE_PLACE_VALUES, { message: 'Lugar de venta inválido' }),
 
+  // Costo del envío a domicilio. Solo aplica cuando
+  // purchase_type='domicilio'; en 'fabrica' el form lo oculta y el
+  // server lo descarta a null. Se SUMA al total_amount.
+  delivery_cost: z
+    .number({ invalid_type_error: 'Costo de envío inválido' })
+    .min(0, 'Costo de envío no puede ser negativo')
+    .optional()
+    .nullable(),
+
   // Colores
   colors: z.array(ColorRowSchema).min(1, 'Agrega al menos un color al pedido'),
 })

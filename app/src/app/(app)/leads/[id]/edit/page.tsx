@@ -74,7 +74,8 @@ export default async function EditLeadPage({
           `id, client_name, phone, address, maps_url, channel, seller_id,
            sale_place, sale_type, sale_date, purchase_type, product_type,
            cost_per_sheet, cuts_count, edge_banding_type,
-           edge_banding_meters, driver_id, document_url, document_urls,
+           edge_banding_meters, delivery_cost,
+           driver_id, document_url, document_urls,
            delivery_status, deleted_at`,
         )
         .eq('id', id)
@@ -304,6 +305,10 @@ export default async function EditLeadPage({
           leadResult.data.edge_banding_meters == null
             ? null
             : Number(leadResult.data.edge_banding_meters),
+        delivery_cost:
+          leadResult.data.delivery_cost == null
+            ? null
+            : Number(leadResult.data.delivery_cost),
         colors: leadColors,
       },
     };
