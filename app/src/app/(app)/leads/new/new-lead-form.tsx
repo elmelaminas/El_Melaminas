@@ -538,6 +538,7 @@ export function NewLeadForm({
                 error={errors.purchase_type?.message}
               >
                 <select
+                  id="field-purchase-type"
                   {...register('purchase_type')}
                   className="select"
                   disabled={pending}
@@ -605,7 +606,7 @@ export function NewLeadForm({
                       />
                     </Field>
                   </div>
-                  <div className="md:col-span-2">
+                  <div id="field-delivery-cost" className="md:col-span-2">
                     <Field
                       label="Costo de envío"
                       error={errors.delivery_cost?.message}

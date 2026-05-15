@@ -506,8 +506,10 @@ export function LeadsClient({
 
       {/* Tabs de filtro por color (debajo de la leyenda, encima de la
           tabla). Cada tab combina la regla automática del color con
-          su override manual. Click → push searchParam `color_filter`. */}
+          su override manual. Click → push searchParam `color_filter`.
+          El id `color-filter-tabs` lo usa el tour contextual. */}
       <div
+        id="color-filter-tabs"
         role="tablist"
         aria-label="Filtrar por color de fila"
         className="flex items-center gap-2 flex-wrap"

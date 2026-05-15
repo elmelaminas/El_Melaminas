@@ -66,6 +66,14 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
       },
     },
     {
+      element: '#field-purchase-type',
+      popover: {
+        title: '🏭 Tipo de compra',
+        description:
+          'A domicilio: se habilitará campo de dirección, maps y costo de envío. En fábrica: el cliente recoge directamente.',
+      },
+    },
+    {
       element: '#field-seller',
       popover: {
         title: '👤 Vendedor',
@@ -88,6 +96,22 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
       },
     },
     {
+      element: '#field-address',
+      popover: {
+        title: '📍 Dirección',
+        description:
+          'Dirección de entrega y link de Google Maps para el chofer. Solo aparece si es A domicilio.',
+      },
+    },
+    {
+      element: '#field-delivery-cost',
+      popover: {
+        title: '🚗 Costo de envío',
+        description:
+          'Solo aparece si es A domicilio. Se suma automáticamente al total del pedido.',
+      },
+    },
+    {
       element: '#field-sheets',
       popover: {
         title: '📋 Número de hojas',
@@ -99,7 +123,7 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
       popover: {
         title: '🎨 Colores',
         description:
-          'Agrega los colores y cantidades. Puedes escribir un color nuevo y se guardará automáticamente en el catálogo.',
+          'Agrega los colores, cantidades y el costo de cada uno ($350, $600 o $2,200). Puedes escribir un color nuevo y se guardará automáticamente en el catálogo.',
       },
     },
     {
@@ -107,7 +131,7 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
       popover: {
         title: '📏 Cubrecanto',
         description:
-          'Selecciona 19mm ($5/m) o 3.5mm ($8/m) e ingresa los metros. El total se calcula automáticamente.',
+          '19mm cuesta $5/metro, 3.5mm cuesta $8/metro. Ingresa los metros y el total se calcula solo.',
       },
     },
     {
@@ -115,23 +139,7 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
       popover: {
         title: '✂️ Cortes',
         description:
-          'Si el producto es "Con corte", ingresa el número de cortes. Se multiplican por $5 automáticamente.',
-      },
-    },
-    {
-      element: '#field-address',
-      popover: {
-        title: '📍 Dirección',
-        description:
-          'Dirección de entrega y link de Google Maps para el chofer.',
-      },
-    },
-    {
-      element: '#field-cost',
-      popover: {
-        title: '💰 Costo por hoja',
-        description:
-          'Precio unitario: $350, $600 o $2,200 según el tipo de material.',
+          'Aparece solo si el producto es "Con corte". Cada corte cuesta $5. El total se suma al pedido.',
       },
     },
     {
@@ -139,15 +147,15 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
       popover: {
         title: '💵 Total',
         description:
-          'Se calcula automáticamente: hojas × costo + cortes + cubrecanto.',
+          'Se calcula automáticamente: (hojas × costo) + cortes + cubrecanto + envío.',
       },
     },
     {
       element: '#field-pdf',
       popover: {
-        title: '📄 PDF adjunto',
+        title: '📎 Archivos adjuntos',
         description:
-          'Opcional: adjunta una cotización o contrato en PDF.',
+          'Puedes subir hasta 5 archivos: PDFs o imágenes. Útil para cotizaciones, contratos o fotos del espacio.',
       },
     },
     {
@@ -192,11 +200,19 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
       },
     },
     {
+      element: '#color-filter-tabs',
+      popover: {
+        title: '🎨 Filtrar por color',
+        description:
+          'Filtra tus leads por color: Azul=con corte, Rosa=venta empleado, Naranja=contra entrega, Amarillo=pagado sin entregar, Verde y Morado son manuales.',
+      },
+    },
+    {
       element: '#leads-legend',
       popover: {
-        title: '🎨 Código de colores',
+        title: '🏷️ Código de colores',
         description:
-          'Rosa=venta empleado, Naranja=contra entrega, Amarillo=pagado sin entregar, Azul=con corte. Puedes asignar color manualmente con el círculo en Acciones.',
+          'Los colores se asignan automáticamente según el tipo de lead. Puedes cambiarlos manualmente con el círculo de color en la columna Acciones.',
       },
     },
     {
@@ -204,7 +220,7 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
       popover: {
         title: '📋 Tabla de leads',
         description:
-          'El ícono PDF abre el documento adjunto. El lápiz edita fecha y chofer. El círculo cambia el color de la fila.',
+          'El clip con número abre los archivos adjuntos del lead. El lápiz edita el lead completo. El círculo cambia el color de la fila.',
       },
     },
   ],
@@ -369,19 +385,27 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
 
   '/admin/caja': [
     {
-      element: '#tab-por-validar',
+      element: '#tab-choferes',
       popover: {
-        title: '⏳ Por validar',
+        title: '🚗 Efectivo de choferes',
         description:
-          'Efectivo que el contador ya recibió de los choferes pero que aún no has confirmado tú como admin.',
+          'Confirma aquí el efectivo que te entregan los choferes después de sus entregas.',
       },
     },
     {
       element: '#tab-validados',
       popover: {
-        title: '✅ Validados',
+        title: '✅ Validados por contador',
         description:
-          'Historial de efectivo que ya confirmaste. Muestra el total validado del mes actual.',
+          'Historial del efectivo que el contador ya recibió y validó de tu parte.',
+      },
+    },
+    {
+      element: '#tab-mi-caja',
+      popover: {
+        title: '💰 Mi caja personal',
+        description:
+          'Resumen de tu efectivo: ingresos (pagos + choferes) menos lo que ya entregaste al contador = tu saldo actual.',
       },
     },
   ],
@@ -389,23 +413,23 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
   '/contador': [
     {
       popover: {
-        title: '💵 Vista contador',
+        title: '💵 Efectivo del administrador',
         description:
-          'Ves el efectivo que trae cada chofer pendiente de entregarte.',
+          'Ves cuánto efectivo acumulado tiene cada administrador: pagos directos que cobró + efectivo que recibió de choferes.',
       },
     },
     {
       popover: {
-        title: '✅ Recibir efectivo',
+        title: '✅ Validar efectivo',
         description:
-          'Selecciona el chofer y presiona "Recibí efectivo". El admin recibirá una notificación para validarlo.',
+          'Cuando el admin te entregue su efectivo, presiona "Recibí efectivo de {admin}". Esto registra el egreso de su caja y notifica al admin.',
       },
     },
     {
       popover: {
-        title: '📋 Historial',
+        title: '📋 Mi historial',
         description:
-          'Tus últimas recepciones. "Recibido" = esperando validación del admin. "Validado" = ciclo cerrado.',
+          'Todas las validaciones que has hecho, con fecha y monto.',
       },
     },
   ],

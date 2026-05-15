@@ -111,7 +111,7 @@ export function CajaClient({
         style={{ borderBottom: '1px solid var(--border)' }}
       >
         <TabButton
-          id="tab-efectivo-choferes"
+          id="tab-choferes"
           active={tab === 'efectivo-choferes'}
           onClick={() => selectTab('efectivo-choferes')}
         >
