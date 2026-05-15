@@ -388,3 +388,82 @@ body {
     font-size: 16px;
   }
 }
+
+/* ─── Utility responsive: tabla → cards en móvil ───────────────────────
+   Aplicar `class="tbl table-to-cards"` a la tabla. En ≤768px las
+   filas se rinden como cards individuales con cada celda mostrando
+   `data-label` como prefijo. En desktop la tabla se ve normal.
+   Las celdas que no deben mostrar etiqueta (ej. avatar) pueden
+   omitir el atributo data-label — entonces ::before queda vacío. */
+@media (max-width: 768px) {
+  .table-to-cards thead {
+    display: none;
+  }
+  .table-to-cards tbody tr {
+    display: block;
+    margin: 0 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px;
+    background: var(--bg-surface) !important;
+  }
+  .table-to-cards tbody tr:hover td {
+    /* override del hover de la tabla — en cards confunde. */
+    background: transparent;
+  }
+  .table-to-cards tbody td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 0;
+    border: none !important;
+    background: transparent !important;
+    text-align: right;
+  }
+  .table-to-cards tbody td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    font-size: 0.6875rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+    text-align: left;
+  }
+  /* Celdas sin data-label: ocultamos el pseudo para que no quede
+     un hueco a la izquierda. */
+  .table-to-cards tbody td:not([data-label])::before {
+    display: none;
+  }
+}
+
+/* ─── Badge de notificaciones estilo iOS ─────────────────────────────
+   Anclar a un elemento `position: relative` (campana, hamburger).
+   El badge se posiciona absoluto en la esquina superior derecha
+   con el clásico círculo rojo y borde blanco. */
+.notification-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  background: #DC2626;
+  color: white;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  border: 2px solid white;
+  animation: badge-pop 0.3s ease;
+  pointer-events: none;
+}
+
+@keyframes badge-pop {
+  0%   { transform: scale(0); }
+  70%  { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}

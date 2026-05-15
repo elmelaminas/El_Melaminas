@@ -280,7 +280,11 @@ export default function Header({
   return (
     <header className="app-header">
       <div className="flex items-center gap-3 flex-1 min-w-0">
-        {/* Botón hamburger — solo en mobile/tablet. Abre el sidebar drawer. */}
+        {/* Botón hamburger — solo en mobile/tablet. Abre el sidebar drawer.
+            position: relative permite anclar el .notification-badge en
+            móvil cuando hay notifs sin leer (refuerzo visual: el usuario
+            ve el indicador aunque la campana esté escondida tras el
+            menú). */}
         {onMenuClick && (
           <button
             type="button"
@@ -294,10 +298,24 @@ export default function Header({
               background: 'transparent',
               cursor: 'pointer',
               flexShrink: 0,
+              position: 'relative',
             }}
-            aria-label="Abrir menú"
+            aria-label={
+              unread > 0
+                ? `Abrir menú (${unread} notificaciones sin leer)`
+                : 'Abrir menú'
+            }
           >
             <Menu size={22} />
+            {unread > 0 && (
+              <span
+                className="notification-badge"
+                key={`menu-${unread}`}
+                aria-hidden="true"
+              >
+                {unread >= 10 ? '9+' : unread}
+              </span>
+            )}
           </button>
         )}
 
@@ -388,23 +406,16 @@ export default function Header({
           >
             <Bell size={20} />
             {unread > 0 && (
+              // `key` cambia con el contador para re-disparar la
+              // animación CSS badge-pop cada vez que llega una nueva
+              // notificación. Sin key, React reutiliza el mismo nodo
+              // y la animación solo corre la primera vez.
               <span
-                className="absolute flex items-center justify-center"
-                style={{
-                  top: 6,
-                  right: 6,
-                  minWidth: 18,
-                  height: 18,
-                  padding: '0 5px',
-                  borderRadius: 9999,
-                  background: 'var(--danger)',
-                  color: '#fff',
-                  fontSize: '0.625rem',
-                  fontWeight: 700,
-                }}
+                key={`bell-${unread}`}
+                className="notification-badge"
                 aria-hidden="true"
               >
-                {unread > 99 ? '99+' : unread}
+                {unread >= 10 ? '9+' : unread}
               </span>
             )}
           </button>

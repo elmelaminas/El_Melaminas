@@ -379,7 +379,7 @@ export default async function DashboardPage({
             mismos `mes`/`anio` activos para que el drill-down respete el
             filtro del dashboard, EXCEPTO "Stock bajo" que va a /warehouse
             sin params (el stock es estado actual, no tiene rango de mes). */}
-        <div id="dashboard-metrics" className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+        <div id="dashboard-metrics" className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 sm:gap-4">
           <MetricCard
             icon={<ClipboardList size={20} />}
             iconBg="#DBEAFE"

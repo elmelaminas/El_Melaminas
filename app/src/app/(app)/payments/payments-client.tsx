@@ -322,7 +322,7 @@ export function PaymentsClient({
         }}
       >
         <div className="overflow-x-auto">
-          <table className="tbl">
+          <table className="tbl table-to-cards">
             <thead>
               <tr>
                 <th>Cliente</th>
@@ -353,7 +353,7 @@ export function PaymentsClient({
                   const ded = p.deductibles.reduce((a, d) => a + d.amount, 0);
                   return (
                     <tr key={p.id}>
-                      <td>
+                      <td data-label="Cliente">
                         <div className="font-medium">{p.client_name}</div>
                         <div
                           className="text-xs font-mono"
@@ -362,8 +362,10 @@ export function PaymentsClient({
                           #{p.id.slice(0, 8)}
                         </div>
                       </td>
-                      <td className="font-semibold">{formatMXN(p.amount)}</td>
-                      <td>
+                      <td data-label="Monto" className="font-semibold">
+                        {formatMXN(p.amount)}
+                      </td>
+                      <td data-label="Deducibles">
                         {ded === 0 ? (
                           <span
                             className="text-xs"
@@ -386,24 +388,26 @@ export function PaymentsClient({
                         )}
                       </td>
                       <td
+                        data-label="Neto"
                         className="font-semibold"
                         style={{ color: 'var(--success)' }}
                       >
                         {formatMXN(p.net_amount)}
                       </td>
-                      <td>
+                      <td data-label="Método">
                         <MethodBadge method={METHOD_TO_BADGE[p.method]} />
                       </td>
-                      <td>
+                      <td data-label="Tipo">
                         <TypeBadge type={TYPE_TO_BADGE[p.payment_type]} />
                       </td>
                       <td
+                        data-label="Fecha"
                         className="text-sm"
                         style={{ color: 'var(--text-secondary)' }}
                       >
                         {formatDate(p.paid_at)}
                       </td>
-                      <td className="text-center">
+                      <td data-label="Evidencia" className="text-center">
                         {p.evidence_photo_url ? (
                           <button
                             type="button"

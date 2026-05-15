@@ -361,7 +361,7 @@ export function EntregasClient({
         }}
       >
         <div className="overflow-x-auto">
-          <table className="tbl">
+          <table className="tbl table-to-cards">
             <thead>
               <tr>
                 <th>Cliente</th>
@@ -466,7 +466,7 @@ function Row({
 
   return (
     <tr style={rowStyle}>
-      <td>
+      <td data-label="Cliente">
         <div className="flex items-center gap-2 flex-wrap">
           <div className="font-medium">{r.client_name}</div>
           {issueCount > 0 && (
@@ -552,7 +552,7 @@ function Row({
           #{r.id.slice(0, 8)}
         </div>
       </td>
-      <td>
+      <td data-label="Chofer">
         {r.driver_name ? (
           <span className="text-sm" style={{ color: 'var(--text-primary)' }}>
             {r.driver_name}
@@ -572,12 +572,12 @@ function Row({
           </span>
         )}
       </td>
-      <td className="text-sm" style={{ color: 'var(--text-secondary)', maxWidth: 220 }}>
+      <td data-label="Materiales" className="text-sm" style={{ color: 'var(--text-secondary)', maxWidth: 220 }}>
         <div className="truncate" title={colorsLabel}>
           {colorsLabel}
         </div>
       </td>
-      <td className="text-sm" style={{ color: 'var(--text-secondary)', maxWidth: 240 }}>
+      <td data-label="Dirección" className="text-sm" style={{ color: 'var(--text-secondary)', maxWidth: 240 }}>
         <div className="truncate" title={r.address}>
           {r.address || '—'}
         </div>
@@ -593,8 +593,9 @@ function Row({
           </a>
         )}
       </td>
-      <td className="text-right font-semibold">{formatMXN(r.total_amount)}</td>
+      <td data-label="Total" className="text-right font-semibold">{formatMXN(r.total_amount)}</td>
       <td
+        data-label="Adeudo"
         className="text-right font-bold"
         style={{
           color: r.adeudo > 0 ? 'var(--danger)' : 'var(--success)',
@@ -602,16 +603,16 @@ function Row({
       >
         {formatMXN(r.adeudo)}
       </td>
-      <td>
+      <td data-label="Entrega">
         <DeliveryBadge status={r.delivery_status} />
       </td>
-      <td>
+      <td data-label="Pago">
         <PaymentBadge status={r.payment_status} />
       </td>
-      <td className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+      <td data-label="Fecha" className="text-sm" style={{ color: 'var(--text-secondary)' }}>
         {formatDate(r.sale_date)}
       </td>
-      <td className="text-center">
+      <td data-label="Evidencia" className="text-center">
         {evidence ? (
           <button
             type="button"
@@ -632,7 +633,7 @@ function Row({
           </span>
         )}
       </td>
-      <td>
+      <td data-label="Acciones">
         <div className="flex justify-end items-center gap-1 flex-wrap">
           {hasFailed && !r.stock_returned && (
             <ReturnStockButton

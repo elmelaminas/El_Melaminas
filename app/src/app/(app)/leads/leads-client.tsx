@@ -13,6 +13,9 @@ import {
   FileText,
   Image as ImageIcon,
   Paperclip,
+  SlidersHorizontal,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { isPdfUrl } from './new/schema';
 import {
@@ -198,6 +201,18 @@ export function LeadsClient({
   const [pending, startTransition] = useTransition();
 
   const [qInput, setQInput] = useState<string>(filters.q);
+  // `filtersOpen` controla la visibilidad de los selects en mobile.
+  // En desktop los selects siempre se muestran (CSS md:flex ignora
+  // este state). Auto-abierto si hay filtros activos para que el
+  // usuario vea lo que viene aplicado al cargar la página.
+  const [filtersOpen, setFiltersOpen] = useState<boolean>(
+    Boolean(
+      filters.channel ||
+        filters.delivery ||
+        filters.payment ||
+        (filters.mes > 0 && filters.anio > 0),
+    ),
+  );
 
   // Sync: si filters.q cambia desde fuera (back, link externo), refleja
   // en el input local. Importante hacerlo ANTES del effect de debounce
@@ -343,70 +358,97 @@ export function LeadsClient({
         </Link>
       </div>
 
-      {/* Filtros */}
+      {/* Filtros. Layout móvil: buscador siempre visible + botón
+          "Filtros" que despliega los 3 selects. Desktop (≥768px): los
+          selects siempre se muestran. */}
       <div className="card p-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-          <div className="lg:col-span-1 relative">
-            <Search
-              size={16}
-              className="absolute left-3 top-1/2 -translate-y-1/2"
-              style={{ color: 'var(--text-tertiary)' }}
-            />
-            <input
-              id="leads-search"
-              placeholder="Buscar por nombre o teléfono…"
-              className="input"
-              style={{ paddingLeft: 36 }}
-              value={qInput}
-              onChange={(e) => setQInput(e.target.value)}
-              aria-label="Buscar leads"
-            />
+        <div className="flex flex-col gap-3">
+          <div className="flex gap-2 items-stretch">
+            <div className="relative" style={{ flex: 1 }}>
+              <Search
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2"
+                style={{ color: 'var(--text-tertiary)' }}
+              />
+              <input
+                id="leads-search"
+                placeholder="Buscar por nombre o teléfono…"
+                className="input"
+                style={{ paddingLeft: 36 }}
+                value={qInput}
+                onChange={(e) => setQInput(e.target.value)}
+                aria-label="Buscar leads"
+              />
+            </div>
+            {/* Toggle solo visible en móvil. md:hidden lo oculta en
+                desktop donde los selects siempre se ven. */}
+            <button
+              type="button"
+              className="btn btn-outline md:hidden"
+              onClick={() => setFiltersOpen((v) => !v)}
+              aria-expanded={filtersOpen}
+              aria-controls="leads-filters-collapsible"
+              style={{ padding: '0 14px', gap: 6, flexShrink: 0 }}
+            >
+              <SlidersHorizontal size={16} />
+              <span>Filtros</span>
+              {filtersOpen ? (
+                <ChevronUp size={14} />
+              ) : (
+                <ChevronDown size={14} />
+              )}
+            </button>
           </div>
-          <select
-            id="leads-filter-channel"
-            className="select"
-            value={filters.channel}
-            onChange={(e) =>
-              pushFilters({ channel: e.target.value, page: 1 })
-            }
-            aria-label="Filtrar por canal"
+          <div
+            id="leads-filters-collapsible"
+            className={`${filtersOpen ? 'grid' : 'hidden'} md:grid grid-cols-1 md:grid-cols-3 gap-3`}
           >
-            {CHANNEL_OPTS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-          <select
-            id="leads-filter-delivery"
-            className="select"
-            value={filters.delivery}
-            onChange={(e) =>
-              pushFilters({ delivery: e.target.value, page: 1 })
-            }
-            aria-label="Filtrar por estado de entrega"
-          >
-            {DELIVERY_OPTS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-          <select
-            id="leads-filter-payment"
-            className="select"
-            value={filters.payment}
-            onChange={(e) =>
-              pushFilters({ payment: e.target.value, page: 1 })
-            }
-            aria-label="Filtrar por estado de pago"
-          >
-            {PAYMENT_OPTS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+            <select
+              id="leads-filter-channel"
+              className="select"
+              value={filters.channel}
+              onChange={(e) =>
+                pushFilters({ channel: e.target.value, page: 1 })
+              }
+              aria-label="Filtrar por canal"
+            >
+              {CHANNEL_OPTS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <select
+              id="leads-filter-delivery"
+              className="select"
+              value={filters.delivery}
+              onChange={(e) =>
+                pushFilters({ delivery: e.target.value, page: 1 })
+              }
+              aria-label="Filtrar por estado de entrega"
+            >
+              {DELIVERY_OPTS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <select
+              id="leads-filter-payment"
+              className="select"
+              value={filters.payment}
+              onChange={(e) =>
+                pushFilters({ payment: e.target.value, page: 1 })
+              }
+              aria-label="Filtrar por estado de pago"
+            >
+              {PAYMENT_OPTS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {hasFilters && (
@@ -504,14 +546,16 @@ export function LeadsClient({
         })}
       </div>
 
-      {/* Tabla */}
+      {/* Tabla — en móvil se transforma en cards via .table-to-cards
+          (ver globals.css). Cada <td> declara data-label con el nombre
+          de su columna para que se vea como pares "Label: valor". */}
       <div
         id="leads-table"
         className="tbl-wrap"
         style={{ opacity: pending ? 0.6 : 1, transition: 'opacity 150ms ease' }}
       >
         <div className="overflow-x-auto">
-          <table className="tbl">
+          <table className="tbl table-to-cards">
             <thead>
               <tr>
                 <th>Cliente</th>
@@ -547,7 +591,7 @@ export function LeadsClient({
                     // aplica → React deja el <tr> con estilo neutro.
                     style={getLeadRowStyle(l, contraEntregaSet)}
                   >
-                    <td>
+                    <td data-label="Cliente">
                       <div className="flex items-center gap-2 flex-wrap">
                         <div className="font-medium">{l.client_name}</div>
                         {l.document_urls.length > 0 && (
@@ -564,32 +608,36 @@ export function LeadsClient({
                         {l.phone || '—'}
                       </div>
                     </td>
-                    <td>
+                    <td data-label="Canal">
                       <ChannelBadge channel={l.channel} />
                     </td>
                     <td
+                      data-label="Vendedor"
                       className="text-sm"
                       style={{ color: 'var(--text-secondary)' }}
                     >
                       {l.seller_name ?? '—'}
                     </td>
-                    <td className="text-center">{l.sheets_count}</td>
-                    <td className="font-semibold">
+                    <td data-label="Hojas" className="text-center">
+                      {l.sheets_count}
+                    </td>
+                    <td data-label="Total" className="font-semibold">
                       {formatMXN(l.total_amount)}
                     </td>
                     <td
+                      data-label="Fecha"
                       className="text-sm"
                       style={{ color: 'var(--text-secondary)' }}
                     >
                       {formatDate(l.sale_date)}
                     </td>
-                    <td>
+                    <td data-label="Entrega">
                       <DeliveryBadge status={l.delivery_status} />
                     </td>
-                    <td>
+                    <td data-label="Pago">
                       <PaymentBadge status={l.payment_status} />
                     </td>
-                    <td>
+                    <td data-label="Acciones">
                       <div className="flex justify-end items-center gap-1">
                         <RowColorPickerCell
                           leadId={l.id}
