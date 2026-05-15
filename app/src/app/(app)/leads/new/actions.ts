@@ -386,10 +386,14 @@ export async function saveLeadAction(
       .from('leads')
       .insert({
         client_name: data.client_name,
-        phone: data.phone,
-        // address es opcional cuando purchase_type='fabrica'; convertimos
-        // '' a null para que la columna no quede con string vacío.
-        address: emptyToNull(data.address),
+        // `phone` y `address` pueden ser null en DB (constraint NOT
+        // NULL eliminada). Pero algunos consumidores antiguos del
+        // schema asumen string — por seguridad enviamos '' cuando
+        // están vacíos, no null. El schema Zod ya garantiza que
+        // ambos vengan presentes (aunque sea vacíos) en pedidos
+        // distintos a domicilio+hojas.
+        phone: data.phone ?? '',
+        address: data.address ?? '',
         maps_url: emptyToNull(data.maps_url),
         channel: data.channel,
         seller_id: emptyToNull(data.seller_id),

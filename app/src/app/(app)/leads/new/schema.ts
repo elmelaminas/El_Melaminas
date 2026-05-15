@@ -214,15 +214,19 @@ export const LeadCreateSchema = z.object({
     .trim()
     .min(2, 'Nombre del cliente requerido')
     .max(120, 'Nombre demasiado largo'),
+  // `phone` y `address` son OPCIONALES a nivel de tipo. La
+  // obligatoriedad real depende de `purchase_type` + `has_hojas`:
+  //   - domicilio + has_hojas → phone (10 dígitos) + address (≥5
+  //     chars) requeridos
+  //   - cualquier otro caso (fábrica, o pedido solo de catálogo /
+  //     cubrecanto sin entrega física a domicilio) → ambos opcionales
+  // El refine cross-field abajo aplica esa lógica condicional.
   phone: z
     .string()
     .trim()
-    .min(7, 'Teléfono debe tener al menos 7 dígitos')
-    .max(20, 'Teléfono demasiado largo'),
-  // Dirección OPCIONAL a nivel de tipo. La obligatoriedad real se
-  // valida con un superRefine abajo en función de `purchase_type`:
-  //   purchase_type='domicilio' → dirección requerida (min 3 chars).
-  //   purchase_type='fabrica'    → opcional (cliente recoge en taller).
+    .max(20, 'Teléfono demasiado largo')
+    .optional()
+    .or(z.literal('')),
   address: z
     .string()
     .trim()
@@ -416,17 +420,38 @@ export const LeadCreateSchema = z.object({
   },
 )
 .refine(
-  // Si la compra es A DOMICILIO la dirección es obligatoria. Si es
-  // EN FÁBRICA el cliente recoge en el taller — no se requiere.
+  // address es requerida SOLO cuando la entrega es a domicilio Y el
+  // pedido incluye hojas. Pedidos solo de cubrecanto o catálogo
+  // (incluso a domicilio) suelen ir sin entrega física típica
+  // — preferimos no obligar y dejar que el operador decida.
   (d) => {
-    if (d.purchase_type === 'domicilio') {
-      return typeof d.address === 'string' && d.address.trim().length >= 3;
+    if (d.purchase_type === 'domicilio' && d.has_hojas) {
+      return typeof d.address === 'string' && d.address.trim().length >= 5;
     }
     return true;
   },
   {
-    message: 'Dirección requerida cuando la compra es a domicilio',
+    message:
+      'Dirección requerida (mínimo 5 caracteres) cuando la compra es a domicilio y el pedido incluye hojas',
     path: ['address'],
+  },
+)
+.refine(
+  // phone es requerido (mín. 10 dígitos numéricos) bajo el mismo
+  // criterio que address: solo cuando hay que entregar a domicilio
+  // hojas. Para catálogo/cubrecanto suelto no se exige.
+  (d) => {
+    if (d.purchase_type === 'domicilio' && d.has_hojas) {
+      if (typeof d.phone !== 'string') return false;
+      const digits = d.phone.replace(/\D/g, '');
+      return digits.length >= 10;
+    }
+    return true;
+  },
+  {
+    message:
+      'Teléfono requerido (10 dígitos) cuando la compra es a domicilio y el pedido incluye hojas',
+    path: ['phone'],
   },
 );
 

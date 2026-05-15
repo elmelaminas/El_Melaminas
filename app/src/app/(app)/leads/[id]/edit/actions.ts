@@ -633,9 +633,10 @@ export async function updateLeadFullAction(
       .from('leads')
       .update({
         client_name: data.client_name,
-        phone: data.phone,
-        // address es opcional cuando purchase_type='fabrica' (vacío → null).
-        address: emptyToNull(data.address),
+        // `phone` y `address` se persisten como '' cuando vienen
+        // vacíos (post-fix NOT NULL). Coherente con saveLeadAction.
+        phone: data.phone ?? '',
+        address: data.address ?? '',
         maps_url: emptyToNull(data.maps_url),
         channel: data.channel,
         seller_id: emptyToNull(data.seller_id),
