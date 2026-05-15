@@ -18,6 +18,10 @@ const LiquidateLeadSchema = z.object({
   }),
 });
 
+const EVIDENCE_BUCKET = 'payments-evidence';
+const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024; // 5 MB — mismo límite que savePaymentAction
+const ALLOWED_EVIDENCE_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'heic'] as const;
+
 export type LiquidateLeadState =
   | { status: 'idle' }
   | { status: 'success'; amount: number }
@@ -140,6 +144,59 @@ export async function liquidateLeadAction(
       };
     }
 
+    // Paso 3.5: Evidencia (opcional para efectivo, requerida para
+    // transferencia y clip). El archivo viene como `evidence` en el
+    // FormData. Validamos tamaño + extensión y subimos al bucket
+    // `payments-evidence`. Si la subida falla y la evidencia es
+    // requerida, abortamos antes de tocar `payments`. Si es
+    // opcional y falla, abortamos también — la action es atómica.
+    let evidenceUrl: string | null = null;
+    const evidence = formData.get('evidence');
+    const hasFile = evidence instanceof File && evidence.size > 0;
+    const evidenceRequired =
+      payment_method === 'transferencia' || payment_method === 'clip';
+    if (evidenceRequired && !hasFile) {
+      return {
+        status: 'error',
+        message:
+          'Foto del comprobante requerida para transferencias y Clip.',
+      };
+    }
+    if (hasFile) {
+      const file = evidence as File;
+      if (file.size > MAX_EVIDENCE_BYTES) {
+        return {
+          status: 'error',
+          message: 'La foto excede 5 MB. Comprime o reduce la imagen.',
+        };
+      }
+      const ext = (file.name.split('.').pop() ?? '').toLowerCase();
+      if (!(ALLOWED_EVIDENCE_EXTS as readonly string[]).includes(ext)) {
+        return {
+          status: 'error',
+          message:
+            'Formato no soportado. Usa PNG, JPG, WEBP o HEIC.',
+        };
+      }
+      const path = `${lead_id}/liquidacion_${Date.now()}.${ext}`;
+      const { error: upErr } = await admin.storage
+        .from(EVIDENCE_BUCKET)
+        .upload(path, file, {
+          contentType: file.type || `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+          upsert: false,
+        });
+      if (upErr) {
+        return {
+          status: 'error',
+          message: `No se pudo subir la foto: ${upErr.message}`,
+        };
+      }
+      const { data: pub } = admin.storage
+        .from(EVIDENCE_BUCKET)
+        .getPublicUrl(path);
+      evidenceUrl = pub.publicUrl;
+    }
+
     // Paso 4: INSERT payment.
     const { data: payRow, error: payErr } = await admin
       .from('payments')
@@ -153,11 +210,31 @@ export async function liquidateLeadAction(
         paid_at: new Date().toISOString(),
         registered_by: userId,
         driver_id: null,
-        evidence_photo_url: null,
+        evidence_photo_url: evidenceUrl,
       })
       .select('id')
       .single();
     if (payErr || !payRow) {
+      // Cleanup de la evidencia recién subida — si el INSERT falla
+      // no queremos blobs huérfanos en storage.
+      if (evidenceUrl) {
+        const marker = `/public/${EVIDENCE_BUCKET}/`;
+        const idx = evidenceUrl.indexOf(marker);
+        if (idx >= 0) {
+          const path = decodeURIComponent(
+            evidenceUrl.slice(idx + marker.length),
+          );
+          await admin.storage
+            .from(EVIDENCE_BUCKET)
+            .remove([path])
+            .catch((e) =>
+              console.error(
+                '[liquidateLeadAction] cleanup evidencia falló (no fatal):',
+                e,
+              ),
+            );
+        }
+      }
       return {
         status: 'error',
         message: `No se pudo registrar la liquidación: ${

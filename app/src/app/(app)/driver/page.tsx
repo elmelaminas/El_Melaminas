@@ -72,7 +72,7 @@ export default async function DriverPage() {
         .from('leads')
         .select(
           `id, client_name, address, maps_url, total_amount, payment_status, delivery_status,
-           delivery_date, delivery_order,
+           delivery_date, delivery_order, delivery_cost, purchase_type,
            failed_delivery_reason, failed_delivery_photo_url,
            lead_colors (
              quantity,
@@ -188,6 +188,8 @@ export default async function DriverPage() {
       delivery_status: string | null;
       delivery_date: string | null;
       delivery_order: number | null;
+      delivery_cost: number | string | null;
+      purchase_type: string | null;
       failed_delivery_reason: string | null;
       failed_delivery_photo_url: string | null;
       lead_colors: RawLeadColor[] | null;
@@ -207,6 +209,14 @@ export default async function DriverPage() {
             };
           })
           .filter((c) => c.quantity > 0);
+        // Costo de envío: solo aplica cuando el lead es A DOMICILIO.
+        // Para 'fabrica' lo forzamos a 0 aunque el campo traiga valor
+        // stale, así la card no muestra "Costo de envío" en pedidos
+        // que el cliente recoge en el taller.
+        const deliveryCost =
+          l.purchase_type === 'domicilio'
+            ? Math.max(0, Number(l.delivery_cost ?? 0))
+            : 0;
         return {
           id: l.id,
           client_name: l.client_name,
@@ -214,6 +224,7 @@ export default async function DriverPage() {
           maps_url: l.maps_url ?? '',
           total_amount: total,
           adeudo,
+          delivery_cost: deliveryCost,
           delivery_status: (l.delivery_status as 'pendiente' | 'en_transito') ?? 'pendiente',
           delivery_date: l.delivery_date,
           delivery_order: l.delivery_order,

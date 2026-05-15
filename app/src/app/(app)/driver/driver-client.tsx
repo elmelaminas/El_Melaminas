@@ -30,6 +30,12 @@ export type DeliveryCardData = {
   maps_url: string;
   total_amount: number;
   adeudo: number;
+  /** Costo del envío a domicilio. >0 solo cuando
+   *  purchase_type='domicilio' y el admin ingresó un valor. Ya está
+   *  incluido en `total_amount` (y por lo tanto en `adeudo`); se
+   *  expone aquí solo para que el chofer vea cuánto cobrar por el
+   *  flete específicamente. */
+  delivery_cost: number;
   delivery_status: 'pendiente' | 'en_transito';
   /** YYYY-MM-DD; null si el lead aún no tiene fecha de entrega
    *  asignada por admin. Usado para el modo secuencial — solo se
@@ -516,6 +522,44 @@ function DeliveryCard({
         )}
       </div>
 
+      {/* Costo del envío — visible solo cuando hay flete a domicilio.
+          Ya está incluido en `adeudo`/`total_amount`; lo desglosamos
+          aquí para que el chofer sepa cuánto cobrar específicamente
+          por el viaje (vs por el material). */}
+      {delivery.delivery_cost > 0 && (
+        <div
+          className="flex items-center gap-2 p-3 rounded-lg mb-4"
+          style={{
+            background: '#DBEAFE',
+            border: '1px solid rgba(30,64,175,0.25)',
+          }}
+        >
+          <span aria-hidden="true" style={{ fontSize: '1.125rem' }}>
+            🚗
+          </span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              className="text-xs uppercase tracking-wide"
+              style={{ color: '#1E40AF', fontWeight: 600 }}
+            >
+              Costo de envío
+            </div>
+            <div
+              className="text-base font-bold"
+              style={{ color: '#1E3A8A' }}
+            >
+              {formatMXN(delivery.delivery_cost)}
+            </div>
+            <div
+              className="text-[11px] mt-0.5"
+              style={{ color: '#1E3A8A' }}
+            >
+              Ya incluido en el adeudo total.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Total + adeudo */}
       <div className="flex items-center justify-between mb-4">
         <div>
@@ -625,6 +669,24 @@ function DeliveryCard({
 
       <div className="mt-4">
         <div className="font-semibold mb-3">Confirmar entrega</div>
+
+        {/* Aviso de flete — solo cuando hay costo de envío. El chofer
+            sabe que parte del adeudo es por el viaje específicamente. */}
+        {delivery.delivery_cost > 0 && (
+          <div
+            className="text-xs mb-3 p-2 rounded"
+            style={{
+              background: '#DBEAFE',
+              color: '#1E3A8A',
+              border: '1px solid rgba(30,64,175,0.20)',
+            }}
+            role="note"
+          >
+            🚗 Este pedido incluye{' '}
+            <strong>{formatMXN(delivery.delivery_cost)}</strong> de costo
+            de envío.
+          </div>
+        )}
 
         {owes && (
           <>

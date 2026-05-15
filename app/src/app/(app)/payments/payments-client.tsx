@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
-import { useEffect, useMemo, useState, useTransition } from 'react';
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import {
   Plus,
   ChevronLeft,
@@ -475,12 +475,18 @@ function PaymentRowItem({
 }) {
   const router = useRouter();
   const [liqPending, startLiqTransition] = useTransition();
+  const liqFileRef = useRef<HTMLInputElement>(null);
   // null = ningún prompt visible; un valor = método seleccionado en
   // el prompt inline antes de confirmar.
   const [showLiqPrompt, setShowLiqPrompt] = useState(false);
   const [liqMethod, setLiqMethod] = useState<PaymentRow['method']>('efectivo');
   const [liqError, setLiqError] = useState<string | null>(null);
   const [liqDone, setLiqDone] = useState(false);
+  // Evidencia: archivo seleccionado + URL de preview (object URL).
+  const [liqFile, setLiqFile] = useState<File | null>(null);
+  const [liqPreview, setLiqPreview] = useState<string | null>(null);
+  const liqEvidenceRequired =
+    liqMethod === 'transferencia' || liqMethod === 'clip';
 
   const ded = p.deductibles.reduce((a, d) => a + d.amount, 0);
 
@@ -503,17 +509,59 @@ function PaymentRowItem({
   const isLiquidated =
     liqDone || p.adeudo <= 0 || p.lead_payment_status === 'pagado';
 
+  const handleLiqFileChange = (file: File | null) => {
+    // Limpia preview anterior (libera el object URL).
+    if (liqPreview) {
+      URL.revokeObjectURL(liqPreview);
+      setLiqPreview(null);
+    }
+    if (!file) {
+      setLiqFile(null);
+      return;
+    }
+    setLiqError(null);
+    if (file.size > 5 * 1024 * 1024) {
+      setLiqError('La foto excede 5 MB.');
+      setLiqFile(null);
+      if (liqFileRef.current) liqFileRef.current.value = '';
+      return;
+    }
+    if (!file.type.toLowerCase().startsWith('image/')) {
+      setLiqError('Solo se aceptan imágenes (JPG, PNG, HEIC, etc.).');
+      setLiqFile(null);
+      if (liqFileRef.current) liqFileRef.current.value = '';
+      return;
+    }
+    setLiqFile(file);
+    setLiqPreview(URL.createObjectURL(file));
+  };
+
   const handleConfirmLiquidate = () => {
     setLiqError(null);
+    // Validación cliente — el server también la enforces.
+    if (liqEvidenceRequired && !liqFile) {
+      setLiqError(
+        'Foto del comprobante requerida para transferencias y Clip.',
+      );
+      return;
+    }
     const fd = new FormData();
     fd.set('lead_id', p.lead_id);
     fd.set('payment_method', liqMethod);
+    if (liqFile) fd.set('evidence', liqFile);
     startLiqTransition(async () => {
       try {
         const result = await liquidateLeadAction({ status: 'idle' }, fd);
         if (result.status === 'success') {
           setLiqDone(true);
           setShowLiqPrompt(false);
+          // Liberar preview tras submit exitoso — el lead ya está
+          // liquidado, el state se va a desmontar pronto.
+          if (liqPreview) {
+            URL.revokeObjectURL(liqPreview);
+            setLiqPreview(null);
+          }
+          setLiqFile(null);
           router.refresh();
         } else if (result.status === 'error') {
           setLiqError(result.message);
@@ -584,9 +632,10 @@ function PaymentRowItem({
             </div>
             <select
               value={liqMethod}
-              onChange={(e) =>
-                setLiqMethod(e.target.value as PaymentRow['method'])
-              }
+              onChange={(e) => {
+                setLiqMethod(e.target.value as PaymentRow['method']);
+                setLiqError(null);
+              }}
               disabled={liqPending}
               className="select"
               style={{ padding: '4px 8px', fontSize: '0.75rem' }}
@@ -596,6 +645,68 @@ function PaymentRowItem({
               <option value="transferencia">Transferencia</option>
               <option value="clip">Clip</option>
             </select>
+
+            {/* Evidencia fotográfica del comprobante. Requerida cuando
+                método es transferencia o Clip (sin evidencia visual
+                no podemos auditar). Para efectivo es opcional. */}
+            <div
+              className="flex flex-col items-end gap-1"
+              style={{ width: '100%' }}
+            >
+              <label
+                className="text-xs"
+                style={{
+                  color: 'var(--text-secondary)',
+                  fontWeight: 500,
+                }}
+              >
+                Foto del comprobante
+                {liqEvidenceRequired ? (
+                  <span style={{ color: '#DC2626' }}> *</span>
+                ) : (
+                  <span style={{ color: 'var(--text-tertiary)' }}> (opcional)</span>
+                )}
+              </label>
+              <input
+                ref={liqFileRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={(e) =>
+                  handleLiqFileChange(e.target.files?.[0] ?? null)
+                }
+                disabled={liqPending}
+                className="text-xs"
+                style={{ fontSize: '0.75rem', maxWidth: '100%' }}
+              />
+              {liqPreview && (
+                <div className="flex items-center gap-2 mt-1">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={liqPreview}
+                    alt="Previsualización del comprobante"
+                    style={{
+                      width: 64,
+                      height: 64,
+                      objectFit: 'cover',
+                      borderRadius: 6,
+                      border: '1px solid var(--border)',
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleLiqFileChange(null)}
+                    disabled={liqPending}
+                    className="btn btn-ghost"
+                    style={{ padding: '4px 6px', fontSize: '0.6875rem' }}
+                    aria-label="Quitar foto"
+                  >
+                    <X size={12} /> Quitar
+                  </button>
+                </div>
+              )}
+            </div>
+
             {liqError && (
               <span
                 role="alert"
