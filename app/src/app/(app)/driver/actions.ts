@@ -249,20 +249,22 @@ export async function confirmDeliveryAction(
             ctErr,
           );
         } else {
-          // Notif a contadores activos.
-          const { data: contadores } = await admin
+          // Refactor 2026-05: el admin (no el contador) ahora recibe
+          // efectivo del chofer. Notificamos a admins + admin2 para
+          // que cualquiera pueda procesar el efectivo.
+          const { data: admins } = await admin
             .from('profiles')
             .select('id')
-            .eq('role', 'contador')
+            .in('role', ['admin', 'admin2'])
             .eq('is_active', true);
-          if (contadores && contadores.length > 0) {
+          if (admins && admins.length > 0) {
             const amountFmt = new Intl.NumberFormat('es-MX', {
               style: 'currency',
               currency: 'MXN',
               minimumFractionDigits: 0,
             }).format(data.amount_collected);
             const message = `El chofer ${driverName} trae ${amountFmt} en efectivo para entregar`;
-            const notifInserts = contadores.map((c) => ({
+            const notifInserts = admins.map((c) => ({
               recipient_id: c.id,
               type: 'efectivo_pendiente',
               message,

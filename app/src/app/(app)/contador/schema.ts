@@ -1,37 +1,19 @@
 /**
- * Schema y tipos para /contador (recepción de efectivo).
+ * Schema y tipos para /contador.
  *
- * Vive separado de actions.ts ('use server'). Mismo patrón que el resto.
+ * Refactor (2026-05): el contador ya NO recibe efectivo de choferes
+ * (ahora lo hace el admin). El contador solo valida la caja del admin
+ * registrando un egreso en `admin_cash_register`.
  *
- * Validamos solo `driver_id`. El monto que se transfiere se calcula
- * server-side con un SELECT de los `cash_transfers` pendientes del
- * chofer en el momento del action — el cliente NO manda el amount,
- * para evitar que un click en el botón "Recibí efectivo" tras un cobro
- * concurrente del chofer produzca un mismatch.
+ * Validamos solo `admin_id`. El monto que se transfiere se calcula
+ * server-side con un SELECT de los movimientos del admin (suma de
+ * ingresos − egresos) — el cliente NO manda el amount, para evitar
+ * race conditions con ingresos concurrentes (el chofer entregando
+ * más efectivo al admin mientras el contador presiona el botón).
  */
 
 import { z } from 'zod';
 
-export const ReceiveCashSchema = z.object({
-  driver_id: z.string().uuid('Selecciona un chofer'),
-});
-
-export type ReceiveCashInput = z.infer<typeof ReceiveCashSchema>;
-
-export type ReceiveCashState =
-  | { status: 'idle' }
-  | { status: 'success'; message: string; received: number }
-  | { status: 'error'; message: string; fieldErrors?: Record<string, string[]> };
-
-export const initialReceiveCashState: ReceiveCashState = { status: 'idle' };
-
-/**
- * Schema para `receiveAdminCashAction`. El contador recibe el efectivo
- * que un admin acumuló por cobros en efectivo directo (ver
- * `admin_cash_register`). NO confiamos en el monto del cliente — el
- * servidor lo recalcula desde el saldo actual del admin para evitar
- * race conditions con cobros concurrentes.
- */
 export const ReceiveAdminCashSchema = z.object({
   admin_id: z.string().uuid('admin_id inválido'),
 });

@@ -4,181 +4,40 @@ import { revalidatePath } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import {
-  ReceiveCashSchema,
   ReceiveAdminCashSchema,
-  type ReceiveCashState,
   type ReceiveAdminCashState,
 } from './schema';
 
-// NB: 'use server' file — solo async functions. Schemas/types en ./schema.
+// NB: 'use server' file — solo async functions.
 
 /**
- * `recibirEfectivoAction` — el contador presiona "Recibí efectivo de
- * {chofer}". Marca todos los cash_transfers pendientes del chofer como
- * 'recibido' atribuyéndolos a este contador.
+ * `receiveAdminCashAction` — el contador valida (recibe) el efectivo
+ * acumulado en la caja personal de un admin.
  *
- * Diseño contra race condition:
- *   No hacemos un UPDATE bulk con WHERE driver_id=X AND status='pendiente'
- *   porque entre el click del contador y el UPDATE, el chofer puede
- *   confirmar otra entrega y agregar un cash_transfer nuevo. Si ese nuevo
- *   transfer queda dentro del WHERE, lo marcaríamos como recibido aunque
- *   el contador no lo haya cobrado físicamente.
+ * Refactor (2026-05): este es el único punto de cobro del contador
+ * en el nuevo flujo. Antes existía también `recibirEfectivoAction`
+ * para recibir del chofer; ese rol pasó al admin
+ * (`adminReceivesDriverCashAction` en /admin/caja).
  *
- *   Solución: SELECT IDs primero (snapshot) → UPDATE WHERE id IN (...).
- *   Cualquier transfer nuevo que entre después queda intacto en
- *   'pendiente' y aparecerá en la próxima ronda.
- *
- * Notif `efectivo_recibido` a admins es non-fatal — si el INSERT a
- * `notifications` falla, el cash_transfer ya se actualizó y eso es lo
- * que importa para el flujo financiero.
- */
-export async function recibirEfectivoAction(
-  _prev: ReceiveCashState,
-  formData: FormData,
-): Promise<ReceiveCashState> {
-  try {
-    const parsed = ReceiveCashSchema.safeParse({
-      driver_id: formData.get('driver_id'),
-    });
-    if (!parsed.success) {
-      return {
-        status: 'error',
-        message: 'Datos inválidos',
-        fieldErrors: parsed.error.flatten().fieldErrors as Record<string, string[]>,
-      };
-    }
-    const { driver_id } = parsed.data;
-
-    // Auth — el contador autenticado.
-    const userClient = await supabaseServer();
-    const {
-      data: { user },
-      error: authErr,
-    } = await userClient.auth.getUser();
-    if (authErr || !user) {
-      return {
-        status: 'error',
-        message: 'Sesión no válida. Vuelve a iniciar sesión.',
-      };
-    }
-    const contadorId = user.id;
-
-    const admin = supabaseAdmin();
-
-    // Snapshot de los pendientes en el momento del click.
-    const { data: pending, error: pendErr } = await admin
-      .from('cash_transfers')
-      .select('id, amount')
-      .eq('driver_id', driver_id)
-      .eq('status', 'pendiente');
-    if (pendErr) {
-      console.error('[recibirEfectivoAction] select pending falló:', pendErr);
-      return {
-        status: 'error',
-        message: `No se pudo leer el efectivo pendiente: ${pendErr.message}`,
-      };
-    }
-    if (!pending || pending.length === 0) {
-      return {
-        status: 'error',
-        message: 'Ese chofer no tiene efectivo pendiente.',
-      };
-    }
-
-    const ids = pending.map((p) => p.id);
-    const total = pending.reduce((s, p) => s + Number(p.amount ?? 0), 0);
-
-    const { error: updErr } = await admin
-      .from('cash_transfers')
-      .update({ status: 'recibido', contador_id: contadorId })
-      .in('id', ids);
-    if (updErr) {
-      console.error('[recibirEfectivoAction] update falló:', updErr);
-      return {
-        status: 'error',
-        message: `No se pudo registrar la recepción: ${updErr.message}`,
-      };
-    }
-
-    // ── Notif a admins (non-fatal).
-    try {
-      const [{ data: contadorProfile }, { data: driverProfile }, { data: admins }] =
-        await Promise.all([
-          admin.from('profiles').select('full_name').eq('id', contadorId).maybeSingle(),
-          admin.from('profiles').select('full_name').eq('id', driver_id).maybeSingle(),
-          // La validación de caja la hace exclusivamente el rol admin2
-          // (separación de responsabilidades). Notificamos solo a ese rol
-          // — el admin regular ya no opera caja.
-          admin
-            .from('profiles')
-            .select('id')
-            .eq('role', 'admin2')
-            .eq('is_active', true),
-        ]);
-      const contadorName = contadorProfile?.full_name ?? 'Contador';
-      const driverName = driverProfile?.full_name ?? 'Chofer';
-      if (admins && admins.length > 0) {
-        const amountFmt = new Intl.NumberFormat('es-MX', {
-          style: 'currency',
-          currency: 'MXN',
-          minimumFractionDigits: 0,
-        }).format(total);
-        const message = `El contador ${contadorName} recibió ${amountFmt} en efectivo del chofer ${driverName}`;
-        const notifs = admins.map((a) => ({
-          recipient_id: a.id,
-          type: 'efectivo_recibido',
-          message,
-        }));
-        const { error: notifErr } = await admin.from('notifications').insert(notifs);
-        if (notifErr) {
-          console.error(
-            '[recibirEfectivoAction] notif insert falló (no fatal):',
-            notifErr,
-          );
-        }
-      }
-    } catch (e) {
-      console.error(
-        '[recibirEfectivoAction] notif lookup/insert excepción (no fatal):',
-        e,
-      );
-    }
-
-    revalidatePath('/contador');
-    revalidatePath('/admin/caja');
-    revalidatePath('/driver'); // banner del chofer baja a 0
-    return {
-      status: 'success',
-      message: 'Efectivo registrado.',
-      received: total,
-    };
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : 'Error desconocido al recibir efectivo';
-    console.error('[recibirEfectivoAction] excepción no controlada:', err);
-    return { status: 'error', message };
-  }
-}
-
-/**
- * `receiveAdminCashAction` — el contador recibe el efectivo que un
- * admin acumuló por cobros directos en efectivo.
- *
- * Diseño contra race conditions (igual al flujo del chofer): no
- * confiamos en el monto del cliente. Calculamos el saldo del admin
- * FRESCO en el servidor (sum ingresos - sum egresos) y registramos
- * UN egreso por exactamente ese saldo. Si entre el SELECT y el
- * INSERT el admin recibe otro pago en efectivo, ese ingreso queda
- * para la siguiente recepción — no se "cuela" en este registro.
+ * Diseño contra race conditions: NO confiamos en el monto del cliente.
+ * Calculamos el saldo del admin FRESCO en el servidor (sum ingresos −
+ * sum egresos) y registramos UN egreso por exactamente ese saldo. Si
+ * entre el SELECT y el INSERT el chofer entrega más efectivo al admin,
+ * ese ingreso queda para la siguiente recepción.
  *
  * INSERT en `admin_cash_register`:
+ *   admin_id:       el admin del que se recibe
+ *   amount:         saldo recalculado server-side
  *   operation_type: 'egreso'
  *   source:         'validado_contador'
- *   admin_id:       el admin del que se recibe
  *   registered_by:  el contador (auth.uid())
  *
- * Tras el insert, notif al admin (`type='efectivo_recibido_contador'`)
- * para que sepa que su caja bajó a 0. Errores de notif son non-fatal.
+ * Notif al admin (`type='efectivo_validado_contador'`) tras el insert.
+ * Errores de notif son non-fatal.
+ *
+ * Acceso: solo rol contador (o admin2 que mantiene acceso a /contador
+ * como herramienta secundaria). El middleware ya filtra la ruta; este
+ * check es defensa en profundidad.
  */
 export async function receiveAdminCashAction(
   _prev: ReceiveAdminCashState,
@@ -208,8 +67,7 @@ export async function receiveAdminCashAction(
 
     const admin = supabaseAdmin();
 
-    // Defense-in-depth: solo el rol contador (o admin2 que también
-    // tiene acceso a /contador) puede ejecutar esta operación.
+    // Defense-in-depth: solo contador o admin2 puede validar.
     const { data: callerProfile, error: callerErr } = await admin
       .from('profiles')
       .select('role')
@@ -227,13 +85,11 @@ export async function receiveAdminCashAction(
     ) {
       return {
         status: 'error',
-        message: 'Solo el contador (o admin2) puede recibir efectivo del admin.',
+        message: 'Solo el contador (o admin2) puede validar caja del admin.',
       };
     }
 
-    // Saldo fresco del admin: sum(ingresos) - sum(egresos+validacion)
-    // sobre TODA la historia (no filtramos por mes; el saldo es
-    // acumulativo desde el último corte).
+    // Saldo fresco: sum(ingresos) − sum(egresos) sobre TODA la historia.
     const { data: balanceRows, error: balErr } = await admin
       .from('admin_cash_register')
       .select('amount, operation_type')
@@ -280,13 +136,11 @@ export async function receiveAdminCashAction(
         currency: 'MXN',
         minimumFractionDigits: 0,
       }).format(balance);
-      const { error: notifErr } = await admin
-        .from('notifications')
-        .insert({
-          recipient_id: targetAdminId,
-          type: 'efectivo_recibido_contador',
-          message: `El contador recibió ${amountFmt} de tu caja`,
-        });
+      const { error: notifErr } = await admin.from('notifications').insert({
+        recipient_id: targetAdminId,
+        type: 'efectivo_validado_contador',
+        message: `El contador validó ${amountFmt} de tu caja de efectivo`,
+      });
       if (notifErr) {
         console.error(
           '[receiveAdminCashAction] notif falló (no fatal):',

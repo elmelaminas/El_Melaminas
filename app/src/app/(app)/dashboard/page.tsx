@@ -35,7 +35,8 @@ import { MES_LABEL } from './constants';
  * Métricas que respetan el rango de mes seleccionado:
  *   - Leads del mes              (`leads.sale_date` ∈ [start, nextStart))
  *   - Cobrado en el mes          (`payments.paid_at` ∈ [start, nextStart))
- *   - Efectivo validado del mes  (`cash_transfers.admin_validated_at`)
+ *   - Efectivo validado del mes  (`admin_cash_register` egresos
+ *     con source='validado_contador', `created_at` ∈ [start, nextStart))
  *
  * Métricas que NO respetan el rango (siempre estado actual):
  *   - Entregas pendientes (operativo: lo que hay AHORA por entregar)
@@ -173,13 +174,17 @@ export default async function DashboardPage({
       admin
         .from('inventory')
         .select('stock_total, stock_committed, stock_minimum'),
-      // 5. Efectivo validado del mes (cash_transfers.admin_validated_at ∈ rango)
+      // 5. Efectivo validado del mes — refactor 2026-05: la
+      //    validación ahora vive en `admin_cash_register` con
+      //    source='validado_contador' (el contador valida la caja
+      //    del admin). Sumamos los egresos del mes.
       admin
-        .from('cash_transfers')
+        .from('admin_cash_register')
         .select('amount')
-        .eq('status', 'validado')
-        .gte('admin_validated_at', startOfMonthIso)
-        .lt('admin_validated_at', startOfNextMonthIso),
+        .eq('operation_type', 'egreso')
+        .eq('source', 'validado_contador')
+        .gte('created_at', startOfMonthIso)
+        .lt('created_at', startOfNextMonthIso),
       // 6. Gasto en materiales del mes — suma de
       //    inventory_movements WHERE movement_type='entrada' AND
       //    unit_cost IS NOT NULL AND created_at ∈ rango.

@@ -63,14 +63,19 @@ const HOME_BY_ROLE: Record<Role, string> = {
  * El orden de los `if` importa: `/leads/new` se chequea ANTES de `/leads`
  * porque ambos prefijos chocan y la regla de `/leads/new` es más estricta.
  *
- * admin2 es un rol "validador de caja": tiene acceso a casi todo lo que
- * tiene admin operativo MÁS acceso exclusivo a /admin/caja (donde admin
- * regular NO entra) y acceso a /contador (que admin tampoco tiene).
+ * Refactor flujo de efectivo (2026-05): el admin (cualquiera) recibe
+ * efectivo del chofer y el contador valida la caja del admin. Por eso:
+ *   - /admin/caja ahora es accesible para admin + admin2 + contador.
+ *     El contador necesita ver la caja del admin para validarla.
+ *   - /contador sigue restringido al rol contador (admin2 conserva acceso
+ *     como herramienta secundaria).
  */
 function rolesAllowed(pathname: string): readonly Role[] | null {
-  // /admin/caja → SOLO admin2 (el admin regular ya no valida caja).
+  // /admin/caja → admin + admin2 + contador. El contador entra para
+  // ver/validar la caja de admin; los admins para recibir del chofer.
   // Hay que chequearlo ANTES de /admin/* para que no caiga al match general.
-  if (pathname === '/admin/caja' || pathname.startsWith('/admin/caja/')) return ['admin2'];
+  if (pathname === '/admin/caja' || pathname.startsWith('/admin/caja/'))
+    return ['admin', 'admin2', 'contador'];
   // /admin/* (resto) → admin Y admin2.
   if (pathname.startsWith('/admin')) return ['admin', 'admin2'];
   if (pathname === '/leads/new' || pathname.startsWith('/leads/new/')) return ['admin', 'admin2', 'seller'];
