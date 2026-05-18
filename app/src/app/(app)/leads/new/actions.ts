@@ -400,6 +400,10 @@ export async function saveLeadAction(
       catalogPrice +
       (deliveryCost ?? 0);
 
+    // En fábrica el cliente recoge — la entrega se marca como hecha al
+    // crear el lead, no compromete stock, no necesita chofer ni ruta.
+    const isFabrica = data.purchase_type === 'fabrica';
+
     const { data: leadRow, error: leadErr } = await admin
       .from('leads')
       .insert({
@@ -447,9 +451,13 @@ export async function saveLeadAction(
         // driver_id se asigna aquí (antes vivía en /payments/new). Si el
         // usuario no eligió uno se queda null y el chofer puede asignarse
         // después editando el lead. /driver filtra por driver_id = uid().
-        driver_id: emptyToNull(data.driver_id),
+        // En fábrica forzamos null: el cliente recoge, no aplica chofer.
+        driver_id: isFabrica ? null : emptyToNull(data.driver_id),
         created_by: userId,
-        // delivery_status, payment_status: defaults 'pendiente'
+        // delivery_status: 'entregado' cuando el cliente recoge en
+        // fábrica (no hay reparto pendiente); default 'pendiente' si
+        // es a domicilio.
+        delivery_status: isFabrica ? 'entregado' : 'pendiente',
         // stock_committed: false → lo flippeamos a true tras paso 7 si todo OK
       })
       .select('id')
@@ -498,6 +506,12 @@ export async function saveLeadAction(
 
     // ── 7. Por cada color: UPDATE inventory += qty + INSERT movement
     //    Cada paso registra su propio undo (-= qty / DELETE movement).
+    //    Compras en fábrica: el cliente recoge en el acto, no hay
+    //    reserva pendiente — NO comprometemos stock ni registramos
+    //    movement de 'compromiso'. La salida del material se reflejará
+    //    cuando el chofer/admin marque la entrega como hecha por el
+    //    flujo normal (o ya lo está aquí, vía delivery_status).
+    if (!isFabrica) {
     for (const c of resolvedColors) {
       // Leemos el row actual para sumar atómicamente. Sin RPC esto tiene
       // riesgo de race condition con commits concurrentes — aceptamos por
@@ -573,13 +587,14 @@ export async function saveLeadAction(
     // ── 8. Marcar el lead como comprometido en stock. Si esto falla, no
     //    hacemos rollback — el daño es cosmético: las filas existen, los
     //    movements están, sólo el flag queda desactualizado.
-    const { error: flagErr } = await admin
-      .from('leads')
-      .update({ stock_committed: true })
-      .eq('id', leadId);
-    if (flagErr) {
-      console.error('[saveLeadAction] flip stock_committed falló (no fatal):', flagErr);
-    }
+      const { error: flagErr } = await admin
+        .from('leads')
+        .update({ stock_committed: true })
+        .eq('id', leadId);
+      if (flagErr) {
+        console.error('[saveLeadAction] flip stock_committed falló (no fatal):', flagErr);
+      }
+    } // ← fin del bloque if (!isFabrica)
     } // ← fin del bloque if (hasHojas)
 
     // ── 8b. Colores del cubrecanto (informativo, sin compromiso de

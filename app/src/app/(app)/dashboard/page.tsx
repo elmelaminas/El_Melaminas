@@ -8,6 +8,8 @@ import {
   Wallet,
   PackagePlus,
   Banknote,
+  Layers,
+  Ruler,
 } from 'lucide-react';
 import {
   ChannelBadge,
@@ -149,6 +151,9 @@ export default async function DashboardPage({
       recentLeadsResult,
       profileResult,
       adminCashResult,
+      hojasSoldResult,
+      cubrecantoLeadsResult,
+      cubrecantoMetersResult,
     ] = await Promise.all([
       // 1. Leads del mes (sale_date ∈ [start, nextStart))
       admin
@@ -236,6 +241,39 @@ export default async function DashboardPage({
             .gte('created_at', startOfMonthIso)
             .lt('created_at', startOfNextMonthIso)
         : Promise.resolve({ data: [], error: null }),
+      // 11. Hojas vendidas del mes — Σ lead_colors.quantity unida con
+      //     leads del mes con has_hojas=true. PostgREST no soporta SUM
+      //     en queries con join filtradas (necesitaríamos una vista),
+      //     así que traemos las filas y sumamos en memoria. Cota: 1
+      //     fila por color por lead — varios cientos al mes en el
+      //     peor caso. Aceptable.
+      admin
+        .from('lead_colors')
+        .select('quantity, leads!inner(sale_date, deleted_at, has_hojas)')
+        .eq('leads.has_hojas', true)
+        .is('leads.deleted_at', null)
+        .gte('leads.sale_date', startOfMonthDate)
+        .lt('leads.sale_date', startOfNextMonthDate),
+      // 12. Cubrecantos del mes — conteo de leads con has_cubrecanto=true
+      //     y suma de edgebanding_manual_cost para la métrica "monto
+      //     facturado". Una sola query: count exact + select de los
+      //     montos para sumar JS-side.
+      admin
+        .from('leads')
+        .select('edgebanding_manual_cost', { count: 'exact' })
+        .eq('has_cubrecanto', true)
+        .is('deleted_at', null)
+        .gte('sale_date', startOfMonthDate)
+        .lt('sale_date', startOfNextMonthDate),
+      // 13. Metros de cubrecanto vendidos — Σ lead_edgebanding_colors.quantity
+      //     unidos con leads del mes. Si la tabla no existe todavía
+      //     (migración pendiente para algunos entornos) trata como 0.
+      admin
+        .from('lead_edgebanding_colors')
+        .select('quantity, leads!inner(sale_date, deleted_at)')
+        .is('leads.deleted_at', null)
+        .gte('leads.sale_date', startOfMonthDate)
+        .lt('leads.sale_date', startOfNextMonthDate),
     ]);
 
     if (leadsMonthResult.error) {
@@ -293,6 +331,44 @@ export default async function DashboardPage({
     // defensa.
     const materialsSpendMonth = (materialsSpendResult.data ?? []).reduce(
       (s, m) => s + Number(m.quantity ?? 0) * Number(m.unit_cost ?? 0),
+      0,
+    );
+
+    // Hojas vendidas (Σ quantity de lead_colors del mes con has_hojas).
+    // Si la query falla, mostramos 0 (no fatal — métrica informativa).
+    if (hojasSoldResult.error) {
+      console.error(
+        '[DashboardPage] hojas sold select falló (no fatal):',
+        hojasSoldResult.error,
+      );
+    }
+    const totalHojas = (hojasSoldResult.data ?? []).reduce(
+      (s, r) => s + Number(r.quantity ?? 0),
+      0,
+    );
+
+    // Cubrecantos del mes: cuántos leads + monto facturado.
+    if (cubrecantoLeadsResult.error) {
+      console.error(
+        '[DashboardPage] cubrecanto leads select falló (no fatal):',
+        cubrecantoLeadsResult.error,
+      );
+    }
+    const totalCubrecantoLeads = cubrecantoLeadsResult.count ?? 0;
+    const totalCubrecantoMonto = (cubrecantoLeadsResult.data ?? []).reduce(
+      (s, r) => s + Number(r.edgebanding_manual_cost ?? 0),
+      0,
+    );
+
+    // Metros vendidos de cubrecanto (más preciso: usa lead_edgebanding_colors).
+    if (cubrecantoMetersResult.error) {
+      console.error(
+        '[DashboardPage] cubrecanto meters select falló (no fatal):',
+        cubrecantoMetersResult.error,
+      );
+    }
+    const totalMetrosCubrecanto = (cubrecantoMetersResult.data ?? []).reduce(
+      (s, r) => s + Number(r.quantity ?? 0),
       0,
     );
 
@@ -380,11 +456,11 @@ export default async function DashboardPage({
           </div>
         </div>
 
-        {/* Metric cards (6) — todas clickeables. Cada href incluye los
+        {/* Metric cards — todas clickeables. Cada href incluye los
             mismos `mes`/`anio` activos para que el drill-down respete el
             filtro del dashboard, EXCEPTO "Stock bajo" que va a /warehouse
             sin params (el stock es estado actual, no tiene rango de mes). */}
-        <div id="dashboard-metrics" className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 sm:gap-4">
+        <div id="dashboard-metrics" className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
           <MetricCard
             icon={<ClipboardList size={20} />}
             iconBg="#DBEAFE"
@@ -446,6 +522,28 @@ export default async function DashboardPage({
             label="Mi efectivo (mes)"
             value={formatMXN(adminCashMonth)}
             unit="cobrado en efectivo directo"
+          />
+          <MetricCard
+            icon={<Layers size={20} />}
+            iconBg="#DBEAFE"
+            iconColor="#1D4ED8"
+            label="Hojas vendidas"
+            value={totalHojas.toString()}
+            unit="hojas en pedidos del mes"
+            href={`/leads?mes=${mes}&anio=${anio}&color_filter=azul`}
+          />
+          <MetricCard
+            icon={<Ruler size={20} />}
+            iconBg="#CCFBF1"
+            iconColor="#0F766E"
+            label="Cubrecantos"
+            value={totalCubrecantoLeads.toString()}
+            unit={
+              totalMetrosCubrecanto > 0
+                ? `${totalMetrosCubrecanto.toLocaleString('es-MX')} m · ${formatMXN(totalCubrecantoMonto)}`
+                : 'pedidos con cubrecanto del mes'
+            }
+            href={`/leads?mes=${mes}&anio=${anio}`}
           />
         </div>
 

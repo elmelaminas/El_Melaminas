@@ -146,7 +146,7 @@ export default async function LeadsPage({
       .select(
         `id, client_name, phone, channel, sheets_count, total_amount,
          sale_date, created_at, delivery_status, payment_status,
-         sale_type, product_type, document_url, document_urls, row_color,
+         sale_type, product_type, purchase_type, document_url, document_urls, row_color,
          has_hojas, has_cubrecanto, has_catalogo,
          sellers ( name )`,
         { count: 'exact' },
@@ -254,6 +254,7 @@ export default async function LeadsPage({
       payment_status: string | null;
       sale_type: string | null;
       product_type: string | null;
+      purchase_type: string | null;
       document_url: string | null;
       document_urls: string[] | null;
       row_color: string | null;
@@ -295,6 +296,7 @@ export default async function LeadsPage({
         payment_status: (r.payment_status as PaymentStatus) ?? 'pendiente',
         sale_type: r.sale_type,
         product_type: r.product_type,
+        purchase_type: r.purchase_type,
         document_url: r.document_url,
         document_urls: merged,
         row_color: r.row_color,

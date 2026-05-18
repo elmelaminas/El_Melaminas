@@ -55,6 +55,10 @@ export type LeadRow = {
   sale_type: string | null;
   /** Tipo de producto del enum DB. `'con_corte'` → fila azul. */
   product_type: string | null;
+  /** 'domicilio' | 'fabrica'. Cuando es 'fabrica' la fila muestra un
+   *  badge "🏭 En fábrica" junto al nombre y la entrega ya viene como
+   *  `entregado` desde el INSERT (el cliente recoge en el acto). */
+  purchase_type: string | null;
   /** Override manual de color de fila (admin lo asigna desde el
    *  selector inline). Valor del CHECK constraint en DB: 'rosa',
    *  'naranja', 'amarillo', 'azul', 'verde', 'morado', 'sin_color'.
@@ -602,6 +606,19 @@ export function LeadsClient({
                     <td data-label="Cliente">
                       <div className="flex items-center gap-2 flex-wrap">
                         <div className="font-medium">{l.client_name}</div>
+                        {l.purchase_type === 'fabrica' && (
+                          <span
+                            className="badge"
+                            style={{
+                              fontSize: '0.6875rem',
+                              background: '#FFEDD5',
+                              color: '#7C2D12',
+                            }}
+                            title="Compra en fábrica — el cliente recoge"
+                          >
+                            🏭 En fábrica
+                          </span>
+                        )}
                         {l.document_urls.length > 0 && (
                           <AttachmentsBadge
                             urls={l.document_urls}

@@ -122,7 +122,7 @@ export default async function EntregasPage({
       .select(
         `id, client_name, address, maps_url, total_amount,
          delivery_status, payment_status, sale_date, created_at,
-         driver_id, sale_type, product_type, row_color,
+         driver_id, sale_type, product_type, purchase_type, row_color,
          failed_delivery_reason, failed_delivery_photo_url, stock_returned,
          cost_per_sheet,
          lead_colors ( quantity, cost_per_sheet, colors ( name ) ),
@@ -209,6 +209,7 @@ export default async function EntregasPage({
       driver_id: string | null;
       sale_type: string | null;
       product_type: string | null;
+      purchase_type: string | null;
       row_color: string | null;
       failed_delivery_reason: string | null;
       failed_delivery_photo_url: string | null;
@@ -281,6 +282,7 @@ export default async function EntregasPage({
           : null,
         sale_type: l.sale_type,
         product_type: l.product_type,
+        purchase_type: l.purchase_type,
         row_color: l.row_color,
         failed_delivery_reason: l.failed_delivery_reason,
         failed_delivery_photo_url: l.failed_delivery_photo_url,
@@ -474,6 +476,10 @@ export default async function EntregasPage({
            lead_colors ( quantity, cost_per_sheet, colors ( name ) )`,
         )
         .in('delivery_status', ['pendiente', 'en_transito'])
+        // La ruta del día sólo aplica a entregas a domicilio. Las
+        // compras en fábrica las recoge el cliente, así que NO viajan
+        // con un chofer y no deben aparecer entre los candidatos.
+        .eq('purchase_type', 'domicilio')
         .is('deleted_at', null)
         .or(`delivery_date.eq.${routeDate},delivery_date.is.null`)
         .order('delivery_order', {

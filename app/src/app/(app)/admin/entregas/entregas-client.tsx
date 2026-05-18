@@ -77,6 +77,10 @@ export type EntregaRow = {
   sale_type: string | null;
   /** Tipo de producto — feed para regla de color ('con_corte' → azul). */
   product_type: string | null;
+  /** 'domicilio' | 'fabrica'. Cuando es 'fabrica' la columna de chofer
+   *  muestra "Recoge en fábrica" en lugar de "Sin asignar", y la fila
+   *  no aparece en la sección "Ruta del día" (el cliente recoge). */
+  purchase_type: string | null;
   /** Override manual de color de fila (admin lo asigna desde el
    *  selector inline en la columna Acciones). null o 'sin_color'
    *  significan "sin override" → cae a reglas automáticas. */
@@ -557,7 +561,21 @@ function Row({
         </div>
       </td>
       <td data-label="Chofer">
-        {r.driver_name ? (
+        {r.purchase_type === 'fabrica' ? (
+          <span
+            className="text-sm"
+            style={{
+              color: '#7C2D12',
+              background: '#FFEDD5',
+              padding: '2px 8px',
+              borderRadius: 4,
+              fontWeight: 500,
+            }}
+            title="Compra en fábrica — el cliente recoge"
+          >
+            🏭 Recoge en fábrica
+          </span>
+        ) : r.driver_name ? (
           <span className="text-sm" style={{ color: 'var(--text-primary)' }}>
             {r.driver_name}
           </span>
@@ -1252,6 +1270,12 @@ function RouteSection({
             >
               Asigna el orden de las entregas para una fecha. Los
               choferes verán la secuencia en su vista.
+            </p>
+            <p
+              className="text-[11px] mt-1"
+              style={{ color: 'var(--text-tertiary)', fontStyle: 'italic' }}
+            >
+              Solo se muestran entregas a domicilio.
             </p>
           </div>
         </div>
