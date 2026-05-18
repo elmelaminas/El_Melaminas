@@ -255,7 +255,11 @@ export function NewLeadForm({
     : 0;
   const edgeColorsTotalQty = watchedHasCubrecanto
     ? (watchedEdgeColors ?? []).reduce((s, c) => {
-        const qty = Number.isFinite(c?.quantity) ? Number(c.quantity) : 0;
+        // Defensive parse: RHF puede devolver el value como string
+        // antes de que `valueAsNumber` flushe, y `Number.isFinite('5')`
+        // es false (no coerce). `Number(x) || 0` cubre números,
+        // strings numéricas, NaN y undefined uniformemente.
+        const qty = Number(c?.quantity) || 0;
         return s + qty;
       }, 0)
     : 0;
@@ -266,10 +270,16 @@ export function NewLeadForm({
         ? manualCubrecantoUnitCost * edgeColorsTotalQty
         : manualCubrecantoUnitCost; // sin colores: precio = total bruto
 
+  // Cuenta total de hojas: SUMA de las cantidades de TODAS las filas.
+  // `Number(x) || 0` parsea uniformemente números, strings numéricas
+  // ("5" → 5), undefined/NaN (→ 0). Antes usábamos
+  // `Number.isFinite(x)` que rechaza strings y dejaba en 0 filas que
+  // RHF aún reportaba como string — un bug que mostraba totalSheets=2
+  // cuando había 1+5 con valueAsNumber en flush.
   const totalSheets = useMemo(
     () =>
       (watchedColors ?? []).reduce(
-        (s, c) => s + (Number.isFinite(c?.quantity) ? Number(c.quantity) : 0),
+        (s, c) => s + (Number(c?.quantity) || 0),
         0,
       ),
     [watchedColors],
@@ -277,15 +287,13 @@ export function NewLeadForm({
 
   // Subtotal de hojas: SUM(quantity * cost_per_sheet) por cada fila.
   // El costo por hoja vive POR FILA (cada color puede tener tarifa
-  // distinta). Si una fila no tiene costo todavía (ej. RHF en flush),
-  // contribuye 0 — el form Zod lo rechazará al submit.
+  // distinta). Mismo parse defensivo `Number(x) || 0` que totalSheets:
+  // una fila con qty=string contribuye correctamente.
   const sheetsSubtotal = useMemo(
     () =>
       (watchedColors ?? []).reduce((s, c) => {
-        const qty = Number.isFinite(c?.quantity) ? Number(c.quantity) : 0;
-        const cost = Number.isFinite(c?.cost_per_sheet)
-          ? Number(c.cost_per_sheet)
-          : 0;
+        const qty = Number(c?.quantity) || 0;
+        const cost = Number(c?.cost_per_sheet) || 0;
         return s + qty * cost;
       }, 0),
     [watchedColors],
@@ -297,10 +305,8 @@ export function NewLeadForm({
   const colorBreakdown = useMemo(() => {
     const items = (watchedColors ?? [])
       .map((c) => {
-        const qty = Number.isFinite(c?.quantity) ? Number(c.quantity) : 0;
-        const cost = Number.isFinite(c?.cost_per_sheet)
-          ? Number(c.cost_per_sheet)
-          : 0;
+        const qty = Number(c?.quantity) || 0;
+        const cost = Number(c?.cost_per_sheet) || 0;
         // Resolver nombre: si es NEW_COLOR_SENTINEL, usar new_name;
         // si no, buscar en el catálogo `colors` por id.
         let name: string;
@@ -318,15 +324,14 @@ export function NewLeadForm({
   }, [watchedColors, colors]);
 
   // Cálculos auxiliares para mostrar en pantalla (el server recalcula).
+  // Mismo parse defensivo: `Number(x) || 0` cubre número o string.
   const cutsTotal =
-    watchedProductType === 'con_corte' &&
-    typeof watchedCutsCount === 'number' &&
-    watchedCutsCount > 0
-      ? watchedCutsCount * CUT_RATE
+    watchedProductType === 'con_corte'
+      ? Math.max(0, Number(watchedCutsCount) || 0) * CUT_RATE
       : 0;
   const edgeTotal =
     watchedEdgeType === '19mm' || watchedEdgeType === '3.5mm'
-      ? (typeof watchedEdgeMeters === 'number' ? watchedEdgeMeters : 0) *
+      ? Math.max(0, Number(watchedEdgeMeters) || 0) *
         EDGE_BANDING_RATE[watchedEdgeType]
       : 0;
 
