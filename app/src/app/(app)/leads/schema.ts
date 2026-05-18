@@ -33,3 +33,25 @@ export type UpdateLeadColorState =
 export const initialUpdateLeadColorState: UpdateLeadColorState = {
   status: 'idle',
 };
+
+/**
+ * Estado del action `markFabricaDeliveredAction`. Mismo shape simple
+ * que el resto de actions del listado: idle al cargar la página,
+ * success al confirmar y error con mensaje legible si falla.
+ */
+export type MarkFabricaDeliveredState =
+  | { status: 'idle' }
+  | { status: 'success' }
+  | { status: 'error'; message: string };
+
+export const initialMarkFabricaDeliveredState: MarkFabricaDeliveredState = {
+  status: 'idle',
+};
+
+export const MarkFabricaDeliveredSchema = z.object({
+  lead_id: z.string().uuid('lead_id inválido'),
+});
+
+export type MarkFabricaDeliveredInput = z.infer<
+  typeof MarkFabricaDeliveredSchema
+>;

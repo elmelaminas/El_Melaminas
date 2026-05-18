@@ -16,6 +16,7 @@ import {
   SlidersHorizontal,
   ChevronDown,
   ChevronUp,
+  Factory,
 } from 'lucide-react';
 import { isPdfUrl } from './new/schema';
 import {
@@ -36,7 +37,10 @@ import {
   LEAD_ROW_COLORS,
   LEAD_ROW_BORDERS,
 } from '@/components/ui/lead-row-color';
-import { updateLeadColorAction } from './actions';
+import {
+  updateLeadColorAction,
+  markFabricaDeliveredAction,
+} from './actions';
 
 export type LeadRow = {
   id: string;
@@ -706,7 +710,15 @@ export function LeadsClient({
                       <PaymentBadge status={l.payment_status} />
                     </td>
                     <td data-label="Acciones">
-                      <div className="flex justify-end items-center gap-1">
+                      <div className="flex justify-end items-center gap-1 flex-wrap">
+                        {l.purchase_type === 'fabrica' &&
+                          l.delivery_status !== 'entregado' &&
+                          l.delivery_status !== 'cancelado' && (
+                            <FabricaDeliverButton
+                              leadId={l.id}
+                              clientName={l.client_name}
+                            />
+                          )}
                         <RowColorPickerCell
                           leadId={l.id}
                           value={l.row_color}
@@ -913,6 +925,141 @@ function AttachmentsBadge({
             })}
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Botón "🏭 Entregar" + confirmación inline para marcar una compra
+ * en fábrica como entregada sin pasar por la vista del chofer.
+ *
+ * Estados:
+ *  - default: botón verde compacto con ícono.
+ *  - confirmando: dos botones "Sí" / "No" inline.
+ *  - pending: spinner mientras corre la action.
+ *  - error: texto rojo pequeño abajo del botón (truncado a 40 chars).
+ *
+ * Tras success llamamos `router.refresh()` — el server re-renderiza
+ * la página con `delivery_status='entregado'`, el predicado del
+ * parent oculta este botón naturalmente.
+ */
+function FabricaDeliverButton({
+  leadId,
+  clientName,
+}: {
+  leadId: string;
+  clientName: string;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function handleConfirm() {
+    setError(null);
+    startTransition(async () => {
+      try {
+        const fd = new FormData();
+        fd.set('lead_id', leadId);
+        const r = await markFabricaDeliveredAction({ status: 'idle' }, fd);
+        if (r.status === 'error') {
+          setError(r.message);
+          setConfirming(false);
+        } else if (r.status === 'success') {
+          router.refresh();
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de red';
+        setError(message);
+        setConfirming(false);
+      }
+    });
+  }
+
+  if (confirming) {
+    return (
+      <div
+        role="dialog"
+        aria-label={`Confirmar entrega en fábrica de ${clientName}`}
+        className="flex items-center gap-1"
+        style={{
+          background: '#ECFDF5',
+          border: '1px solid #6EE7B7',
+          padding: '2px 6px',
+          borderRadius: 6,
+        }}
+      >
+        <span
+          className="text-[11px]"
+          style={{ color: '#065F46', fontWeight: 500 }}
+        >
+          ¿Marcar como entregado en fábrica?
+        </span>
+        <button
+          type="button"
+          onClick={handleConfirm}
+          disabled={pending}
+          aria-busy={pending}
+          className="btn"
+          style={{
+            padding: '2px 8px',
+            fontSize: '0.6875rem',
+            fontWeight: 600,
+            background: '#16A34A',
+            color: '#fff',
+          }}
+        >
+          {pending ? (
+            <Loader size={11} className="animate-spin" />
+          ) : (
+            'Sí'
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          disabled={pending}
+          className="btn btn-ghost"
+          style={{ padding: '2px 8px', fontSize: '0.6875rem' }}
+        >
+          No
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        disabled={pending}
+        className="btn"
+        style={{
+          padding: '4px 10px',
+          fontSize: '0.75rem',
+          fontWeight: 600,
+          background: '#16A34A',
+          color: '#fff',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+        }}
+        aria-label={`Marcar entregado en fábrica para ${clientName}`}
+        title="Marcar como entregado en fábrica"
+      >
+        <Factory size={12} /> Entregar
+      </button>
+      {error && (
+        <div
+          role="alert"
+          className="text-[10px]"
+          style={{ color: 'var(--danger, #dc2626)', maxWidth: 180 }}
+          title={error}
+        >
+          {error.length > 40 ? `${error.slice(0, 40)}…` : error}
+        </div>
       )}
     </div>
   );
