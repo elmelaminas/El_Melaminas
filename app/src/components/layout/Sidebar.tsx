@@ -20,6 +20,7 @@ import {
   BookOpen,
   ChartBarBig,
   DollarSign,
+  Banknote,
   History,
   LogOut,
   Layers,
@@ -66,6 +67,10 @@ const NAV: NavItem[] = [
   // Validación de caja: exclusivo de admin2. El admin regular ya no
   // valida — separación de responsabilidades.
   { id: 'nav-caja',             href: '/admin/caja',      label: 'Validar Caja',      icon: <DollarSign size={18} />,      roles: ['admin2'] },
+  // Mi efectivo — resumen personal del admin: cobros directos +
+  // recibido de choferes − entregado al contador. Solo admin (el
+  // admin2 ya tiene su vista en /contador para validar a otros).
+  { id: 'nav-mi-caja',          href: '/admin/mi-caja',   label: 'Mi Efectivo',       icon: <Banknote size={18} />,        roles: ['admin'] },
   {                             href: '/dashboard',       label: 'Reportes',          icon: <ChartBarBig size={18} />,       roles: ['supervisor'] },
 ];
 
