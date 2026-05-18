@@ -57,19 +57,20 @@ export const PRODUCT_TYPE_OPTIONS: { value: (typeof PRODUCT_TYPE_VALUES)[number]
   { value: 'sin_corte', label: 'Sin corte' },
 ];
 
-// Costo por hoja: tres tarifas vigentes. La DB tiene un CHECK constraint
-// sobre `leads.cost_per_sheet IN (350, 600, 2200)` (ver migración en
-// Supabase). Al editar esta lista, recordar:
-//   1) actualizar el CHECK constraint con un ALTER TABLE manual,
+// Costo por hoja: cuatro tarifas vigentes. La DB tiene un CHECK
+// constraint sobre `leads.cost_per_sheet IN (350, 450, 600, 2200)`
+// (requiere migración manual al modificar esta lista). Recordatorios:
+//   1) actualizar el CHECK constraint con ALTER TABLE manual,
 //   2) los leads viejos con valores fuera (ej. 750/650/600 históricos)
 //      siguen siendo válidos en la DB pero NO se pueden re-guardar con
 //      ese valor desde este formulario.
-export const COST_PER_SHEET_VALUES = [350, 600, 2200] as const;
+export const COST_PER_SHEET_VALUES = [350, 450, 600, 2200] as const;
 export const COST_PER_SHEET_OPTIONS: {
   value: (typeof COST_PER_SHEET_VALUES)[number];
   label: string;
 }[] = [
   { value: 350, label: '$350' },
+  { value: 450, label: '$450' },
   { value: 600, label: '$600' },
   { value: 2200, label: '$2,200' },
 ];

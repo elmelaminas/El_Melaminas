@@ -226,13 +226,13 @@ export default async function EditLeadPage({
     // `cost_per_sheet`: para leads antiguos creados antes de la
     // migración, `lead_colors.cost_per_sheet` es null. En ese caso
     // caemos al `leads.cost_per_sheet` legacy. Si ese tampoco es un
-    // valor válido del catálogo (350/600/2200), default a 350.
-    const ALLOWED_COSTS = [350, 600, 2200] as const;
+    // valor válido del catálogo (350/450/600/2200), default a 350.
+    const ALLOWED_COSTS = [350, 450, 600, 2200] as const;
     const legacyLeadCost = Number(leadResult.data.cost_per_sheet ?? 350);
-    const fallbackCost: 350 | 600 | 2200 = (
+    const fallbackCost: 350 | 450 | 600 | 2200 = (
       ALLOWED_COSTS as readonly number[]
     ).includes(legacyLeadCost)
-      ? (legacyLeadCost as 350 | 600 | 2200)
+      ? (legacyLeadCost as 350 | 450 | 600 | 2200)
       : 350;
     type RawLc = {
       color_id: string;
@@ -256,7 +256,7 @@ export default async function EditLeadPage({
               ? fallbackCost
               : Number(r.cost_per_sheet);
         const cost = (ALLOWED_COSTS as readonly number[]).includes(rawCost)
-          ? (rawCost as 350 | 600 | 2200)
+          ? (rawCost as 350 | 450 | 600 | 2200)
           : fallbackCost;
         return {
           color_id: r.color_id,

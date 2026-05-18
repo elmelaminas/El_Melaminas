@@ -121,7 +121,12 @@ export function NewLeadForm({
     LEAD_DOCUMENT_MAX_FILES - totalAttachments,
   );
 
-  const today = new Date().toISOString().slice(0, 10);
+  // Fecha de hoy en zona LOCAL (no UTC). Usar `toISOString().slice(0, 10)`
+  // da el día UTC: en México (UTC-6) a las 19:00 hora local, UTC ya es
+  // del día siguiente y el form prellenaba la fecha equivocada.
+  // `getFullYear/getMonth/getDate` leen la fecha de la zona local del
+  // browser, que es lo que el usuario espera al cargar el formulario.
+  const today = getTodayLocal();
 
   const {
     register,
@@ -1978,4 +1983,24 @@ function fileLabelFromUrl(url: string, index: number): string {
     return `Archivo ${index}.${ext}`;
   }
   return last || `Archivo ${index}`;
+}
+
+/**
+ * Devuelve la fecha de HOY en zona horaria local del browser, en
+ * formato YYYY-MM-DD compatible con `<input type="date">` y con la
+ * columna `leads.sale_date` (DATE en Postgres).
+ *
+ * Razón de no usar `new Date().toISOString().slice(0, 10)`:
+ * `toISOString` siempre devuelve UTC. En México (UTC-6), a las 19:00
+ * hora local UTC ya está en el día siguiente — el form prellenaba
+ * sale_date con el día equivocado para cualquier captura nocturna.
+ * Esta función usa los getters locales (`getFullYear/getMonth/
+ * getDate`) que sí respetan la TZ del browser.
+ */
+function getTodayLocal(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
