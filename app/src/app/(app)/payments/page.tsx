@@ -25,6 +25,7 @@ const PAGE_SIZE = 20;
 
 const METHOD_VALUES = ['efectivo', 'transferencia', 'clip'] as const;
 const TYPE_VALUES = ['anticipo', 'liquidacion', 'contra_entrega'] as const;
+const ADEUDO_VALUES = ['pendiente', 'liquidado'] as const;
 
 type RawSearchParams = {
   q?: string | string[];
@@ -35,6 +36,12 @@ type RawSearchParams = {
   /** Año 4-dígitos — pareja inseparable con `mes`. */
   anio?: string | string[];
   page?: string | string[];
+  /** Filtro por estado de adeudo del LEAD asociado al pago.
+   *  - 'pendiente' → solo pagos cuyo lead tiene payment_status ≠ 'pagado'
+   *  - 'liquidado' → solo pagos cuyo lead tiene payment_status = 'pagado'
+   *  - vacío/desconocido → sin filtro
+   */
+  adeudo?: string | string[];
 };
 
 function pickStr(v: string | string[] | undefined): string {
@@ -64,6 +71,7 @@ export default async function PaymentsPage({
     const qInput = sanitizeQuery(pickStr(raw.q));
     const method = whitelist(pickStr(raw.method), METHOD_VALUES);
     const paymentType = whitelist(pickStr(raw.type), TYPE_VALUES);
+    const adeudoFilter = whitelist(pickStr(raw.adeudo), ADEUDO_VALUES);
     const pageNumber = Math.max(1, Number(pickStr(raw.page)) || 1);
 
     // Filtro mes/anio (ambos opcionales pero deben venir JUNTOS).
@@ -109,6 +117,20 @@ export default async function PaymentsPage({
       query = query
         .gte('paid_at', startOfMonthIso)
         .lt('paid_at', startOfNextMonthIso);
+    }
+
+    // Filtro por adeudo. Apoyamos en `leads.payment_status` (que
+    // savePaymentAction + liquidateLeadAction mantienen actualizado)
+    // en lugar de recalcular sum(payments) por cada lead — más rápido
+    // y preserva el `count: 'exact'` correcto para paginación.
+    //   'liquidado' → leads.payment_status = 'pagado'
+    //   'pendiente' → leads.payment_status ≠ 'pagado'
+    // Misma sintaxis de filter sobre relación embebida que el ilike
+    // de client_name de abajo.
+    if (adeudoFilter === 'liquidado') {
+      query = query.eq('leads.payment_status', 'pagado');
+    } else if (adeudoFilter === 'pendiente') {
+      query = query.neq('leads.payment_status', 'pagado');
     }
 
     // Búsqueda por nombre del cliente — la sintaxis `leads.client_name.ilike`
@@ -297,6 +319,24 @@ export default async function PaymentsPage({
       0,
     );
 
+    // Conteo de leads con adeudo pendiente. Para el badge del select
+    // de filtro: "Con adeudo (N)". Usamos `payment_status ≠ 'pagado'`
+    // sobre `leads` activos (no eliminados/cancelados).
+    //
+    // Non-fatal: si el COUNT falla, dejamos en 0 y el select no muestra
+    // contador — preferible a abortar la página entera.
+    const { count: pendingLeadCount, error: pendingErr } = await admin
+      .from('leads')
+      .select('id', { count: 'exact', head: true })
+      .in('payment_status', ['pendiente', 'parcial'])
+      .is('deleted_at', null);
+    if (pendingErr) {
+      console.error(
+        '[PaymentsPage] pending leads count falló (no fatal):',
+        pendingErr,
+      );
+    }
+
     return (
       <PaymentsClient
         payments={rows}
@@ -310,12 +350,14 @@ export default async function PaymentsPage({
           type: paymentType,
           mes: monthFilterActive ? mes : 0,
           anio: monthFilterActive ? anio : 0,
+          adeudo: adeudoFilter,
         }}
         totals={{
           gross: totalGross,
           deductibles: totalGross - totalNet,
           net: totalNet,
         }}
+        pendingLeadCount={pendingLeadCount ?? 0}
         contraEntregaLeadIds={contraEntregaLeadIds}
       />
     );

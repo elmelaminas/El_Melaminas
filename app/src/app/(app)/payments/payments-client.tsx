@@ -68,6 +68,8 @@ type FiltersState = {
   mes: number;
   /** Año 4-dígitos; 0 = sin filtro. */
   anio: number;
+  /** Estado de adeudo del LEAD asociado al pago. '' = todos. */
+  adeudo: '' | 'pendiente' | 'liquidado';
 };
 
 /** Mes corto para el chip — ver leads-client.tsx para racional. */
@@ -123,6 +125,7 @@ export function PaymentsClient({
   totalPages,
   filters,
   totals,
+  pendingLeadCount,
   contraEntregaLeadIds,
 }: {
   payments: PaymentRow[];
@@ -132,6 +135,9 @@ export function PaymentsClient({
   totalPages: number;
   filters: FiltersState;
   totals: Totals;
+  /** Cantidad de LEADS con adeudo pendiente (payment_status ≠ 'pagado').
+   *  Lo usa el select "Con adeudo" para mostrar el badge contador. */
+  pendingLeadCount: number;
   /** lead_ids con AL MENOS un payment_type='contra_entrega'. Lo
    *  convertimos a Set para lookup O(1) en la regla de color
    *  naranja (mismo patrón que en /leads). */
@@ -174,6 +180,7 @@ export function PaymentsClient({
       page: number;
       mes: number;
       anio: number;
+      adeudo: string;
     }>,
   ) {
     const merged = {
@@ -186,11 +193,13 @@ export function PaymentsClient({
       // explícitamente "Limpiar filtros".
       mes: next.mes ?? filters.mes,
       anio: next.anio ?? filters.anio,
+      adeudo: next.adeudo ?? filters.adeudo,
     };
     const params = new URLSearchParams();
     if (merged.q) params.set('q', merged.q);
     if (merged.method) params.set('method', merged.method);
     if (merged.type) params.set('type', merged.type);
+    if (merged.adeudo) params.set('adeudo', merged.adeudo);
     if (merged.mes > 0 && merged.anio > 0) {
       params.set('mes', String(merged.mes));
       params.set('anio', String(merged.anio));
@@ -208,6 +217,7 @@ export function PaymentsClient({
         filters.q ||
           filters.method ||
           filters.type ||
+          filters.adeudo ||
           (filters.mes > 0 && filters.anio > 0),
       ),
     [filters],
@@ -285,6 +295,30 @@ export function PaymentsClient({
               </option>
             ))}
           </select>
+          {/* Filtro por adeudo del LEAD asociado. La opción
+              "Con adeudo" lleva el contador de leads pendientes en
+              rojo para que sea obvio cuántos clientes deben. */}
+          <select
+            id="payments-filter-adeudo"
+            className="select"
+            value={filters.adeudo}
+            onChange={(e) =>
+              pushFilters({ adeudo: e.target.value, page: 1 })
+            }
+            aria-label="Filtrar por estado de adeudo"
+            style={
+              filters.adeudo === 'pendiente'
+                ? { color: '#B91C1C', fontWeight: 600 }
+                : undefined
+            }
+          >
+            <option value="">Todos los adeudos</option>
+            <option value="pendiente">
+              🔴 Con adeudo pendiente
+              {pendingLeadCount > 0 ? ` (${pendingLeadCount})` : ''}
+            </option>
+            <option value="liquidado">✅ Liquidados</option>
+          </select>
         </div>
         {hasFilters && (
           <div className="mt-3 flex items-center gap-2 flex-wrap">
@@ -302,6 +336,34 @@ export function PaymentsClient({
                 Mes: {MES_SHORT[filters.mes] ?? filters.mes}/{filters.anio}
               </span>
             )}
+            {filters.adeudo === 'pendiente' && (
+              <span
+                className="text-xs"
+                style={{
+                  background: '#FEE2E2',
+                  color: '#B91C1C',
+                  padding: '4px 10px',
+                  borderRadius: 9999,
+                  fontWeight: 600,
+                }}
+              >
+                🔴 Con adeudo{pendingLeadCount > 0 ? ` (${pendingLeadCount})` : ''}
+              </span>
+            )}
+            {filters.adeudo === 'liquidado' && (
+              <span
+                className="text-xs"
+                style={{
+                  background: '#DCFCE7',
+                  color: '#15803D',
+                  padding: '4px 10px',
+                  borderRadius: 9999,
+                  fontWeight: 600,
+                }}
+              >
+                ✅ Liquidados
+              </span>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -312,6 +374,7 @@ export function PaymentsClient({
                   type: '',
                   mes: 0,
                   anio: 0,
+                  adeudo: '',
                   page: 1,
                 });
               }}
