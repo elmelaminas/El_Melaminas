@@ -994,9 +994,20 @@ function PostReturnActions({
   );
 }
 
+/**
+ * Formatea una fecha (`YYYY-MM-DD` puro o ISO timestamp) a texto
+ * corto en es-MX.
+ *
+ * Fix TZ (2026-05): para columnas DATE (sale_date) `new Date(str)`
+ * parsea como UTC y al formatear en México (UTC-6) muestra un día
+ * atrás. Detectamos el formato YYYY-MM-DD y usamos el ctor local.
+ */
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
-  const d = new Date(iso);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  const d = m
+    ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+    : new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString('es-MX', {
     day: '2-digit',
