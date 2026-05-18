@@ -298,22 +298,32 @@ export default async function EntregasPage({
     // Lookup bulk de pagos contra_entrega para los leads visibles.
     // Mismo patrón que /leads. Un lead con AL MENOS un payment
     // contra_entrega se marca naranja por las reglas de color de fila.
+    // Try/catch para tolerar enum sin 'contra_entrega' o schema cache
+    // stale en PostgREST — no bloqueamos la página por una métrica de
+    // color que es cosmética.
     const contraEntregaSet = new Set<string>();
     if (leadIds.length > 0) {
-      const { data: ceData, error: ceErr } = await admin
-        .from('payments')
-        .select('lead_id')
-        .eq('payment_type', 'contra_entrega')
-        .in('lead_id', leadIds);
-      if (ceErr) {
-        console.error(
-          '[EntregasPage] contra_entrega lookup falló (no fatal):',
-          ceErr,
-        );
-      } else {
-        for (const p of ceData ?? []) {
-          if (p.lead_id) contraEntregaSet.add(p.lead_id);
+      try {
+        const { data: ceData, error: ceErr } = await admin
+          .from('payments')
+          .select('lead_id')
+          .eq('payment_type', 'contra_entrega')
+          .in('lead_id', leadIds);
+        if (ceErr) {
+          console.error(
+            '[EntregasPage] contra_entrega lookup falló (no fatal):',
+            ceErr,
+          );
+        } else {
+          for (const p of ceData ?? []) {
+            if (p.lead_id) contraEntregaSet.add(p.lead_id);
+          }
         }
+      } catch (e) {
+        console.error(
+          '[EntregasPage] contra_entrega excepción (no fatal):',
+          e,
+        );
       }
     }
     const contraEntregaLeadIds = Array.from(contraEntregaSet);

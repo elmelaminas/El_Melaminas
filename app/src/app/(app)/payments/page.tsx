@@ -230,22 +230,32 @@ export default async function PaymentsPage({
     }
 
     // Bulk: lead_ids con pago contra_entrega — para regla naranja.
+    // Try/catch defensivo por si el enum aún no tiene el valor o
+    // PostgREST tiene el schema cache stale; la regla naranja es
+    // cosmética y no debe tirar la página entera.
     const contraEntregaSet = new Set<string>();
     if (visibleLeadIds.length > 0) {
-      const { data: ceRows, error: ceErr } = await admin
-        .from('payments')
-        .select('lead_id')
-        .eq('payment_type', 'contra_entrega')
-        .in('lead_id', visibleLeadIds);
-      if (ceErr) {
-        console.error(
-          '[PaymentsPage] contra_entrega lookup falló (no fatal):',
-          ceErr,
-        );
-      } else {
-        for (const p of ceRows ?? []) {
-          if (p.lead_id) contraEntregaSet.add(p.lead_id);
+      try {
+        const { data: ceRows, error: ceErr } = await admin
+          .from('payments')
+          .select('lead_id')
+          .eq('payment_type', 'contra_entrega')
+          .in('lead_id', visibleLeadIds);
+        if (ceErr) {
+          console.error(
+            '[PaymentsPage] contra_entrega lookup falló (no fatal):',
+            ceErr,
+          );
+        } else {
+          for (const p of ceRows ?? []) {
+            if (p.lead_id) contraEntregaSet.add(p.lead_id);
+          }
         }
+      } catch (e) {
+        console.error(
+          '[PaymentsPage] contra_entrega excepción (no fatal):',
+          e,
+        );
       }
     }
     const contraEntregaLeadIds = Array.from(contraEntregaSet);

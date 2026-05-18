@@ -196,24 +196,39 @@ export default async function LeadsPage({
       // Pre-query: lead_ids con AL MENOS un pago contra_entrega. Set
       // limitado en la práctica; si crece a miles, considerar moverlo
       // a un VIEW en Postgres con índice.
-      const { data: ceLeads, error: ceErr } = await admin
-        .from('payments')
-        .select('lead_id')
-        .eq('payment_type', 'contra_entrega');
-      if (ceErr) {
-        return (
-          <ErrorState
-            message={`Error leyendo pagos contra entrega: ${ceErr.message}`}
-          />
+      //
+      // Manejo defensivo: si el enum `payment_type_enum` aún no tiene
+      // 'contra_entrega' (migración pendiente o schema cache stale en
+      // PostgREST), la query devuelve error. Lo tratamos como
+      // no-fatal — el filtro pierde precisión (no resaltamos por la
+      // regla automática) pero la página sigue funcionando con el
+      // override manual `row_color='naranja'`.
+      let ceIds: string[] = [];
+      try {
+        const { data: ceLeads, error: ceErr } = await admin
+          .from('payments')
+          .select('lead_id')
+          .eq('payment_type', 'contra_entrega');
+        if (ceErr) {
+          console.error(
+            '[LeadsPage] naranja contra_entrega lookup falló (no fatal):',
+            ceErr,
+          );
+        } else {
+          ceIds = Array.from(
+            new Set(
+              (ceLeads ?? [])
+                .map((p) => p.lead_id)
+                .filter((x): x is string => !!x),
+            ),
+          );
+        }
+      } catch (e) {
+        console.error(
+          '[LeadsPage] naranja contra_entrega excepción (no fatal):',
+          e,
         );
       }
-      const ceIds = Array.from(
-        new Set(
-          (ceLeads ?? [])
-            .map((p) => p.lead_id)
-            .filter((x): x is string => !!x),
-        ),
-      );
       if (ceIds.length > 0) {
         // `id.in.(uuid1,uuid2,...)` dentro de `.or()`. PostgREST acepta
         // UUIDs sin comillas dentro de `()`.
@@ -317,25 +332,34 @@ export default async function LeadsPage({
     // Detección de "contra_entrega": un lead se marca naranja si AL MENOS
     // un pago suyo tiene payment_type='contra_entrega'. Hacemos una sola
     // query bulk para los lead_ids visibles en esta página (no toda la
-    // tabla) — costo O(rows). Si la query falla, loguamos y dejamos el
-    // Set vacío (fail-soft: la fila simplemente no pintará naranja).
+    // tabla) — costo O(rows). Si la query falla (ej: enum sin el valor
+    // 'contra_entrega' en algunos entornos, o schema cache stale en
+    // PostgREST), loguamos y dejamos el Set vacío (fail-soft: la fila
+    // simplemente no pintará naranja).
     const visibleLeadIds = rows.map((r) => r.id);
     const contraEntregaSet = new Set<string>();
     if (visibleLeadIds.length > 0) {
-      const { data: ceData, error: ceErr } = await admin
-        .from('payments')
-        .select('lead_id')
-        .eq('payment_type', 'contra_entrega')
-        .in('lead_id', visibleLeadIds);
-      if (ceErr) {
-        console.error(
-          '[LeadsPage] contra_entrega lookup falló (no fatal):',
-          ceErr,
-        );
-      } else {
-        for (const p of ceData ?? []) {
-          if (p.lead_id) contraEntregaSet.add(p.lead_id);
+      try {
+        const { data: ceData, error: ceErr } = await admin
+          .from('payments')
+          .select('lead_id')
+          .eq('payment_type', 'contra_entrega')
+          .in('lead_id', visibleLeadIds);
+        if (ceErr) {
+          console.error(
+            '[LeadsPage] contra_entrega lookup falló (no fatal):',
+            ceErr,
+          );
+        } else {
+          for (const p of ceData ?? []) {
+            if (p.lead_id) contraEntregaSet.add(p.lead_id);
+          }
         }
+      } catch (e) {
+        console.error(
+          '[LeadsPage] contra_entrega excepción (no fatal):',
+          e,
+        );
       }
     }
     // Pasamos un array al cliente (Sets serializan con RSC en React 19
