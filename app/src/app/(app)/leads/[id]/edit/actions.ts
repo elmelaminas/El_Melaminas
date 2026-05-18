@@ -646,6 +646,19 @@ export async function updateLeadFullAction(
       catalogPrice +
       (deliveryCost ?? 0);
 
+    // En fábrica el cliente recoge en el acto: forzamos
+    // delivery_status='entregado' (no aplica reparto) y driver_id=null
+    // (no necesita chofer). Si el lead cambia de domicilio→fábrica,
+    // este UPDATE lo cierra automáticamente. Si pasa de fábrica→domicilio,
+    // dejamos el delivery_status actual — sigue siendo coherente porque
+    // si era 'entregado' la action ya habría rechazado la edición en la
+    // verificación inicial (paso 2), así que sólo llegamos aquí cuando
+    // estaba 'pendiente' o 'en_transito'.
+    const isFabrica = data.purchase_type === 'fabrica';
+    const nextDeliveryStatus = isFabrica
+      ? 'entregado'
+      : leadRow.delivery_status ?? 'pendiente';
+
     const { error: leadUpdErr } = await admin
       .from('leads')
       .update({
@@ -684,7 +697,8 @@ export async function updateLeadFullAction(
         // false cuando no. Coherente con los pasos 5/8 que liberan
         // o comprometen el inventario según el toggle.
         stock_committed: hasHojas,
-        driver_id: emptyToNull(data.driver_id),
+        driver_id: isFabrica ? null : emptyToNull(data.driver_id),
+        delivery_status: nextDeliveryStatus,
       })
       .eq('id', leadId);
     if (leadUpdErr) {
