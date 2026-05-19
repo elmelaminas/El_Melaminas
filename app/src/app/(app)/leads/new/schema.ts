@@ -184,6 +184,35 @@ export const EdgebandingColorRowSchema = z
 
 export type EdgebandingColorRowInput = z.infer<typeof EdgebandingColorRowSchema>;
 
+// ─── Costos extras ──────────────────────────────────────────────────────
+//
+// Sección libre de cargos adicionales al pedido (flete especial,
+// instalación, ajustes, etc.). Se persiste como JSONB en
+// `leads.extra_costs`:
+//   [{"description": "Flete especial", "amount": 200}, ...]
+//
+// Requiere migración manual previa:
+//   ALTER TABLE leads ADD COLUMN IF NOT EXISTS extra_costs jsonb
+//     DEFAULT '[]';
+//
+// Su contribución al `total_amount` es SUM(amount). El admin lo edita
+// libremente desde /leads/new y /leads/[id]/edit; no compromete
+// inventario ni dispara movimientos.
+
+export const ExtraCostSchema = z.object({
+  description: z
+    .string()
+    .trim()
+    .min(1, 'Descripción requerida')
+    .max(100, 'Descripción demasiado larga'),
+  amount: z
+    .number({ invalid_type_error: 'Monto inválido' })
+    .min(0, 'El monto debe ser mayor a 0')
+    .max(1_000_000, 'Monto demasiado grande'),
+});
+
+export type ExtraCostInput = z.infer<typeof ExtraCostSchema>;
+
 // ─── Lead create ────────────────────────────────────────────────────────
 
 export const LeadCreateSchema = z.object({
@@ -352,6 +381,17 @@ export const LeadCreateSchema = z.object({
    * NO comprometen inventario.
    */
   edgebanding_colors: z.array(EdgebandingColorRowSchema),
+
+  /**
+   * Cargos adicionales al pedido (flete, instalación, etc.). Sin
+   * límite de items. Cada fila aporta `amount` al `total_amount`.
+   * Persistido como JSONB en `leads.extra_costs`.
+   *
+   * Required array (vacío por default). Sin `.optional()` para no
+   * romper la inferencia del input-type que RHF pide del resolver
+   * — el form siempre envía `[]` cuando no hay extras.
+   */
+  extra_costs: z.array(ExtraCostSchema),
 })
 .refine(
   // Al menos uno de los 3 tipos de pedido debe estar activo.

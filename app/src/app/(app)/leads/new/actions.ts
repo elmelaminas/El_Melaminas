@@ -391,14 +391,29 @@ export async function saveLeadAction(
         ? data.delivery_cost
         : null;
 
-    // total_amount: suma de los tipos activos + envío.
+    // Costos extras (flete, instalación, etc.). Lista libre que el
+    // admin captura en el form. Filtramos defensivamente filas con
+    // monto NaN o descripción vacía aunque Zod ya las haya rechazado.
+    const extraCostsRows = (data.extra_costs ?? []).filter(
+      (e) =>
+        typeof e.amount === 'number' &&
+        Number.isFinite(e.amount) &&
+        e.description.trim().length > 0,
+    );
+    const extraCostsTotal = extraCostsRows.reduce(
+      (s, e) => s + Number(e.amount ?? 0),
+      0,
+    );
+
+    // total_amount: suma de los tipos activos + envío + extras.
     const total_amount =
       sheetsSubtotal +
       (cutsTotal ?? 0) +
       (edgeTotal ?? 0) +
       (edgebandingManualCost ?? 0) +
       catalogPrice +
-      (deliveryCost ?? 0);
+      (deliveryCost ?? 0) +
+      extraCostsTotal;
 
     const { data: leadRow, error: leadErr } = await admin
       .from('leads')
@@ -444,6 +459,14 @@ export async function saveLeadAction(
         // guarda el unitario para que el cálculo sea reproducible al
         // editar el lead.
         edgebanding_manual_cost: edgebandingUnitCost,
+        // Cargos extras como JSONB. Persistimos las filas saneadas
+        // (description trimmed, amount numérico). Si no hay extras,
+        // mandamos array vacío para que el default '[]' de DB no
+        // quede en NULL si la columna lo permitiera.
+        extra_costs: extraCostsRows.map((e) => ({
+          description: e.description.trim(),
+          amount: Number(e.amount),
+        })),
         // driver_id se asigna aquí (antes vivía en /payments/new). Si el
         // usuario no eligió uno se queda null y el chofer puede asignarse
         // después editando el lead. /driver filtra por driver_id = uid().

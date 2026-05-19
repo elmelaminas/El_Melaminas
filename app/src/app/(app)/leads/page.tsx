@@ -147,7 +147,7 @@ export default async function LeadsPage({
         `id, client_name, phone, channel, sheets_count, total_amount,
          sale_date, created_at, delivery_status, payment_status,
          sale_type, product_type, purchase_type, document_url, document_urls, row_color,
-         has_hojas, has_cubrecanto, has_catalogo,
+         has_hojas, has_cubrecanto, has_catalogo, extra_costs,
          sellers ( name )`,
         { count: 'exact' },
       )
@@ -274,6 +274,7 @@ export default async function LeadsPage({
       has_hojas: boolean | null;
       has_cubrecanto: boolean | null;
       has_catalogo: boolean | null;
+      extra_costs: unknown | null;
       sellers: { name: string } | { name: string }[] | null;
     };
 
@@ -324,6 +325,22 @@ export default async function LeadsPage({
             : Boolean(r.has_hojas),
         has_cubrecanto: Boolean(r.has_cubrecanto),
         has_catalogo: Boolean(r.has_catalogo),
+        // Cantidad de costos extras del lead. Lo usamos para mostrar
+        // un badge "💰 +extras" junto al nombre en la tabla. Sólo
+        // contamos filas con amount>0 y descripción no vacía (las
+        // filas zombie de migraciones viejas no cuentan).
+        extra_costs_count: Array.isArray(r.extra_costs)
+          ? (r.extra_costs as unknown[]).filter((e) => {
+              if (!e || typeof e !== 'object') return false;
+              const obj = e as { description?: unknown; amount?: unknown };
+              const desc =
+                typeof obj.description === 'string'
+                  ? obj.description.trim()
+                  : '';
+              const amt = Number(obj.amount ?? 0);
+              return desc.length > 0 && amt > 0;
+            }).length
+          : 0,
       };
     });
 

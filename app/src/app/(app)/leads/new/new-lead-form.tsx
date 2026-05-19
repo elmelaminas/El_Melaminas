@@ -180,6 +180,9 @@ export function NewLeadForm({
       // agrega filas explícitamente desde la sección Cubrecanto cuando
       // `has_cubrecanto=true`.
       edgebanding_colors: initialValues?.edgebanding_colors ?? [],
+      // Costos extras (JSONB): lista libre de cargos adicionales.
+      // Vacío por default; en edit precargamos lo que venga del lead.
+      extra_costs: initialValues?.extra_costs ?? [],
       // `cost_per_sheet` ahora vive POR FILA dentro de cada color.
       // Default: primer valor del catálogo ($350).
       colors:
@@ -211,6 +214,17 @@ export function NewLeadForm({
   } = useFieldArray({
     control,
     name: 'edgebanding_colors',
+  });
+
+  // Tercer useFieldArray para los costos extras (flete, instalación,
+  // etc.). Lista libre con prefijo `extra` en los renames.
+  const {
+    fields: extraFields,
+    append: extraAppend,
+    remove: extraRemove,
+  } = useFieldArray({
+    control,
+    name: 'extra_costs',
   });
 
   // Valores observados para reactividad de campos condicionales y resumen.
@@ -246,6 +260,24 @@ export function NewLeadForm({
       ? watchedCatalogPrice
       : 0
     : 0;
+
+  // Costos extras: lista libre. Parse defensivo `Number(x) || 0` igual
+  // que en hojas/cubrecanto (RHF puede devolver string en flush).
+  const watchedExtras = watch('extra_costs');
+  const extraCostsRows = useMemo(
+    () =>
+      (watchedExtras ?? [])
+        .map((e) => ({
+          description: (e?.description ?? '').trim(),
+          amount: Number(e?.amount) || 0,
+        }))
+        .filter((e) => e.amount > 0 && e.description.length > 0),
+    [watchedExtras],
+  );
+  const extrasTotal = useMemo(
+    () => extraCostsRows.reduce((s, e) => s + e.amount, 0),
+    [extraCostsRows],
+  );
   // Cubrecanto manual: `edgebanding_manual_cost` es el precio UNITARIO
   // por metro/pieza. Para el total multiplicamos por la suma de
   // cantidades en `edgebanding_colors`. Si no hay colores definidos
@@ -341,15 +373,20 @@ export function NewLeadForm({
       : 0;
 
   // El total a cobrar es la suma condicional de los tipos activos
-  // + el envío a domicilio (independiente de los tipos).
+  // + el envío a domicilio + los costos extras (independientes).
   //
   //   has_hojas       → sheets + cuts + edge_banding estructurado
   //   has_cubrecanto  → manualCubrecantoCost (input libre)
   //   has_catalogo    → catalogPrice
   //   domicilio       → deliveryCost
+  //   extras          → SUM(extra_costs.amount)
   const hojasTotal = watchedHasHojas ? sheetsSubtotal + cutsTotal + edgeTotal : 0;
   const total =
-    hojasTotal + manualCubrecantoCost + catalogPrice + deliveryCost;
+    hojasTotal +
+    manualCubrecantoCost +
+    catalogPrice +
+    deliveryCost +
+    extrasTotal;
 
   const onValidSubmit = (values: LeadCreateInput) => {
     clearErrors('root.serverError');
@@ -1191,6 +1228,123 @@ export function NewLeadForm({
             </div>
           </Section>
 
+          {/* Costos extras: lista libre de cargos adicionales (flete
+              especial, instalación, ajustes, etc.). Se persiste como
+              JSONB en `leads.extra_costs` y SE SUMA al total a cobrar.
+              No compromete inventario. Cada fila es independiente: el
+              admin nombra el concepto y pone el monto. */}
+          <Section
+            title="Costos extras (opcional)"
+            subtitle="Agrega cargos adicionales al pedido (flete, instalación, etc.)."
+          >
+            <div className="flex items-center justify-between mb-3">
+              <span
+                className="text-sm"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                {extraFields.length === 0
+                  ? 'Sin costos extras.'
+                  : `${extraFields.length} ${extraFields.length === 1 ? 'cargo' : 'cargos'} extra`}
+              </span>
+              <button
+                type="button"
+                className="btn btn-outline"
+                style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                onClick={() =>
+                  extraAppend({ description: '', amount: 0 })
+                }
+                disabled={pending}
+              >
+                + Agregar costo extra
+              </button>
+            </div>
+            {extraFields.length > 0 && (
+              <div className="flex flex-col gap-2">
+                {extraFields.map((row, idx) => (
+                  <div
+                    key={row.id}
+                    className="grid grid-cols-12 gap-2 items-start"
+                  >
+                    <div className="col-span-7">
+                      <input
+                        className="input"
+                        placeholder="Descripción (ej. Flete especial)"
+                        {...register(
+                          `extra_costs.${idx}.description` as const,
+                        )}
+                        disabled={pending}
+                        maxLength={100}
+                      />
+                      {errors.extra_costs?.[idx]?.description?.message && (
+                        <p
+                          className="text-xs mt-1"
+                          style={{ color: 'var(--danger, #dc2626)' }}
+                        >
+                          {errors.extra_costs[idx]?.description?.message}
+                        </p>
+                      )}
+                    </div>
+                    <div className="col-span-3">
+                      <div className="relative">
+                        <span
+                          className="absolute left-3 top-1/2 -translate-y-1/2 text-sm"
+                          style={{ color: 'var(--text-tertiary)' }}
+                          aria-hidden="true"
+                        >
+                          $
+                        </span>
+                        <input
+                          type="number"
+                          className="input"
+                          style={{ paddingLeft: 24 }}
+                          placeholder="0"
+                          step="0.01"
+                          min={0}
+                          {...register(`extra_costs.${idx}.amount` as const, {
+                            valueAsNumber: true,
+                          })}
+                          disabled={pending}
+                        />
+                      </div>
+                      {errors.extra_costs?.[idx]?.amount?.message && (
+                        <p
+                          className="text-xs mt-1"
+                          style={{ color: 'var(--danger, #dc2626)' }}
+                        >
+                          {errors.extra_costs[idx]?.amount?.message}
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => extraRemove(idx)}
+                      className="btn btn-danger-outline col-span-2"
+                      style={{ padding: '6px' }}
+                      disabled={pending}
+                      aria-label={`Eliminar costo extra ${idx + 1}`}
+                      title="Eliminar"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                {extrasTotal > 0 && (
+                  <div
+                    className="flex justify-between border-t pt-2 mt-1 text-sm"
+                    style={{ borderColor: 'var(--border)' }}
+                  >
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      Total extras
+                    </span>
+                    <span className="font-semibold">
+                      {formatMXN(extrasTotal)}
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+          </Section>
+
           {/* Documentos adjuntos. Hasta LEAD_DOCUMENT_MAX_FILES archivos,
               mezcla libre de PDFs e imágenes. Cada uno hasta 10 MB.
               En modo edit, los URLs existentes son individualmente
@@ -1419,6 +1573,23 @@ export function NewLeadForm({
                   </span>
                 </div>
               )}
+              {extraCostsRows.map((e, i) => (
+                <div
+                  key={`extra-${i}`}
+                  className="flex justify-between"
+                >
+                  <span
+                    style={{ color: 'var(--text-secondary)' }}
+                    className="truncate"
+                    title={`+ ${e.description}`}
+                  >
+                    + {e.description}
+                  </span>
+                  <span className="font-semibold">
+                    {formatMXN(e.amount)}
+                  </span>
+                </div>
+              ))}
               <div
                 id="field-total"
                 className="border-t pt-3 mt-2"

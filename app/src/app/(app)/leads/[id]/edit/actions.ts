@@ -638,13 +638,26 @@ export async function updateLeadFullAction(
         ? data.delivery_cost
         : null;
 
+    // Costos extras: misma forma que en saveLeadAction.
+    const extraCostsRows = (data.extra_costs ?? []).filter(
+      (e) =>
+        typeof e.amount === 'number' &&
+        Number.isFinite(e.amount) &&
+        e.description.trim().length > 0,
+    );
+    const extraCostsTotal = extraCostsRows.reduce(
+      (s, e) => s + Number(e.amount ?? 0),
+      0,
+    );
+
     const total_amount =
       sheetsSubtotal +
       (cutsTotal ?? 0) +
       (edgeTotal ?? 0) +
       (edgebandingManualCost ?? 0) +
       catalogPrice +
-      (deliveryCost ?? 0);
+      (deliveryCost ?? 0) +
+      extraCostsTotal;
 
     const { error: leadUpdErr } = await admin
       .from('leads')
@@ -680,6 +693,12 @@ export async function updateLeadFullAction(
         // para que la edición posterior recomponga el total
         // multiplicando por la nueva suma de cantidades.
         edgebanding_manual_cost: edgebandingUnitCost,
+        // Reemplazo total del array de extras (no merge): el form
+        // siempre envía la lista completa actualizada.
+        extra_costs: extraCostsRows.map((e) => ({
+          description: e.description.trim(),
+          amount: Number(e.amount),
+        })),
         // stock_committed: true cuando el lead AHORA tiene hojas,
         // false cuando no. Coherente con los pasos 5/8 que liberan
         // o comprometen el inventario según el toggle.

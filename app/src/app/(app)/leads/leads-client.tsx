@@ -82,6 +82,10 @@ export type LeadRow = {
   has_hojas: boolean;
   has_cubrecanto: boolean;
   has_catalogo: boolean;
+  /** Cantidad de costos extras del lead (filtrados a description+amount
+   *  no vacíos en el server). > 0 → mostrar badge "💰 +extras" junto al
+   *  nombre. El total del lead YA incluye el monto de estos cargos. */
+  extra_costs_count: number;
 };
 
 /**
@@ -669,6 +673,19 @@ export function LeadsClient({
                               title="Incluye catálogo"
                             >
                               📚 Catálogo
+                            </span>
+                          )}
+                          {l.extra_costs_count > 0 && (
+                            <span
+                              className="badge"
+                              style={{
+                                fontSize: '0.6875rem',
+                                background: '#FEF3C7',
+                                color: '#92400E',
+                              }}
+                              title={`${l.extra_costs_count} ${l.extra_costs_count === 1 ? 'cargo extra' : 'cargos extras'} (ya incluido en el total)`}
+                            >
+                              💰 +extras
                             </span>
                           )}
                         </div>

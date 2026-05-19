@@ -77,7 +77,7 @@ export default async function EditLeadPage({
            cost_per_sheet, cuts_count, edge_banding_type,
            edge_banding_meters, delivery_cost,
            has_hojas, has_cubrecanto, has_catalogo,
-           catalog_price, edgebanding_manual_cost,
+           catalog_price, edgebanding_manual_cost, extra_costs,
            driver_id, document_url, document_urls,
            delivery_status, deleted_at`,
         )
@@ -365,6 +365,18 @@ export default async function EditLeadPage({
             : Number(leadResult.data.edgebanding_manual_cost),
         colors: leadColors,
         edgebanding_colors: edgebandingColors,
+        // Costos extras: vienen como JSONB (array de {description,
+        // amount}). Si la columna aún no existe (migración pendiente)
+        // o el valor es null, normalizamos a [] para que el form
+        // arranque vacío sin romper.
+        extra_costs: Array.isArray(leadResult.data.extra_costs)
+          ? (leadResult.data.extra_costs as { description: string; amount: number }[])
+              .map((e) => ({
+                description: String(e?.description ?? ''),
+                amount: Number(e?.amount ?? 0),
+              }))
+              .filter((e) => e.description.length > 0)
+          : [],
       },
     };
 
