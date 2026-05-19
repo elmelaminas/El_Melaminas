@@ -4,6 +4,7 @@ import {
   ContadorClient,
   type AdminWithCash,
   type ValidationHistoryRow,
+  type ReceivedCashHistoryRow,
 } from './contador-client';
 
 /**
@@ -36,11 +37,18 @@ export default async function ContadorPage() {
     } = await userClient.auth.getUser();
     const contadorId = user?.id ?? null;
 
-    // Tres queries en paralelo:
+    // Cuatro queries en paralelo:
     //   1. Admins activos (admin + admin2)
     //   2. admin_cash_register completo (para sumar por admin)
     //   3. Historial personal de validaciones del contador actual
-    const [adminsRes, cashRes, historyRes] = await Promise.all([
+    //      (egresos donde el contador es `registered_by` y la source
+    //      es 'validado_contador').
+    //   4. Historial de cash_transfers recibidos por este contador.
+    //      Refactor 2026-05: el admin es quien recibe ahora, pero los
+    //      registros antiguos (donde un contador real cerraba el ciclo)
+    //      siguen vivos en DB y este historial los expone. Si la tabla
+    //      no aplica al rol actual el resultado queda vacío.
+    const [adminsRes, cashRes, historyRes, receivedRes] = await Promise.all([
       admin
         .from('profiles')
         .select('id, full_name, role')
@@ -58,6 +66,14 @@ export default async function ContadorPage() {
             )
             .eq('registered_by', contadorId)
             .eq('source', 'validado_contador')
+            .order('created_at', { ascending: false })
+            .limit(20)
+        : Promise.resolve({ data: [], error: null }),
+      contadorId
+        ? admin
+            .from('cash_transfers')
+            .select('id, driver_id, amount, status, created_at')
+            .eq('contador_id', contadorId)
             .order('created_at', { ascending: false })
             .limit(20)
         : Promise.resolve({ data: [], error: null }),
@@ -80,6 +96,12 @@ export default async function ContadorPage() {
       console.error(
         '[ContadorPage] history select falló (no fatal):',
         historyRes.error,
+      );
+    }
+    if (receivedRes.error) {
+      console.error(
+        '[ContadorPage] received cash select falló (no fatal):',
+        receivedRes.error,
       );
     }
 
@@ -123,19 +145,27 @@ export default async function ContadorPage() {
       0,
     );
 
-    // Historial: resolver nombres de admins involucrados.
+    // Historial de validaciones (egresos): resolver nombres de admins.
+    // Historial de efectivo recibido (cash_transfers): resolver nombres
+    // de choferes. Ambos lookups reusan profiles activos ya cargados
+    // donde sea posible y consultan extra para los inactivos / con
+    // rol distinto (un driver no está en `admins`).
     const historyRaw = historyRes.data ?? [];
-    const histAdminIds = Array.from(
-      new Set(
-        historyRaw.map((h) => h.admin_id).filter((x): x is string => !!x),
-      ),
-    );
+    const receivedRaw = receivedRes.data ?? [];
+
+    const histAdminIds = historyRaw
+      .map((h) => h.admin_id)
+      .filter((x): x is string => !!x);
+    const receivedDriverIds = receivedRaw
+      .map((r) => r.driver_id)
+      .filter((x): x is string => !!x);
+
     const nameById = new Map<string, string>();
-    // Reusamos la lista de admins ya cargada para nombres comunes;
-    // sólo consultamos extra si algún egreso histórico apunta a un
-    // admin que ya no está en la lista activa.
     for (const a of admins) nameById.set(a.admin_id, a.admin_name);
-    const missing = histAdminIds.filter((id) => !nameById.has(id));
+
+    const missing = Array.from(
+      new Set([...histAdminIds, ...receivedDriverIds]),
+    ).filter((id) => !nameById.has(id));
     if (missing.length > 0) {
       const { data: extra } = await admin
         .from('profiles')
@@ -145,6 +175,7 @@ export default async function ContadorPage() {
         nameById.set(u.id, u.full_name ?? '(sin nombre)');
       }
     }
+
     const history: ValidationHistoryRow[] = historyRaw.map((h) => ({
       id: h.id,
       admin_name: h.admin_id
@@ -154,11 +185,22 @@ export default async function ContadorPage() {
       created_at: h.created_at ?? null,
     }));
 
+    const receivedHistory: ReceivedCashHistoryRow[] = receivedRaw.map((r) => ({
+      id: r.id,
+      driver_name: r.driver_id
+        ? nameById.get(r.driver_id) ?? '—'
+        : '—',
+      amount: Number(r.amount ?? 0),
+      status: (r.status as ReceivedCashHistoryRow['status']) ?? 'pendiente',
+      created_at: r.created_at ?? null,
+    }));
+
     return (
       <ContadorClient
         admins={admins}
         grandTotal={grandTotal}
         history={history}
+        receivedHistory={receivedHistory}
       />
     );
   } catch (err) {

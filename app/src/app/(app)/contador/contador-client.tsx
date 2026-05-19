@@ -34,6 +34,22 @@ export type ValidationHistoryRow = {
 };
 
 /**
+ * Fila del historial de efectivo recibido directamente de un chofer.
+ * Origen: `cash_transfers` donde `contador_id = contador autenticado`.
+ * Refactor 2026-05: el flujo activo lo gestiona el admin desde
+ * /admin/caja, pero los registros previos siguen vivos y se muestran
+ * aquí para trazabilidad. `status` viene del enum DB; lo tipamos
+ * defensivamente para evitar romper si aparece un valor nuevo.
+ */
+export type ReceivedCashHistoryRow = {
+  id: string;
+  driver_name: string;
+  amount: number;
+  status: 'pendiente' | 'recibido' | string;
+  created_at: string | null;
+};
+
+/**
  * Vista del contador. Refactor 2026-05: solo valida la caja del admin.
  *
  * Layout:
@@ -48,10 +64,12 @@ export function ContadorClient({
   admins,
   grandTotal,
   history,
+  receivedHistory,
 }: {
   admins: AdminWithCash[];
   grandTotal: number;
   history: ValidationHistoryRow[];
+  receivedHistory: ReceivedCashHistoryRow[];
 }) {
   return (
     <div className="flex flex-col gap-6 max-w-3xl">
@@ -125,7 +143,15 @@ export function ContadorClient({
       {/* SECCIÓN 2: Validar efectivo (acción). */}
       <AdminCashValidator admins={admins} />
 
-      {/* SECCIÓN 3: Historial personal del contador. */}
+      {/* SECCIÓN 3: Historial de efectivo recibido directamente de
+          choferes (legacy / pre-refactor). Solo se renderiza si hay
+          al menos una fila — sin movimientos el contador no necesita
+          ver la tabla vacía. */}
+      {receivedHistory.length > 0 && (
+        <ReceivedCashHistory history={receivedHistory} />
+      )}
+
+      {/* SECCIÓN 4: Historial personal del contador (validaciones a admins). */}
       <ValidationHistory history={history} />
     </div>
   );
@@ -339,6 +365,85 @@ function AdminCashRow({ admin: a }: { admin: AdminWithCash }) {
           </>
         )}
       </button>
+    </div>
+  );
+}
+
+/**
+ * Tabla "Historial de efectivo recibido" — cash_transfers donde el
+ * contador autenticado es `contador_id`. Columnas: CHOFER, MONTO,
+ * FECHA, ESTADO. El estado puede ser 'pendiente' o 'recibido'
+ * (cualquier valor distinto se muestra literal).
+ */
+function ReceivedCashHistory({
+  history,
+}: {
+  history: ReceivedCashHistoryRow[];
+}) {
+  return (
+    <div className="tbl-wrap">
+      <div
+        className="px-6 py-4 border-b"
+        style={{ borderColor: 'var(--border)' }}
+      >
+        <h3 className="font-semibold">Historial de efectivo recibido</h3>
+        <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+          Últimas 20 transferencias de efectivo de choferes que cerraste.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="tbl table-to-cards">
+          <thead>
+            <tr>
+              <th>Chofer</th>
+              <th className="text-right">Monto</th>
+              <th>Fecha</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {history.map((r) => (
+              <tr key={r.id}>
+                <td data-label="Chofer" className="font-medium">
+                  {r.driver_name}
+                </td>
+                <td
+                  data-label="Monto"
+                  className="text-right font-bold"
+                  style={{ color: '#15803D' }}
+                >
+                  <Banknote
+                    size={14}
+                    style={{
+                      display: 'inline',
+                      verticalAlign: 'middle',
+                      marginRight: 4,
+                      color: '#15803D',
+                    }}
+                  />
+                  {formatMXN(r.amount)}
+                </td>
+                <td
+                  data-label="Fecha"
+                  className="text-sm"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  {formatDateTime(r.created_at)}
+                </td>
+                <td data-label="Estado">
+                  {r.status === 'recibido' ? (
+                    <span className="badge badge-success">Recibido</span>
+                  ) : r.status === 'pendiente' ? (
+                    <span className="badge badge-warning">Pendiente</span>
+                  ) : (
+                    <span className="badge badge-neutral">{r.status}</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
