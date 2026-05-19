@@ -186,10 +186,10 @@ export default async function LeadsPage({
     } else if (colorFilter === 'rosa') {
       query = query.or('sale_type.eq.venta_empleado,row_color.eq.rosa');
     } else if (colorFilter === 'amarillo') {
-      // 2026-05: amarillo pasó a significar `product_type='sin_corte'`.
-      // El filtro combina la nueva regla automática con el override
-      // manual `row_color='amarillo'`.
-      query = query.or('product_type.eq.sin_corte,row_color.eq.amarillo');
+      // 2026-05 (rev2): amarillo es 100% manual ("Pagado pero no
+      // entregado", asignado por el admin con el picker). Sin regla
+      // automática asociada.
+      query = query.eq('row_color', 'amarillo');
     } else if (colorFilter === 'naranja') {
       // Pre-query: lead_ids con AL MENOS un pago contra_entrega. Set
       // limitado en la práctica; si crece a miles, considerar moverlo

@@ -175,7 +175,8 @@ export default async function EntregasPage({
     } else if (colorFilter === 'rosa') {
       query = query.or('sale_type.eq.venta_empleado,row_color.eq.rosa');
     } else if (colorFilter === 'amarillo') {
-      query = query.or('product_type.eq.sin_corte,row_color.eq.amarillo');
+      // Amarillo es 100% manual; sólo coincide con row_color='amarillo'.
+      query = query.eq('row_color', 'amarillo');
     } else if (colorFilter === 'naranja') {
       // Pre-query defensivo: tolerar enum sin 'contra_entrega' o
       // schema cache stale (mismo manejo que /leads/page.tsx).

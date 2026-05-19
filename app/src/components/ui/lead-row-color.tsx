@@ -66,9 +66,9 @@ export function LeadRowLegend() {
   const items: { color: string; label: string }[] = [
     { color: LEAD_ROW_COLORS.rosa, label: 'Venta empleado' },
     { color: LEAD_ROW_COLORS.naranja, label: 'Contra entrega' },
-    { color: LEAD_ROW_COLORS.amarillo, label: 'Sin corte' },
+    { color: LEAD_ROW_COLORS.amarillo, label: 'Pagado pero no entregado' },
     { color: LEAD_ROW_COLORS.azul, label: 'Con corte' },
-    { color: LEAD_ROW_COLORS.verde, label: 'Verde (manual)' },
+    { color: LEAD_ROW_COLORS.verde, label: 'Entregado / manual' },
     { color: LEAD_ROW_COLORS.morado, label: 'Morado (manual)' },
   ];
   return (

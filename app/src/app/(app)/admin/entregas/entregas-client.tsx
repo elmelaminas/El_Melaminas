@@ -360,7 +360,7 @@ export function EntregasClient({
     },
     {
       value: 'amarillo',
-      label: '🟡 Sin corte',
+      label: '🟡 Pagado pero no entregado',
       bg: LEAD_ROW_COLORS.amarillo,
       border: LEAD_ROW_BORDERS.amarillo,
     },

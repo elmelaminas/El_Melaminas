@@ -134,22 +134,39 @@ export type LeadRowColorInputs = {
  * undefined si ninguna aplica. Helper interno compartido por
  * `getLeadRowColor` y `getLeadRowStyle` — single source of truth de
  * la lógica de prioridad.
+ *
+ * Orden de prioridad (2026-05):
+ *   1. ROJO de devolución pendiente — se resuelve FUERA de esta función
+ *      (en /admin/entregas via STOCK_RETURN_PENDING_STYLE) porque
+ *      depende de `failed_delivery_reason + stock_returned`, columnas
+ *      que no viven en este tipo.
+ *   2. VERDE automático cuando `delivery_status='entregado'`. Pintar la
+ *      fila entera en verde refuerza visualmente "esto ya cerró" y
+ *      gana incluso sobre un override manual del admin.
+ *   3. Color manual (row_color != 'sin_color').
+ *   4. ROSA automático (sale_type='venta_empleado').
+ *   5. NARANJA automático (al menos un pago contra_entrega).
+ *   6. AZUL automático (product_type='con_corte').
+ *   7. Sin color.
+ *
+ * El AMARILLO ya no tiene regla automática — sólo se asigna cuando el
+ * admin lo elige manualmente. Cualquier `row_color='amarillo'` cae en
+ * el paso 3 igual que verde/morado manuales.
  */
 function resolveRowColorKey(
   row: LeadRowColorInputs,
   contraEntregaIds: ReadonlySet<string>,
 ): Exclude<RowColorValue, 'sin_color'> | undefined {
-  // A. Override manual gana sobre todo.
+  // A. Verde automático para entregado — supera el override manual.
+  if (row.delivery_status === 'entregado') return 'verde';
+
+  // B. Override manual gana sobre el resto de automáticos.
   const manual = parseRowColor(row.row_color);
   if (manual && manual !== 'sin_color') return manual;
 
-  // B. Reglas automáticas en orden de prioridad.
-  //    Amarillo se reasignó a `product_type='sin_corte'` (2026-05).
-  //    Antes la regla era "pagado y sin entregar"; ahora ese estado
-  //    no tiene color automático — el admin puede pintarlo a mano.
+  // C. Reglas automáticas restantes.
   if (row.sale_type === 'venta_empleado') return 'rosa';
   if (contraEntregaIds.has(row.id)) return 'naranja';
-  if (row.product_type === 'sin_corte') return 'amarillo';
   if (row.product_type === 'con_corte') return 'azul';
 
   return undefined;

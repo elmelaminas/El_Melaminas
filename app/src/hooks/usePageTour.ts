@@ -204,7 +204,7 @@ const PAGE_TOURS: Readonly<Record<string, TourStep[]>> = {
       popover: {
         title: '🎨 Filtrar por color',
         description:
-          'Filtra tus leads por color: Azul=con corte, Rosa=venta empleado, Naranja=contra entrega, Amarillo=sin corte, Verde y Morado son manuales.',
+          'Filtra tus leads por color: Azul=con corte, Rosa=venta empleado, Naranja=contra entrega, Verde=entregado (auto) o manual, Amarillo y Morado son manuales.',
       },
     },
     {
