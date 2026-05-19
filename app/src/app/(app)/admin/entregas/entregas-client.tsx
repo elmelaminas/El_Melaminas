@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter, usePathname } from 'next/navigation';
-import { useMemo, useState, useTransition } from 'react';
+import { useEffect, useMemo, useState, useTransition } from 'react';
 import {
   Loader,
   MapPin,
@@ -18,6 +18,11 @@ import {
   RefreshCcw,
   Ban,
   Factory,
+  FileText,
+  Image as ImageIcon,
+  Phone,
+  Truck,
+  Wallet,
 } from 'lucide-react';
 import {
   DeliveryBadge,
@@ -109,6 +114,55 @@ export type EntregaRow = {
 export type DriverOption = { id: string; name: string };
 
 /**
+ * Pago individual asociado a un lead, mostrado en el modal de detalle.
+ * Es un subset de `payments` con los campos que el admin quiere ver
+ * de un vistazo. `paid_at` cae a `created_at` cuando no hay
+ * confirmación explícita (pago `pendiente`).
+ */
+export type LeadPayment = {
+  id: string;
+  amount: number;
+  method: string;
+  payment_type: string;
+  status: string;
+  paid_at: string | null;
+};
+
+/**
+ * Datos extendidos del lead que NO viven en `EntregaRow` (campos que
+ * sólo se ven al abrir el modal de detalle). El page los pasa
+ * pre-resueltos como `Record<lead_id, LeadDetail>` para evitar un
+ * round-trip al abrir el modal.
+ */
+export type LeadDetail = {
+  phone: string;
+  channel: string;
+  seller_name: string | null;
+  has_hojas: boolean;
+  has_cubrecanto: boolean;
+  has_catalogo: boolean;
+  cuts_count: number | null;
+  cuts_total: number | null;
+  edge_banding_type: string | null;
+  edge_banding_meters: number | null;
+  edge_banding_total: number | null;
+  edgebanding_manual_cost: number | null;
+  catalog_price: number | null;
+  delivery_cost: number | null;
+  document_urls: string[];
+  /** Colores con unit_cost real (lectura desde lead_colors.unit_cost
+   *  con fallback a cost_per_sheet). El array que vive dentro de
+   *  EntregaRow se queda con cost_per_sheet por compat con el resto
+   *  de la tabla; aquí guardamos la versión "para el modal". */
+  colors_with_unit: {
+    color_name: string;
+    quantity: number;
+    unit_cost: number;
+  }[];
+  payments: LeadPayment[];
+};
+
+/**
  * Evidencia de cobro hecho por el chofer (Grupo 4). Una entrada por
  * lead — si hubo múltiples driver_deliveries (re-entrega, etc.) la
  * página servirá la más reciente.
@@ -180,6 +234,7 @@ export function EntregasClient({
   routeCandidates,
   evidenceByLead,
   contraEntregaLeadIds,
+  leadDetails,
 }: {
   rows: EntregaRow[];
   drivers: DriverOption[];
@@ -197,6 +252,9 @@ export function EntregasClient({
   evidenceByLead: Record<string, DeliveryEvidence>;
   /** lead_ids con al menos un pago contra_entrega — fila naranja. */
   contraEntregaLeadIds: string[];
+  /** Datos extendidos por lead para el drawer/modal de detalle.
+   *  Pre-resueltos en el server para no agregar latencia al abrir. */
+  leadDetails: Record<string, LeadDetail>;
 }) {
   const contraEntregaSet = useMemo(
     () => new Set(contraEntregaLeadIds),
@@ -215,6 +273,8 @@ export function EntregasClient({
   const [lightbox, setLightbox] = useState<
     { src: string; alt: string } | null
   >(null);
+  // Lead seleccionado para el drawer de detalle. null = drawer cerrado.
+  const [selectedLead, setSelectedLead] = useState<EntregaRow | null>(null);
 
   function pushFilters(next: Partial<FiltersState>) {
     const merged = {
@@ -354,6 +414,16 @@ export function EntregasClient({
         />
       )}
 
+      {/* Drawer lateral con el detalle completo del lead. */}
+      {selectedLead && (
+        <LeadDetailModal
+          entrega={selectedLead}
+          detail={leadDetails[selectedLead.id] ?? null}
+          issues={issuesByLead[selectedLead.id] ?? []}
+          onClose={() => setSelectedLead(null)}
+        />
+      )}
+
       {/* Lightbox de evidencia de cobro. */}
       {lightbox && (
         <ImageLightbox
@@ -429,6 +499,7 @@ export function EntregasClient({
                           alt: `Evidencia de cobro de ${r.client_name}`,
                         })
                       }
+                      onSelectRow={() => setSelectedLead(r)}
                     />
                   );
                 })
@@ -449,6 +520,7 @@ function Row({
   onOpenIssues,
   onOpenFailed,
   onOpenEvidence,
+  onSelectRow,
 }: {
   entrega: EntregaRow;
   /** Estilo completo de la fila (background semitransparente + borde
@@ -460,6 +532,10 @@ function Row({
   onOpenIssues: () => void;
   onOpenFailed: () => void;
   onOpenEvidence: (ev: DeliveryEvidence) => void;
+  /** Click en cualquier zona "neutra" de la fila — abre el drawer de
+   *  detalle. Los botones que ya tienen acción (Editar, Devolver al
+   *  stock, color picker, etc.) detienen la propagación. */
+  onSelectRow: () => void;
 }) {
   // Desglose con costo por fila: "5× Malta ($350) + 3× Parota ($600)".
   // Si la fila no tiene cost (lead antiguo sin migrar), omitimos el "($X)".
@@ -476,8 +552,34 @@ function Row({
   const issueCount = issues.length;
   const hasFailed = Boolean(r.failed_delivery_reason);
 
+  // Click handler: abre el drawer SOLO si el target no está dentro de un
+  // elemento interactivo (botón, link, input). Más limpio que poner
+  // stopPropagation en cada botón individual — los nuevos botones que
+  // se agreguen mañana funcionan sin tocar este código.
+  const handleRowActivate = (
+    e:
+      | React.MouseEvent<HTMLTableRowElement>
+      | React.KeyboardEvent<HTMLTableRowElement>,
+  ) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button, a, input, select, textarea, label')) return;
+    onSelectRow();
+  };
+
   return (
-    <tr style={rowStyle}>
+    <tr
+      style={{ ...rowStyle, cursor: 'pointer' }}
+      onClick={handleRowActivate}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          handleRowActivate(e);
+        }
+      }}
+      aria-label={`Ver detalle de ${r.client_name}`}
+    >
       <td data-label="Cliente">
         <div className="flex items-center gap-2 flex-wrap">
           <div className="font-medium">{r.client_name}</div>
@@ -1179,6 +1281,569 @@ function formatDateTime(iso: string | null): string {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+/**
+ * Drawer lateral con TODA la información del lead. Se monta al
+ * cliquear una fila de la tabla en /admin/entregas; el `EntregaRow`
+ * trae los campos visibles y `LeadDetail` (passed-in) los extendidos
+ * que no caben en la tabla (teléfono, canal, vendedor, documentos,
+ * desglose de cubrecanto/cortes/catálogo, pagos registrados).
+ *
+ * Layout: overlay oscuro fullscreen + panel anclado a la derecha
+ * (max 520px). El panel cierra con:
+ *   - click en el overlay (fuera del panel)
+ *   - botón "X"
+ *   - Escape
+ *
+ * Animación con CSS-in-style: el panel entra desde la derecha en
+ * 250ms (animate-slide-in-right) y el overlay aparece con fade.
+ * No usamos librerías de modal porque el resto del proyecto usa el
+ * mismo patrón inline (IssuesModal, FailedDeliveryModal).
+ *
+ * NB: si `detail` es null (lead no estaba en el record passed por el
+ * server — caso edge, no debería ocurrir), mostramos un mensaje de
+ * fallback en lugar de romper.
+ */
+function LeadDetailModal({
+  entrega: r,
+  detail,
+  issues,
+  onClose,
+}: {
+  entrega: EntregaRow;
+  detail: LeadDetail | null;
+  issues: IssueRow[];
+  onClose: () => void;
+}) {
+  // Cerrar con Escape. Listener montado solo mientras el modal está
+  // abierto (este componente se desmonta cuando selectedLead = null).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const colors = detail?.colors_with_unit ?? [];
+  const subtotalHojas = colors.reduce(
+    (s, c) => s + c.quantity * c.unit_cost,
+    0,
+  );
+  const sheetsCount = colors.reduce((s, c) => s + c.quantity, 0);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex"
+      style={{ background: 'rgba(15,23,42,0.45)' }}
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="lead-detail-title"
+    >
+      <div style={{ flex: 1 }} aria-hidden="true" />
+      <aside
+        className="card animate-slide-in-right"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: '100%',
+          maxWidth: 520,
+          height: '100%',
+          overflowY: 'auto',
+          borderRadius: 0,
+          background: 'var(--bg-base, #fff)',
+          padding: '20px 24px',
+          boxShadow: '-8px 0 32px rgba(0,0,0,0.15)',
+        }}
+      >
+        {/* Header con cerrar */}
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <h2
+              id="lead-detail-title"
+              className="text-xl font-bold leading-tight"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              {r.client_name}
+            </h2>
+            <div
+              className="text-xs font-mono mt-1"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              #{r.id.slice(0, 8)}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ padding: 6, flexShrink: 0 }}
+            onClick={onClose}
+            aria-label="Cerrar detalle"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* SECCIÓN 1 — Datos del cliente */}
+        <DetailSection title="Datos del cliente">
+          <KV
+            icon={<Phone size={14} />}
+            label="Teléfono"
+            value={detail?.phone || '—'}
+          />
+          <KV
+            label="Canal"
+            value={(detail?.channel ?? '').toUpperCase() || '—'}
+          />
+          <KV label="Vendedor" value={detail?.seller_name ?? '—'} />
+          <KV label="Fecha del pedido" value={formatDate(r.sale_date)} />
+          <KV
+            label="Tipo de compra"
+            value={
+              r.purchase_type === 'fabrica'
+                ? '🏭 En fábrica'
+                : r.purchase_type === 'domicilio'
+                  ? 'A domicilio'
+                  : r.purchase_type ?? '—'
+            }
+          />
+          <KV label="Tipo de venta" value={r.sale_type ?? '—'} />
+        </DetailSection>
+
+        {/* SECCIÓN 2 — Detalle del pedido */}
+        <DetailSection title="Detalle del pedido">
+          {(detail?.has_hojas || detail?.has_cubrecanto || detail?.has_catalogo) && (
+            <div className="flex items-center gap-1 flex-wrap mb-3">
+              {detail?.has_hojas && (
+                <span
+                  className="badge"
+                  style={{
+                    fontSize: '0.6875rem',
+                    background: '#DBEAFE',
+                    color: '#1E40AF',
+                  }}
+                >
+                  📋 Hojas
+                </span>
+              )}
+              {detail?.has_cubrecanto && (
+                <span
+                  className="badge"
+                  style={{
+                    fontSize: '0.6875rem',
+                    background: '#FEF3C7',
+                    color: '#92400E',
+                  }}
+                >
+                  📏 Cubrecanto
+                </span>
+              )}
+              {detail?.has_catalogo && (
+                <span
+                  className="badge"
+                  style={{
+                    fontSize: '0.6875rem',
+                    background: '#EDE9FE',
+                    color: '#6D28D9',
+                  }}
+                >
+                  📚 Catálogo
+                </span>
+              )}
+            </div>
+          )}
+
+          {colors.length > 0 && (
+            <div className="mb-3">
+              <div
+                className="text-xs uppercase tracking-wide mb-1"
+                style={{ color: 'var(--text-tertiary)', fontWeight: 600 }}
+              >
+                Colores ({sheetsCount} hojas)
+              </div>
+              <ul className="text-sm flex flex-col gap-1">
+                {colors.map((c, i) => (
+                  <li key={i} className="flex justify-between gap-2">
+                    <span>
+                      {c.quantity}× {c.color_name}
+                    </span>
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      {formatMXN(c.unit_cost)} ·{' '}
+                      <strong>{formatMXN(c.quantity * c.unit_cost)}</strong>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {r.edgebanding_colors.length > 0 && (
+            <div className="mb-3">
+              <div
+                className="text-xs uppercase tracking-wide mb-1"
+                style={{ color: '#92400E', fontWeight: 600 }}
+              >
+                Cubrecanto · colores
+              </div>
+              <ul className="text-sm flex flex-col gap-1">
+                {r.edgebanding_colors.map((c, i) => (
+                  <li key={i}>
+                    {c.color_name} — <strong>{c.quantity} m</strong>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {detail?.edge_banding_type && detail.edge_banding_meters != null && (
+            <KV
+              label="Cubrecanto estructurado"
+              value={`${detail.edge_banding_type} · ${detail.edge_banding_meters} m${
+                detail.edge_banding_total != null
+                  ? ` · ${formatMXN(detail.edge_banding_total)}`
+                  : ''
+              }`}
+            />
+          )}
+
+          {detail?.cuts_count != null && detail.cuts_count > 0 && (
+            <KV
+              label="Cortes"
+              value={`${detail.cuts_count} cortes${
+                detail.cuts_total != null
+                  ? ` · ${formatMXN(detail.cuts_total)}`
+                  : ''
+              }`}
+            />
+          )}
+
+          {detail?.has_catalogo && detail.catalog_price != null && (
+            <KV label="Catálogo" value={formatMXN(detail.catalog_price)} />
+          )}
+
+          {detail?.has_cubrecanto &&
+            detail.edgebanding_manual_cost != null &&
+            detail.edgebanding_manual_cost > 0 && (
+              <KV
+                label="Cubrecanto (manual)"
+                value={`${formatMXN(detail.edgebanding_manual_cost)} / unidad`}
+              />
+            )}
+
+          {detail?.delivery_cost != null && detail.delivery_cost > 0 && (
+            <KV label="Envío" value={formatMXN(detail.delivery_cost)} />
+          )}
+
+          {/* Desglose total */}
+          <div
+            className="mt-3 pt-3 flex justify-between items-baseline"
+            style={{ borderTop: '1px solid var(--border)' }}
+          >
+            <span className="text-sm font-semibold">Total</span>
+            <span className="text-xl font-bold">
+              {formatMXN(r.total_amount)}
+            </span>
+          </div>
+          {subtotalHojas > 0 && colors.length > 0 && (
+            <div
+              className="text-xs mt-1 flex justify-between"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              <span>Subtotal hojas</span>
+              <span>{formatMXN(subtotalHojas)}</span>
+            </div>
+          )}
+        </DetailSection>
+
+        {/* SECCIÓN 3 — Estado */}
+        <DetailSection title="Estado">
+          <div className="flex items-center gap-2 flex-wrap mb-2">
+            <span className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+              Entrega:
+            </span>
+            <DeliveryBadge status={r.delivery_status} />
+            <span className="text-xs ml-2" style={{ color: 'var(--text-tertiary)' }}>
+              Pago:
+            </span>
+            <PaymentBadge status={r.payment_status} />
+          </div>
+          <KV
+            label="Adeudo"
+            value={
+              <span
+                style={{
+                  color: r.adeudo > 0 ? 'var(--danger)' : 'var(--success)',
+                  fontWeight: 700,
+                }}
+              >
+                {formatMXN(r.adeudo)}
+              </span>
+            }
+          />
+          <KV
+            icon={<Truck size={14} />}
+            label="Chofer"
+            value={
+              r.purchase_type === 'fabrica'
+                ? '🏭 Recoge en fábrica'
+                : r.driver_name ?? 'Sin asignar'
+            }
+          />
+        </DetailSection>
+
+        {/* SECCIÓN 4 — Dirección y mapa */}
+        {(r.address || r.maps_url) && (
+          <DetailSection title="Dirección">
+            <div
+              className="text-sm whitespace-pre-wrap"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              {r.address || '—'}
+            </div>
+            {r.maps_url && (
+              <a
+                href={r.maps_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm inline-flex items-center gap-1 mt-2 hover:underline"
+                style={{ color: 'var(--brand-secondary)' }}
+              >
+                <MapPin size={14} /> Ver en mapa
+              </a>
+            )}
+          </DetailSection>
+        )}
+
+        {/* SECCIÓN 5 — Documentos adjuntos */}
+        {detail && detail.document_urls.length > 0 && (
+          <DetailSection title="Documentos adjuntos">
+            <ul className="flex flex-col gap-1">
+              {detail.document_urls.map((u, i) => {
+                const isPdf = /\.pdf(\?|$)/i.test(u);
+                const name = u.split('/').pop() ?? `Archivo ${i + 1}`;
+                const cleanName = /^\d+_\d+_[a-z0-9]+\./i.test(name)
+                  ? `Archivo ${i + 1}.${name.split('.').pop() ?? ''}`
+                  : name;
+                return (
+                  <li key={u}>
+                    <a
+                      href={u}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--bg-subtle)]"
+                      style={{
+                        textDecoration: 'none',
+                        color: 'var(--text-primary)',
+                        fontSize: '0.8125rem',
+                      }}
+                    >
+                      {isPdf ? (
+                        <FileText
+                          size={14}
+                          style={{ color: '#B91C1C', flexShrink: 0 }}
+                        />
+                      ) : (
+                        <ImageIcon
+                          size={14}
+                          style={{ color: '#1E40AF', flexShrink: 0 }}
+                        />
+                      )}
+                      <span className="truncate">{cleanName}</span>
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          </DetailSection>
+        )}
+
+        {/* SECCIÓN 6 — Issues reportados */}
+        {issues.length > 0 && (
+          <DetailSection title="Reportes sin resolver">
+            <ul className="flex flex-col gap-2">
+              {issues.map((i) => (
+                <li
+                  key={i.id}
+                  className="card p-3"
+                  style={{
+                    background: 'var(--bg-subtle)',
+                    border: '1px solid var(--border)',
+                  }}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span
+                      className={`badge ${
+                        i.issue_type === 'faltante'
+                          ? 'badge-danger'
+                          : 'badge-warning'
+                      }`}
+                      style={{ fontSize: '0.6875rem' }}
+                    >
+                      {i.issue_type === 'faltante' ? 'Faltante' : 'Detalle'}
+                    </span>
+                    <span
+                      className="text-xs"
+                      style={{ color: 'var(--text-tertiary)' }}
+                    >
+                      {formatDateTime(i.created_at)}
+                    </span>
+                  </div>
+                  <p
+                    className="text-sm"
+                    style={{
+                      color: 'var(--text-primary)',
+                      whiteSpace: 'pre-wrap',
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    {i.description || '(sin descripción)'}
+                  </p>
+                  {i.photo_url && (
+                    <a
+                      href={i.photo_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs hover:underline inline-flex items-center gap-1 mt-1"
+                      style={{ color: 'var(--brand-secondary)' }}
+                    >
+                      📷 Ver foto
+                    </a>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </DetailSection>
+        )}
+
+        {/* SECCIÓN 7 — Pagos */}
+        {detail && detail.payments.length > 0 && (
+          <DetailSection title="Pagos registrados">
+            <ul className="flex flex-col gap-2">
+              {detail.payments.map((p) => (
+                <li
+                  key={p.id}
+                  className="flex items-center justify-between gap-2 text-sm"
+                >
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Wallet
+                      size={14}
+                      style={{ color: 'var(--text-tertiary)' }}
+                    />
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                      {paymentTypeLabel(p.payment_type)} ·{' '}
+                      {p.method || '—'}
+                    </span>
+                    <span
+                      className={`badge ${
+                        p.status === 'exitoso'
+                          ? 'badge-success'
+                          : p.status === 'cancelado'
+                            ? 'badge-danger'
+                            : 'badge-neutral'
+                      }`}
+                      style={{ fontSize: '0.6875rem' }}
+                    >
+                      {p.status || 'pendiente'}
+                    </span>
+                  </div>
+                  <span className="font-bold">{formatMXN(p.amount)}</span>
+                </li>
+              ))}
+            </ul>
+          </DetailSection>
+        )}
+
+        {/* Acciones del modal */}
+        <div className="flex items-center gap-2 mt-6">
+          <Link
+            href={`/leads/${r.id}/edit`}
+            className="btn btn-primary"
+            style={{ flex: 1, justifyContent: 'center' }}
+          >
+            <Pencil size={14} /> Editar lead
+          </Link>
+          <button
+            type="button"
+            className="btn btn-outline"
+            onClick={onClose}
+            style={{ flex: 1, justifyContent: 'center' }}
+          >
+            Cerrar
+          </button>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+/**
+ * Sección del drawer con título uppercase pequeño + contenido. Mantiene
+ * estilo consistente entre las 7 secciones del modal.
+ */
+function DetailSection({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="mb-5">
+      <h3
+        className="text-xs uppercase tracking-wide mb-2"
+        style={{ color: 'var(--text-tertiary)', fontWeight: 700 }}
+      >
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+/** Par clave-valor compacto para datos del cliente / estado. */
+function KV({
+  icon,
+  label,
+  value,
+}: {
+  icon?: React.ReactNode;
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 text-sm py-0.5">
+      <span
+        className="flex items-center gap-1"
+        style={{ color: 'var(--text-secondary)' }}
+      >
+        {icon}
+        {label}
+      </span>
+      <span
+        style={{
+          color: 'var(--text-primary)',
+          textAlign: 'right',
+          fontWeight: 500,
+        }}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function paymentTypeLabel(t: string): string {
+  switch (t) {
+    case 'anticipo':
+      return 'Anticipo';
+    case 'liquidacion':
+      return 'Liquidación';
+    case 'contra_entrega':
+      return 'Contra entrega';
+    default:
+      return t || '—';
+  }
 }
 
 /**

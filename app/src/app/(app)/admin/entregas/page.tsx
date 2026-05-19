@@ -6,6 +6,8 @@ import {
   type DriverOption,
   type IssueRow,
   type RouteCandidate,
+  type LeadDetail,
+  type LeadPayment,
 } from './entregas-client';
 
 /**
@@ -120,12 +122,16 @@ export default async function EntregasPage({
     let query = admin
       .from('leads')
       .select(
-        `id, client_name, address, maps_url, total_amount,
+        `id, client_name, phone, address, maps_url, channel, total_amount,
          delivery_status, payment_status, sale_date, created_at,
-         driver_id, sale_type, product_type, purchase_type, row_color,
+         driver_id, seller_id, sale_type, product_type, purchase_type, row_color,
          failed_delivery_reason, failed_delivery_photo_url, stock_returned,
-         cost_per_sheet,
-         lead_colors ( quantity, cost_per_sheet, colors ( name ) ),
+         cost_per_sheet, has_hojas, has_cubrecanto, has_catalogo,
+         cuts_count, cuts_total, edge_banding_type, edge_banding_meters,
+         edge_banding_total, edgebanding_manual_cost, catalog_price,
+         delivery_cost, document_url, document_urls,
+         sellers ( name ),
+         lead_colors ( quantity, cost_per_sheet, unit_cost, colors ( name ) ),
          lead_edgebanding_colors ( quantity, colors ( name ) )`,
       )
       .is('deleted_at', null);
@@ -199,14 +205,17 @@ export default async function EntregasPage({
     type RawLead = {
       id: string;
       client_name: string;
+      phone: string | null;
       address: string | null;
       maps_url: string | null;
+      channel: string | null;
       total_amount: number | string | null;
       delivery_status: string | null;
       payment_status: string | null;
       sale_date: string | null;
       created_at: string | null;
       driver_id: string | null;
+      seller_id: string | null;
       sale_type: string | null;
       product_type: string | null;
       purchase_type: string | null;
@@ -215,10 +224,25 @@ export default async function EntregasPage({
       failed_delivery_photo_url: string | null;
       stock_returned: boolean | null;
       cost_per_sheet: number | string | null;
+      has_hojas: boolean | null;
+      has_cubrecanto: boolean | null;
+      has_catalogo: boolean | null;
+      cuts_count: number | null;
+      cuts_total: number | string | null;
+      edge_banding_type: string | null;
+      edge_banding_meters: number | string | null;
+      edge_banding_total: number | string | null;
+      edgebanding_manual_cost: number | string | null;
+      catalog_price: number | string | null;
+      delivery_cost: number | string | null;
+      document_url: string | null;
+      document_urls: string[] | null;
+      sellers: { name: string } | { name: string }[] | null;
       lead_colors:
         | {
             quantity: number | null;
             cost_per_sheet: number | null;
+            unit_cost: number | null;
             colors: { name: string } | { name: string }[] | null;
           }[]
         | null;
@@ -229,6 +253,10 @@ export default async function EntregasPage({
           }[]
         | null;
     };
+
+    // Acumulamos los detalles por lead aquí mientras mapeamos `rows`;
+    // el modal de detalle del cliente los consume sin re-fetch.
+    const leadDetails: Record<string, LeadDetail> = {};
 
     const rows: EntregaRow[] = ((leadsData ?? []) as RawLead[]).map((l) => {
       const total = Number(l.total_amount ?? 0);
@@ -263,6 +291,62 @@ export default async function EntregasPage({
           };
         })
         .filter((c) => c.quantity > 0);
+      // Datos extendidos del lead para el modal de detalle. Se calculan
+      // una vez aquí (mismo loop) para no duplicar parsing.
+      const sellerObj = Array.isArray(l.sellers) ? l.sellers[0] : l.sellers;
+      const documentUrlsArr = Array.isArray(l.document_urls)
+        ? (l.document_urls as string[]).filter((u): u is string => !!u)
+        : [];
+      const mergedDocs =
+        documentUrlsArr.length > 0
+          ? documentUrlsArr
+          : l.document_url
+            ? [l.document_url]
+            : [];
+      const colorsWithUnit = (l.lead_colors ?? [])
+        .map((lc) => {
+          const colorObj = Array.isArray(lc.colors) ? lc.colors[0] : lc.colors;
+          const unit =
+            lc.unit_cost != null
+              ? Number(lc.unit_cost)
+              : lc.cost_per_sheet != null
+                ? Number(lc.cost_per_sheet)
+                : legacyCost;
+          return {
+            color_name: colorObj?.name ?? '(sin nombre)',
+            quantity: Number(lc.quantity ?? 0),
+            unit_cost: unit,
+          };
+        })
+        .filter((c) => c.quantity > 0);
+
+      leadDetails[l.id] = {
+        phone: l.phone ?? '',
+        channel: l.channel ?? '',
+        seller_name: sellerObj?.name ?? null,
+        has_hojas: Boolean(l.has_hojas),
+        has_cubrecanto: Boolean(l.has_cubrecanto),
+        has_catalogo: Boolean(l.has_catalogo),
+        cuts_count: l.cuts_count ?? null,
+        cuts_total: l.cuts_total == null ? null : Number(l.cuts_total),
+        edge_banding_type: l.edge_banding_type ?? null,
+        edge_banding_meters:
+          l.edge_banding_meters == null ? null : Number(l.edge_banding_meters),
+        edge_banding_total:
+          l.edge_banding_total == null ? null : Number(l.edge_banding_total),
+        edgebanding_manual_cost:
+          l.edgebanding_manual_cost == null
+            ? null
+            : Number(l.edgebanding_manual_cost),
+        catalog_price:
+          l.catalog_price == null ? null : Number(l.catalog_price),
+        delivery_cost:
+          l.delivery_cost == null ? null : Number(l.delivery_cost),
+        document_urls: mergedDocs,
+        colors_with_unit: colorsWithUnit,
+        payments: [],
+      };
+
       return {
         id: l.id,
         client_name: l.client_name,
@@ -294,6 +378,46 @@ export default async function EntregasPage({
         edgebanding_colors: edgebandingColors,
       };
     });
+
+    // Bulk de pagos por lead (todos, no solo exitosos) para mostrar la
+    // lista en el modal. Una sola query, agrupamos por lead_id.
+    if (leadIds.length > 0) {
+      try {
+        const { data: pmtRows, error: pmtErr } = await admin
+          .from('payments')
+          .select(
+            'id, lead_id, amount, method, payment_type, status, paid_at, created_at',
+          )
+          .in('lead_id', leadIds)
+          .order('created_at', { ascending: false });
+        if (pmtErr) {
+          console.error(
+            '[EntregasPage] payments detail select falló (no fatal):',
+            pmtErr,
+          );
+        } else {
+          for (const p of pmtRows ?? []) {
+            if (!p.lead_id) continue;
+            const detail = leadDetails[p.lead_id];
+            if (!detail) continue;
+            const row: LeadPayment = {
+              id: p.id,
+              amount: Number(p.amount ?? 0),
+              method: (p.method as string) ?? '',
+              payment_type: (p.payment_type as string) ?? '',
+              status: (p.status as string) ?? '',
+              paid_at: p.paid_at ?? p.created_at ?? null,
+            };
+            detail.payments.push(row);
+          }
+        }
+      } catch (e) {
+        console.error(
+          '[EntregasPage] payments detail excepción (no fatal):',
+          e,
+        );
+      }
+    }
 
     // Lookup bulk de pagos contra_entrega para los leads visibles.
     // Mismo patrón que /leads. Un lead con AL MENOS un payment
@@ -632,6 +756,7 @@ export default async function EntregasPage({
         routeCandidates={routeCandidates}
         evidenceByLead={evidenceByLead}
         contraEntregaLeadIds={contraEntregaLeadIds}
+        leadDetails={leadDetails}
       />
     );
   } catch (err) {
