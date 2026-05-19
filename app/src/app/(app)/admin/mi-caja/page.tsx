@@ -69,7 +69,7 @@ export default async function MiCajaPage() {
       admin
         .from('admin_cash_register')
         .select(
-          'id, amount, operation_type, source, created_at, notes',
+          'id, amount, operation_type, source, created_at, notes, payment_id, cash_transfer_id',
         )
         .eq('admin_id', adminId)
         .order('created_at', { ascending: false })
@@ -140,20 +140,143 @@ export default async function MiCajaPage() {
       source: string;
       created_at: string | null;
       notes: string | null;
+      /** Nombre del cliente del lead asociado al pago (vía
+       *  payment_id → payments.lead_id → leads.client_name). null
+       *  cuando el movimiento no proviene de un pago o no se pudo
+       *  resolver. */
+      client_name: string | null;
+      /** Nombre del chofer asociado al cash_transfer (vía
+       *  cash_transfer_id → cash_transfers.driver_id → profiles.full_name).
+       *  null cuando no aplica o no se pudo resolver. */
+      driver_name: string | null;
     };
-    const movements: Movement[] = (recentRes.data ?? []).map((m) => ({
-      id: m.id,
-      amount: Number(m.amount ?? 0),
-      operation_type:
-        m.operation_type === 'egreso'
-          ? 'egreso'
-          : m.operation_type === 'validacion'
-            ? 'validacion'
-            : 'ingreso',
-      source: m.source ?? '',
-      created_at: m.created_at ?? null,
-      notes: m.notes ?? null,
-    }));
+
+    type RawMovement = {
+      id: string;
+      amount: number | string | null;
+      operation_type: string | null;
+      source: string | null;
+      created_at: string | null;
+      notes: string | null;
+      payment_id: string | null;
+      cash_transfer_id: string | null;
+    };
+    const recentRows: RawMovement[] = (recentRes.data ?? []) as RawMovement[];
+
+    // ── Resolver client_name (vía payments) y driver_name (vía
+    //    cash_transfers) en bulk. Mismo patrón que /admin/entregas:
+    //    SELECTs por IDs únicos, lookup en memoria. Dos pares de
+    //    queries encadenados (payments→leads y cash_transfers→profiles),
+    //    cada par paralelizado entre sí.
+    const paymentIds = Array.from(
+      new Set(
+        recentRows
+          .map((r) => r.payment_id)
+          .filter((x): x is string => !!x),
+      ),
+    );
+    const transferIds = Array.from(
+      new Set(
+        recentRows
+          .map((r) => r.cash_transfer_id)
+          .filter((x): x is string => !!x),
+      ),
+    );
+
+    // Round-trip 1 (paralelo): payments + cash_transfers.
+    const [paymentsRes, transfersRes] = await Promise.all([
+      paymentIds.length > 0
+        ? admin.from('payments').select('id, lead_id').in('id', paymentIds)
+        : Promise.resolve({ data: [], error: null }),
+      transferIds.length > 0
+        ? admin
+            .from('cash_transfers')
+            .select('id, driver_id')
+            .in('id', transferIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (paymentsRes.error) {
+      console.error(
+        '[MiCajaPage] payments lookup falló (no fatal):',
+        paymentsRes.error,
+      );
+    }
+    if (transfersRes.error) {
+      console.error(
+        '[MiCajaPage] cash_transfers lookup falló (no fatal):',
+        transfersRes.error,
+      );
+    }
+    const leadIdByPayment = new Map<string, string>();
+    for (const p of paymentsRes.data ?? []) {
+      if (p.id && p.lead_id) leadIdByPayment.set(p.id, p.lead_id);
+    }
+    const driverIdByTransfer = new Map<string, string>();
+    for (const t of transfersRes.data ?? []) {
+      if (t.id && t.driver_id) driverIdByTransfer.set(t.id, t.driver_id);
+    }
+    const leadIds = Array.from(new Set(leadIdByPayment.values()));
+    const driverIds = Array.from(new Set(driverIdByTransfer.values()));
+
+    // Round-trip 2 (paralelo): leads + profiles (drivers).
+    const [leadsRes, driversRes] = await Promise.all([
+      leadIds.length > 0
+        ? admin.from('leads').select('id, client_name').in('id', leadIds)
+        : Promise.resolve({ data: [], error: null }),
+      driverIds.length > 0
+        ? admin.from('profiles').select('id, full_name').in('id', driverIds)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+    if (leadsRes.error) {
+      console.error(
+        '[MiCajaPage] leads lookup falló (no fatal):',
+        leadsRes.error,
+      );
+    }
+    if (driversRes.error) {
+      console.error(
+        '[MiCajaPage] drivers lookup falló (no fatal):',
+        driversRes.error,
+      );
+    }
+    const clientNameByLead = new Map<string, string>();
+    for (const l of leadsRes.data ?? []) {
+      if (l.id) clientNameByLead.set(l.id, l.client_name ?? '');
+    }
+    const driverNameById = new Map<string, string>();
+    for (const d of driversRes.data ?? []) {
+      if (d.id) driverNameById.set(d.id, d.full_name ?? '');
+    }
+
+    const movements: Movement[] = recentRows.map((m) => {
+      const leadId = m.payment_id
+        ? leadIdByPayment.get(m.payment_id) ?? null
+        : null;
+      const clientName = leadId
+        ? clientNameByLead.get(leadId) ?? null
+        : null;
+      const driverId = m.cash_transfer_id
+        ? driverIdByTransfer.get(m.cash_transfer_id) ?? null
+        : null;
+      const driverName = driverId
+        ? driverNameById.get(driverId) ?? null
+        : null;
+      return {
+        id: m.id,
+        amount: Number(m.amount ?? 0),
+        operation_type:
+          m.operation_type === 'egreso'
+            ? 'egreso'
+            : m.operation_type === 'validacion'
+              ? 'validacion'
+              : 'ingreso',
+        source: m.source ?? '',
+        created_at: m.created_at ?? null,
+        notes: m.notes ?? null,
+        client_name: clientName && clientName.length > 0 ? clientName : null,
+        driver_name: driverName && driverName.length > 0 ? driverName : null,
+      };
+    });
 
     return (
       <div className="flex flex-col gap-6">
@@ -275,6 +398,7 @@ export default async function MiCajaPage() {
                   <th>Fecha</th>
                   <th>Tipo</th>
                   <th>Origen</th>
+                  <th>Cliente</th>
                   <th className="text-right">Monto</th>
                 </tr>
               </thead>
@@ -282,7 +406,7 @@ export default async function MiCajaPage() {
                 {movements.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={4}
+                      colSpan={5}
                       className="text-center py-8 text-sm"
                       style={{ color: 'var(--text-tertiary)' }}
                     >
@@ -316,6 +440,13 @@ export default async function MiCajaPage() {
                         style={{ color: 'var(--text-secondary)' }}
                       >
                         {sourceLabel(m.source)}
+                      </td>
+                      <td
+                        data-label="Cliente"
+                        className="text-sm"
+                        style={{ color: 'var(--text-secondary)' }}
+                      >
+                        {clientCellLabel(m)}
                       </td>
                       <td
                         data-label="Monto"
@@ -423,6 +554,34 @@ function sourceLabel(source: string): string {
     default:
       return source || '—';
   }
+}
+
+/**
+ * Etiqueta de la columna "Cliente" para cada movimiento del historial.
+ * Combina la fuente con los datos resueltos en bulk:
+ *   - pago_efectivo + client_name      → nombre del cliente del lead.
+ *   - chofer + driver_name             → "Chofer · {nombre}".
+ *   - chofer sin nombre resuelto       → "Recibido de chofer".
+ *   - validado_contador                → "Entregado al contador".
+ *   - cualquier otra source            → guion (no aplica cliente).
+ */
+function clientCellLabel(m: {
+  source: string;
+  client_name: string | null;
+  driver_name: string | null;
+}): string {
+  if (m.source === 'pago_efectivo') {
+    return m.client_name ?? '—';
+  }
+  if (m.source === 'chofer') {
+    return m.driver_name
+      ? `Chofer · ${m.driver_name}`
+      : 'Recibido de chofer';
+  }
+  if (m.source === 'validado_contador') {
+    return 'Entregado al contador';
+  }
+  return '—';
 }
 
 /**
