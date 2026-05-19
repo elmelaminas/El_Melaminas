@@ -45,12 +45,27 @@ export const dynamic = 'force-dynamic';
 
 const STATUS_VALUES = ['pendiente', 'entregado', 'cancelado'] as const;
 
+// Mismo whitelist que /leads/page.tsx para los tabs de color (4
+// automáticos + 2 manuales + 'all'/'' = sin filtro). Mantener sync
+// con /leads para no divergir entre las dos vistas.
+const COLOR_FILTER_VALUES = [
+  'all',
+  'azul',
+  'rosa',
+  'naranja',
+  'amarillo',
+  'verde',
+  'morado',
+] as const;
+
 type RawSearchParams = {
   driver?: string | string[];
   status?: string | string[];
   /** Fecha YYYY-MM-DD para la sección "Ruta del día". Default = hoy
    *  (UTC) en page.tsx si no viene o es inválida. */
   fecha?: string | string[];
+  /** Tab de color (ver COLOR_FILTER_VALUES). 'all' o vacío = sin filtro. */
+  color_filter?: string | string[];
 };
 
 /** Devuelve hoy en formato YYYY-MM-DD. Usamos UTC para consistencia
@@ -82,6 +97,13 @@ export default async function EntregasPage({
     const raw = await searchParams;
     const driverParam = pickStr(raw.driver);
     const statusFilter = whitelist(pickStr(raw.status), STATUS_VALUES);
+
+    const colorFilterRaw = whitelist(pickStr(raw.color_filter), COLOR_FILTER_VALUES);
+    // 'all' y '' son equivalentes (sin filtro). Normalizamos a ''.
+    const colorFilter: '' | Exclude<typeof colorFilterRaw, 'all' | ''> =
+      colorFilterRaw === 'all' || colorFilterRaw === ''
+        ? ''
+        : (colorFilterRaw as Exclude<typeof colorFilterRaw, 'all' | ''>);
 
     // Fecha para la sección "Ruta del día". Si viene mal formateada
     // caemos a hoy — no es un filtro estricto, es un selector de fecha
@@ -141,6 +163,57 @@ export default async function EntregasPage({
       query = query.in('delivery_status', ['pendiente', 'en_transito']);
     } else if (statusFilter) {
       query = query.eq('delivery_status', statusFilter);
+    }
+
+    // Filtro por color (tab). Mismo patrón que /leads/page.tsx para
+    // mantener semántica consistente — un drill-down desde /leads que
+    // navegue a /admin/entregas con el mismo `color_filter` ve los
+    // mismos leads. Naranja requiere un pre-query a `payments` para
+    // resolver los lead_ids con pago contra_entrega.
+    if (colorFilter === 'azul') {
+      query = query.or('product_type.eq.con_corte,row_color.eq.azul');
+    } else if (colorFilter === 'rosa') {
+      query = query.or('sale_type.eq.venta_empleado,row_color.eq.rosa');
+    } else if (colorFilter === 'amarillo') {
+      query = query.or('product_type.eq.sin_corte,row_color.eq.amarillo');
+    } else if (colorFilter === 'naranja') {
+      // Pre-query defensivo: tolerar enum sin 'contra_entrega' o
+      // schema cache stale (mismo manejo que /leads/page.tsx).
+      let ceIds: string[] = [];
+      try {
+        const { data: ceLeads, error: ceErr } = await admin
+          .from('payments')
+          .select('lead_id')
+          .eq('payment_type', 'contra_entrega');
+        if (ceErr) {
+          console.error(
+            '[EntregasPage] naranja contra_entrega lookup falló (no fatal):',
+            ceErr,
+          );
+        } else {
+          ceIds = Array.from(
+            new Set(
+              (ceLeads ?? [])
+                .map((p) => p.lead_id)
+                .filter((x): x is string => !!x),
+            ),
+          );
+        }
+      } catch (e) {
+        console.error(
+          '[EntregasPage] naranja contra_entrega excepción (no fatal):',
+          e,
+        );
+      }
+      if (ceIds.length > 0) {
+        query = query.or(`row_color.eq.naranja,id.in.(${ceIds.join(',')})`);
+      } else {
+        query = query.eq('row_color', 'naranja');
+      }
+    } else if (colorFilter === 'verde') {
+      query = query.eq('row_color', 'verde');
+    } else if (colorFilter === 'morado') {
+      query = query.eq('row_color', 'morado');
     }
 
     const { data: leadsData, error: leadsErr } = await query;
@@ -750,7 +823,11 @@ export default async function EntregasPage({
       <EntregasClient
         rows={rows}
         drivers={drivers}
-        filters={{ driver: validDriver, status: statusFilter }}
+        filters={{
+          driver: validDriver,
+          status: statusFilter,
+          color_filter: colorFilter,
+        }}
         issuesByLead={issuesByLead}
         routeDate={routeDate}
         routeCandidates={routeCandidates}

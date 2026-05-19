@@ -335,7 +335,7 @@ export function LeadsClient({
     },
     {
       value: 'amarillo',
-      label: '🟡 Pagado sin entregar',
+      label: '🟡 Sin corte',
       bg: LEAD_ROW_COLORS.amarillo,
       border: LEAD_ROW_BORDERS.amarillo,
     },

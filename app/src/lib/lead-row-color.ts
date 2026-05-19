@@ -144,15 +144,12 @@ function resolveRowColorKey(
   if (manual && manual !== 'sin_color') return manual;
 
   // B. Reglas automáticas en orden de prioridad.
+  //    Amarillo se reasignó a `product_type='sin_corte'` (2026-05).
+  //    Antes la regla era "pagado y sin entregar"; ahora ese estado
+  //    no tiene color automático — el admin puede pintarlo a mano.
   if (row.sale_type === 'venta_empleado') return 'rosa';
   if (contraEntregaIds.has(row.id)) return 'naranja';
-  if (
-    row.payment_status === 'pagado' &&
-    row.delivery_status !== 'entregado' &&
-    row.delivery_status !== 'cancelado'
-  ) {
-    return 'amarillo';
-  }
+  if (row.product_type === 'sin_corte') return 'amarillo';
   if (row.product_type === 'con_corte') return 'azul';
 
   return undefined;

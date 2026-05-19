@@ -38,6 +38,8 @@ import {
   getLeadRowStyle,
   LeadRowLegend,
   RowColorPickerCell,
+  LEAD_ROW_COLORS,
+  LEAD_ROW_BORDERS,
 } from '@/components/ui/lead-row-color';
 import {
   updateLeadColorAction,
@@ -205,9 +207,19 @@ export type IssueRow = {
   created_at: string | null;
 };
 
+type ColorFilterValue =
+  | ''
+  | 'azul'
+  | 'rosa'
+  | 'naranja'
+  | 'amarillo'
+  | 'verde'
+  | 'morado';
+
 type FiltersState = {
   driver: string;
   status: '' | 'pendiente' | 'entregado' | 'cancelado';
+  color_filter: ColorFilterValue;
 };
 
 const STATUS_OPTS: { value: FiltersState['status']; label: string }[] = [
@@ -280,10 +292,12 @@ export function EntregasClient({
     const merged = {
       driver: next.driver ?? filters.driver,
       status: next.status ?? filters.status,
+      color_filter: next.color_filter ?? filters.color_filter,
     };
     const params = new URLSearchParams();
     if (merged.driver) params.set('driver', merged.driver);
     if (merged.status) params.set('status', merged.status);
+    if (merged.color_filter) params.set('color_filter', merged.color_filter);
     // Preservamos `fecha` si está activa (drill-down con filtro
     // de fecha + filtros de chofer/estado simultáneos).
     const sp = new URLSearchParams(window.location.search);
@@ -300,6 +314,8 @@ export function EntregasClient({
     const params = new URLSearchParams();
     if (filters.driver) params.set('driver', filters.driver);
     if (filters.status) params.set('status', filters.status);
+    if (filters.color_filter)
+      params.set('color_filter', filters.color_filter);
     params.set('fecha', newDate);
     const qs = params.toString();
     startTransition(() => {
@@ -308,9 +324,59 @@ export function EntregasClient({
   }
 
   const hasFilters = useMemo(
-    () => Boolean(filters.driver || filters.status),
+    () =>
+      Boolean(filters.driver || filters.status || filters.color_filter),
     [filters],
   );
+
+  // Definición de los tabs de color (mismo set que /leads/leads-client).
+  // Cada tab combina su REGLA AUTOMÁTICA con el override manual
+  // `row_color = X`. El estilo del tab activo usa la paleta de los
+  // colores de fila para anclar visualmente la elección.
+  const COLOR_TABS: {
+    value: ColorFilterValue;
+    label: string;
+    bg?: string;
+    border?: string;
+  }[] = [
+    { value: '', label: 'Todos' },
+    {
+      value: 'azul',
+      label: '🔵 Con corte',
+      bg: LEAD_ROW_COLORS.azul,
+      border: LEAD_ROW_BORDERS.azul,
+    },
+    {
+      value: 'rosa',
+      label: '🌸 Venta empleado',
+      bg: LEAD_ROW_COLORS.rosa,
+      border: LEAD_ROW_BORDERS.rosa,
+    },
+    {
+      value: 'naranja',
+      label: '🟠 Contra entrega',
+      bg: LEAD_ROW_COLORS.naranja,
+      border: LEAD_ROW_BORDERS.naranja,
+    },
+    {
+      value: 'amarillo',
+      label: '🟡 Sin corte',
+      bg: LEAD_ROW_COLORS.amarillo,
+      border: LEAD_ROW_BORDERS.amarillo,
+    },
+    {
+      value: 'verde',
+      label: '🟢 Verde',
+      bg: LEAD_ROW_COLORS.verde,
+      border: LEAD_ROW_BORDERS.verde,
+    },
+    {
+      value: 'morado',
+      label: '🟣 Morado',
+      bg: LEAD_ROW_COLORS.morado,
+      border: LEAD_ROW_BORDERS.morado,
+    },
+  ];
 
   return (
     <div className="flex flex-col gap-6">
@@ -359,7 +425,9 @@ export function EntregasClient({
           <div className="mt-3 flex items-center gap-2">
             <button
               type="button"
-              onClick={() => pushFilters({ driver: '', status: '' })}
+              onClick={() =>
+                pushFilters({ driver: '', status: '', color_filter: '' })
+              }
               className="btn btn-ghost"
               style={{ padding: '4px 10px', fontSize: '0.75rem' }}
             >
@@ -380,6 +448,47 @@ export function EntregasClient({
             reglas que /leads para consistencia visual entre módulos. */}
         <div className="mt-3">
           <LeadRowLegend />
+        </div>
+
+        {/* Tabs de filtro por color — mismo set que /leads. Cada tab
+            combina la regla automática del color con su override manual.
+            Click → push searchParam `color_filter`. */}
+        <div
+          id="entregas-color-tabs"
+          role="tablist"
+          aria-label="Filtrar entregas por color de fila"
+          className="flex items-center gap-2 flex-wrap mt-3"
+        >
+          {COLOR_TABS.map((tab) => {
+            const isActive = filters.color_filter === tab.value;
+            return (
+              <button
+                key={tab.value || 'all'}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => pushFilters({ color_filter: tab.value })}
+                disabled={pending}
+                className="btn"
+                style={{
+                  padding: '6px 12px',
+                  fontSize: '0.8125rem',
+                  fontWeight: 500,
+                  background: isActive
+                    ? tab.bg ?? 'var(--brand-primary)'
+                    : 'var(--bg-subtle)',
+                  color: isActive ? '#1F2937' : 'var(--text-secondary)',
+                  border: isActive
+                    ? `2px solid ${tab.border ?? 'var(--brand-primary)'}`
+                    : '2px solid transparent',
+                  borderRadius: 9999,
+                  cursor: pending ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
