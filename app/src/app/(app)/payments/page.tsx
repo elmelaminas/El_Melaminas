@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { supabaseServer } from '@/lib/supabase/server';
 import { signEvidenceUrls } from '@/lib/supabase/storage';
 import { PaymentsClient, type PaymentRow } from './payments-client';
 
@@ -347,6 +348,31 @@ export default async function PaymentsPage({
       );
     }
 
+    // Rol del usuario actual. Lo usamos para mostrar el botón "Editar"
+    // en cada fila solo a admin/admin2. La action ya valida server-side;
+    // ocultar el botón es una mejora de UX (no de seguridad).
+    let isAdmin = false;
+    try {
+      const userClient = await supabaseServer();
+      const {
+        data: { user },
+      } = await userClient.auth.getUser();
+      if (user) {
+        const { data: callerProfile } = await admin
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle();
+        const role = callerProfile?.role ?? '';
+        isAdmin = role === 'admin' || role === 'admin2';
+      }
+    } catch (e) {
+      console.error(
+        '[PaymentsPage] role lookup falló (no fatal):',
+        e,
+      );
+    }
+
     return (
       <PaymentsClient
         payments={rows}
@@ -369,6 +395,7 @@ export default async function PaymentsPage({
         }}
         pendingLeadCount={pendingLeadCount ?? 0}
         contraEntregaLeadIds={contraEntregaLeadIds}
+        isAdmin={isAdmin}
       />
     );
   } catch (err) {

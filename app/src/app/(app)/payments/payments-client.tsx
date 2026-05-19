@@ -12,6 +12,7 @@ import {
   Camera,
   CircleCheckBig,
   X,
+  Pencil,
 } from 'lucide-react';
 import { MethodBadge, TypeBadge } from '@/components/ui/Badges';
 import {
@@ -127,6 +128,7 @@ export function PaymentsClient({
   totals,
   pendingLeadCount,
   contraEntregaLeadIds,
+  isAdmin,
 }: {
   payments: PaymentRow[];
   total: number;
@@ -142,6 +144,9 @@ export function PaymentsClient({
    *  convertimos a Set para lookup O(1) en la regla de color
    *  naranja (mismo patrón que en /leads). */
   contraEntregaLeadIds: string[];
+  /** true si el usuario es admin/admin2 — habilita el botón Editar
+   *  por fila. Falso para supervisor (que solo lee la tabla). */
+  isAdmin: boolean;
 }) {
   const contraEntregaSet = useMemo(
     () => new Set(contraEntregaLeadIds),
@@ -433,13 +438,14 @@ export function PaymentsClient({
                 <th>Adeudo</th>
                 <th>Fecha</th>
                 <th className="text-center">Evidencia</th>
+                {isAdmin && <th className="text-right">Acciones</th>}
               </tr>
             </thead>
             <tbody>
               {payments.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={9}
+                    colSpan={isAdmin ? 10 : 9}
                     className="text-center py-8 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -454,6 +460,7 @@ export function PaymentsClient({
                     key={p.id}
                     payment={p}
                     contraEntregaSet={contraEntregaSet}
+                    isAdmin={isAdmin}
                     onOpenEvidence={() =>
                       p.evidence_photo_url &&
                       setLightbox({
@@ -530,10 +537,12 @@ export function PaymentsClient({
 function PaymentRowItem({
   payment: p,
   contraEntregaSet,
+  isAdmin,
   onOpenEvidence,
 }: {
   payment: PaymentRow;
   contraEntregaSet: ReadonlySet<string>;
+  isAdmin: boolean;
   onOpenEvidence: () => void;
 }) {
   const router = useRouter();
@@ -881,6 +890,21 @@ function PaymentRowItem({
           </span>
         )}
       </td>
+      {isAdmin && (
+        <td data-label="Acciones">
+          <div className="flex justify-end items-center gap-1">
+            <Link
+              href={`/payments/${p.id}/edit`}
+              className="btn btn-ghost"
+              style={{ padding: '6px' }}
+              aria-label={`Editar pago de ${p.client_name}`}
+              title="Editar pago"
+            >
+              <Pencil size={16} />
+            </Link>
+          </div>
+        </td>
+      )}
     </tr>
   );
 }
