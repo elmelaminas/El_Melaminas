@@ -24,8 +24,6 @@ import {
   PURCHASE_TYPE_OPTIONS,
   PRODUCT_TYPE_OPTIONS,
   COST_PER_SHEET_OPTIONS,
-  EDGE_BANDING_OPTIONS,
-  EDGE_BANDING_RATE,
   CUT_RATE,
   NEW_COLOR_SENTINEL,
   LEAD_DOCUMENT_MAX_BYTES,
@@ -155,9 +153,6 @@ export function NewLeadForm({
       maps_url: initialValues?.maps_url ?? '',
       cuts_count: initialValues?.cuts_count ?? null,
       cuts_total: initialValues?.cuts_total ?? null,
-      edge_banding_type: initialValues?.edge_banding_type ?? '',
-      edge_banding_meters: initialValues?.edge_banding_meters ?? null,
-      edge_banding_total: initialValues?.edge_banding_total ?? null,
       product_type: initialValues?.product_type ?? 'con_corte',
       purchase_type: initialValues?.purchase_type ?? 'domicilio',
       sale_place: initialValues?.sale_place ?? 'online',
@@ -230,8 +225,6 @@ export function NewLeadForm({
   const watchedColors = watch('colors');
   const watchedProductType = watch('product_type');
   const watchedCutsCount = watch('cuts_count');
-  const watchedEdgeType = watch('edge_banding_type');
-  const watchedEdgeMeters = watch('edge_banding_meters');
   // purchase_type='fabrica' → cliente recoge en taller; ocultamos
   // dirección, URL Google Maps y costo de envío en la sección Cliente
   // (no aplican).
@@ -377,25 +370,17 @@ export function NewLeadForm({
     watchedProductType === 'con_corte'
       ? Math.max(0, Number(watchedCutsCount) || 0) * CUT_RATE
       : 0;
-  const edgeTotal =
-    watchedEdgeType === '19mm' || watchedEdgeType === '3.5mm'
-      ? Math.max(0, Number(watchedEdgeMeters) || 0) *
-        EDGE_BANDING_RATE[watchedEdgeType]
-      : 0;
 
   // El total a cobrar es la suma condicional de los tipos activos
   // + el envío a domicilio + los costos extras (independientes).
   //
   //   has_hojas       → sheets + cuts
-  //   has_cubrecanto  → edge_banding estructurado (metros × tarifa)
-  //                     + SUM(edgebanding_colors[].quantity × unit_cost)
+  //   has_cubrecanto  → SUM(edgebanding_colors[].quantity × unit_cost)
   //   has_catalogo    → catalogPrice
   //   domicilio       → deliveryCost
   //   extras          → SUM(extra_costs.amount)
   const hojasTotal = watchedHasHojas ? sheetsSubtotal + cutsTotal : 0;
-  const cubrecantoTotal = watchedHasCubrecanto
-    ? edgeTotal + edgeColorsSubtotal
-    : 0;
+  const cubrecantoTotal = watchedHasCubrecanto ? edgeColorsSubtotal : 0;
   const total =
     hojasTotal +
     cubrecantoTotal +
@@ -1013,68 +998,17 @@ export function NewLeadForm({
 
             {/* ── SECCIÓN CUBRECANTO ──────────────────────────────
                 Visible solo si has_cubrecanto. Incluye:
-                  1) Tipo (19mm/3.5mm) + Metros lineales (cálculo
-                     estructurado metros × tarifa).
-                  2) Número de cubrecanto (auto) = suma de qty por
+                  1) Número de cubrecanto (auto) = suma de qty por
                      color en la tabla siguiente (informativo).
-                  3) Tabla de colores de cubrecanto.
-                  4) Costo adicional del cubrecanto (opcional) —
-                     flat amount para cargos extra fuera del cálculo
-                     por metros.
-                Los colores NO comprometen inventario; salen de un
-                stock distinto al de hojas. */}
+                  2) Tabla de colores de cubrecanto (cantidad + color
+                     + costo unitario por fila).
+                El costo total del cubrecanto sale de la suma
+                qty × unit_cost por fila — no hay tipo (19mm/3.5mm)
+                ni metros lineales ya: el catálogo de colores absorbe
+                ambas dimensiones. Los colores NO comprometen
+                inventario; salen de un stock distinto al de hojas. */}
             {watchedHasCubrecanto && (
               <div id="field-cubrecanto-manual" className="mt-6 flex flex-col gap-4">
-                {/* Tipo + metros (cálculo estructurado) */}
-                <div id="field-edgebanding" className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <Field
-                    label="Tipo de cubrecanto"
-                    error={errors.edge_banding_type?.message}
-                  >
-                    <select
-                      {...register('edge_banding_type')}
-                      className="select"
-                      disabled={pending}
-                    >
-                      <option value="">Sin cubrecanto</option>
-                      {EDGE_BANDING_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  {(watchedEdgeType === '19mm' || watchedEdgeType === '3.5mm') && (
-                    <Field
-                      label="Metros lineales"
-                      error={errors.edge_banding_meters?.message}
-                    >
-                      <input
-                        type="number"
-                        min={0}
-                        step="0.5"
-                        className="input"
-                        placeholder="Ej. 4"
-                        disabled={pending}
-                        {...register('edge_banding_meters', {
-                          setValueAs: (v) => {
-                            if (v === '' || v == null) return null;
-                            const n = Number(v);
-                            return Number.isFinite(n) ? n : null;
-                          },
-                        })}
-                      />
-                      <div
-                        className="text-[11px] mt-1"
-                        style={{ color: 'var(--text-tertiary)' }}
-                      >
-                        Tarifa: {formatMXN(EDGE_BANDING_RATE[watchedEdgeType])}/m ·
-                        Total: <strong>{formatMXN(edgeTotal)}</strong>
-                      </div>
-                    </Field>
-                  )}
-                </div>
-
                 {/* Número de cubrecanto (auto): suma las cantidades
                     de la tabla de colores. Mismo patrón que "Número
                     de hojas (auto)". */}
@@ -1549,20 +1483,6 @@ export function NewLeadForm({
               )}
               {watchedHasCubrecanto && (
                 <>
-                  {edgeTotal > 0 &&
-                    (watchedEdgeType === '19mm' ||
-                      watchedEdgeType === '3.5mm') && (
-                      <div className="flex justify-between">
-                        <span style={{ color: 'var(--text-secondary)' }}>
-                          + Cubrecanto {watchedEdgeType} (
-                          {watchedEdgeMeters ?? 0}m ×{' '}
-                          {formatMXN(EDGE_BANDING_RATE[watchedEdgeType])})
-                        </span>
-                        <span className="font-semibold">
-                          {formatMXN(edgeTotal)}
-                        </span>
-                      </div>
-                    )}
                   {/* Desglose por color con costo unitario. Cada fila
                       contribuye `qty × cost` al subtotal de cubrecanto.
                       Mismo patrón que el desglose de hojas. */}

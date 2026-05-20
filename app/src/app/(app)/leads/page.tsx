@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { supabaseServer } from '@/lib/supabase/server';
 import {
   LeadsClient,
   type LeadRow,
@@ -136,6 +137,27 @@ export default async function LeadsPage({
       : null;
 
     const admin = supabaseAdmin();
+
+    // Rol del usuario actual: lo necesitamos en el cliente para gatear
+    // el botón "Eliminar lead" (solo admin/admin2). Best-effort: si
+    // falla, caemos a string vacío y el botón queda oculto.
+    let currentUserRole = '';
+    try {
+      const userClient = await supabaseServer();
+      const {
+        data: { user },
+      } = await userClient.auth.getUser();
+      if (user) {
+        const { data: profileRow } = await admin
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .maybeSingle();
+        currentUserRole = (profileRow?.role as string) ?? '';
+      }
+    } catch (e) {
+      console.error('[LeadsPage] role lookup falló (no fatal):', e);
+    }
 
     // Construimos la query con todos los filtros antes del range, para
     // que el `count: 'exact'` cuente solo los rows que cumplen los
@@ -404,6 +426,7 @@ export default async function LeadsPage({
         totalPages={totalPages}
         filters={filters}
         contraEntregaLeadIds={contraEntregaLeadIds}
+        currentUserRole={currentUserRole}
       />
     );
   } catch (err) {

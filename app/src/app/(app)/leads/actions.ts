@@ -6,8 +6,10 @@ import { supabaseServer } from '@/lib/supabase/server';
 import {
   UpdateLeadColorSchema,
   MarkFabricaDeliveredSchema,
+  DeleteLeadSchema,
   type UpdateLeadColorState,
   type MarkFabricaDeliveredState,
+  type DeleteLeadState,
 } from './schema';
 
 // NB: 'use server' file — solo async functions. Tipos y schemas viven
@@ -397,6 +399,86 @@ export async function markFabricaDeliveredAction(
         : 'Error desconocido al marcar entrega en fábrica';
     console.error('[markFabricaDeliveredAction] excepción no controlada:', err);
     await txn.rollback('excepción no controlada');
+    return { status: 'error', message };
+  }
+}
+
+/**
+ * `deleteLeadAction(lead_id)` — soft-delete del lead. SOLO admin/admin2.
+ *
+ * Hace `UPDATE leads SET deleted_at = now() WHERE id = lead_id`. Todas
+ * las queries del listado (/leads, /admin/entregas, /warehouse) filtran
+ * `deleted_at IS NULL`, así que la fila desaparece de la UI inmediato
+ * pero el registro queda para auditoría histórica y reportes
+ * retroactivos.
+ *
+ * No tocamos inventario aquí: si el lead estaba comprometiendo stock
+ * vía `stock_committed=true`, ese compromiso queda colgando. Para
+ * liberar inventario, el admin debe usar el flujo de cancelación
+ * (`cancelLeadAction` en /admin/entregas) en lugar de delete. Este
+ * action es "borrado de captura" — para leads creados por error.
+ */
+export async function deleteLeadAction(
+  leadId: string,
+): Promise<DeleteLeadState> {
+  try {
+    const parsed = DeleteLeadSchema.safeParse({ lead_id: leadId });
+    if (!parsed.success) {
+      return { status: 'error', message: 'lead_id inválido.' };
+    }
+    const { lead_id } = parsed.data;
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return { status: 'error', message: 'Sesión no válida.' };
+    }
+
+    const admin = supabaseAdmin();
+
+    const { data: profile, error: profileErr } = await admin
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+    if (profileErr) {
+      return {
+        status: 'error',
+        message: `No se pudo verificar tu rol: ${profileErr.message}`,
+      };
+    }
+    if (profile?.role !== 'admin' && profile?.role !== 'admin2') {
+      return {
+        status: 'error',
+        message: 'Solo un administrador puede eliminar leads.',
+      };
+    }
+
+    const { error: updErr } = await admin
+      .from('leads')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', lead_id);
+    if (updErr) {
+      console.error('[deleteLeadAction] soft-delete falló:', updErr);
+      return {
+        status: 'error',
+        message: `No se pudo eliminar el lead: ${updErr.message}`,
+      };
+    }
+
+    revalidatePath('/leads');
+    revalidatePath('/admin/entregas');
+    revalidatePath('/warehouse');
+    return { status: 'success' };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al eliminar lead';
+    console.error('[deleteLeadAction] excepción no controlada:', err);
     return { status: 'error', message };
   }
 }

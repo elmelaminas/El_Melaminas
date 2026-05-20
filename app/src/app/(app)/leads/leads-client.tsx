@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Loader,
   Pencil,
+  Trash2,
   FileText,
   Image as ImageIcon,
   Paperclip,
@@ -40,6 +41,7 @@ import {
 import {
   updateLeadColorAction,
   markFabricaDeliveredAction,
+  deleteLeadAction,
 } from './actions';
 
 export type LeadRow = {
@@ -198,6 +200,7 @@ export function LeadsClient({
   totalPages,
   filters,
   contraEntregaLeadIds,
+  currentUserRole,
 }: {
   leads: LeadRow[];
   total: number;
@@ -209,7 +212,12 @@ export function LeadsClient({
    *  la fila naranja. Pasado como array; lo convertimos a Set para
    *  lookup O(1) por fila. */
   contraEntregaLeadIds: string[];
+  /** Rol del usuario logueado. Se usa para gatear el botón "Eliminar
+   *  lead" (solo admin/admin2). Vacío = no autenticado o lookup falló. */
+  currentUserRole: string;
 }) {
+  const canDeleteLead =
+    currentUserRole === 'admin' || currentUserRole === 'admin2';
   const contraEntregaSet = useMemo(
     () => new Set(contraEntregaLeadIds),
     [contraEntregaLeadIds],
@@ -750,6 +758,12 @@ export function LeadsClient({
                         >
                           <Pencil size={16} />
                         </Link>
+                        {canDeleteLead && (
+                          <DeleteLeadButton
+                            leadId={l.id}
+                            clientName={l.client_name}
+                          />
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1067,6 +1081,126 @@ function FabricaDeliverButton({
         title="Marcar como entregado en fábrica"
       >
         <Factory size={12} /> Entregar
+      </button>
+      {error && (
+        <div
+          role="alert"
+          className="text-[10px]"
+          style={{ color: 'var(--danger, #dc2626)', maxWidth: 180 }}
+          title={error}
+        >
+          {error.length > 40 ? `${error.slice(0, 40)}…` : error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Botón "🗑️ Eliminar lead" con confirmación inline. Solo se renderiza
+ * cuando el caller verificó que `currentUserRole ∈ {admin, admin2}` —
+ * la action ACÁ revalida igual para defensa en profundidad.
+ *
+ * Mismo patrón de UX que `FabricaDeliverButton`: ícono rojo → al click
+ * pasa a estado `confirming` con pregunta + botones [Sí, eliminar] /
+ * [Cancelar]. Tras success `router.refresh()` y la fila desaparece
+ * (el listado filtra `deleted_at IS NULL`).
+ */
+function DeleteLeadButton({
+  leadId,
+  clientName,
+}: {
+  leadId: string;
+  clientName: string;
+}) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function handleConfirm() {
+    setError(null);
+    startTransition(async () => {
+      try {
+        const r = await deleteLeadAction(leadId);
+        if (r.status === 'error') {
+          setError(r.message);
+          setConfirming(false);
+        } else if (r.status === 'success') {
+          router.refresh();
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Error de red';
+        setError(message);
+        setConfirming(false);
+      }
+    });
+  }
+
+  if (confirming) {
+    return (
+      <div
+        role="dialog"
+        aria-label={`Confirmar eliminación de ${clientName}`}
+        className="flex items-center gap-1"
+        style={{
+          background: '#FEF2F2',
+          border: '1px solid #FECACA',
+          padding: '2px 6px',
+          borderRadius: 6,
+        }}
+      >
+        <span
+          className="text-[11px]"
+          style={{ color: '#991B1B', fontWeight: 500 }}
+        >
+          ¿Eliminar lead de {clientName}?
+        </span>
+        <button
+          type="button"
+          onClick={handleConfirm}
+          disabled={pending}
+          aria-busy={pending}
+          className="btn"
+          style={{
+            padding: '2px 8px',
+            fontSize: '0.6875rem',
+            fontWeight: 600,
+            background: '#DC2626',
+            color: '#fff',
+          }}
+        >
+          {pending ? (
+            <Loader size={11} className="animate-spin" />
+          ) : (
+            'Sí, eliminar'
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => setConfirming(false)}
+          disabled={pending}
+          className="btn btn-ghost"
+          style={{ padding: '2px 8px', fontSize: '0.6875rem' }}
+        >
+          Cancelar
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        type="button"
+        onClick={() => setConfirming(true)}
+        disabled={pending}
+        className="btn btn-ghost"
+        style={{ padding: '6px', color: '#DC2626' }}
+        aria-label={`Eliminar lead de ${clientName}`}
+        title="Eliminar lead (admin)"
+      >
+        <Trash2 size={16} />
       </button>
       {error && (
         <div

@@ -7,7 +7,6 @@ import {
   LeadCreateSchema,
   NEW_COLOR_SENTINEL,
   CUT_RATE,
-  EDGE_BANDING_RATE,
   type LeadCreateInput,
   type LeadFormState,
   normalizeName,
@@ -586,24 +585,13 @@ export async function updateLeadFullAction(
         : null;
     const cutsTotal = cutsCount != null ? cutsCount * CUT_RATE : null;
 
-    // Cubrecanto estructurado: ahora gateado por `has_cubrecanto`
-    // (el rediseño del form lo movió de la sección Hojas a su
-    // propia sección Cubrecanto).
-    const edgeType =
-      hasCubrecantoManual &&
-      (data.edge_banding_type === '19mm' || data.edge_banding_type === '3.5mm')
-        ? data.edge_banding_type
-        : null;
-    const edgeMeters =
-      edgeType !== null &&
-      typeof data.edge_banding_meters === 'number' &&
-      data.edge_banding_meters > 0
-        ? data.edge_banding_meters
-        : null;
-    const edgeTotal =
-      edgeType !== null && edgeMeters != null
-        ? edgeMeters * EDGE_BANDING_RATE[edgeType]
-        : null;
+    // Cubrecanto estructurado: ELIMINADO del form. Forzamos null en
+    // las columnas `edge_banding_*` al editar, así un lead viejo que
+    // venía con tipo+metros se "limpia" al guardarlo desde el form
+    // nuevo. El costo de cubrecanto vive en `lead_edgebanding_colors`.
+    const edgeType: '19mm' | '3.5mm' | null = null;
+    const edgeMeters: number | null = null;
+    const edgeTotal: number | null = null;
 
     // Cubrecanto por color: subtotal = SUM(quantity × unit_cost) sobre
     // las filas. Mismo cálculo que en saveLeadAction.

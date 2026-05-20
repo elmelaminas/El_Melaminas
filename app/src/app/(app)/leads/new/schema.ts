@@ -298,31 +298,11 @@ export const LeadCreateSchema = z.object({
     .nullable(),
   cuts_total: z.number().optional().nullable(),
 
-  // Cubrecanto estructurado. `edge_banding_type=''` (literal vacío del
-  // dropdown "Sin cubrecanto") se trata como ausente; el server lo
-  // convierte a null. Si hay tipo, los metros son requeridos (validado
-  // con .refine cross-field abajo).
-  //
-  // NB: usamos `z.string().refine(...)` en lugar de
-  // `z.enum(EDGE_BANDING_VALUES).or(z.literal(''))` porque el segundo
-  // patrón no produce un union útil en Zod 3.25 (TS narrowea al enum
-  // sin incluir '' en el inferred type, rompiendo refines abajo).
-  edge_banding_type: z
-    .string()
-    .refine(
-      (v) =>
-        v === '' ||
-        (EDGE_BANDING_VALUES as readonly string[]).includes(v),
-      { message: 'Tipo de cubrecanto inválido' },
-    )
-    .optional()
-    .nullable(),
-  edge_banding_meters: z
-    .number({ invalid_type_error: 'Metros inválidos' })
-    .min(0, 'Metros debe ser ≥ 0')
-    .optional()
-    .nullable(),
-  edge_banding_total: z.number().optional().nullable(),
+  // Cubrecanto estructurado ELIMINADO del form. Los campos
+  // `edge_banding_type`, `edge_banding_meters`, `edge_banding_total`
+  // sobreviven en DB sólo para compatibilidad con leads históricos;
+  // los leads nuevos no los llenan. El costo de cubrecanto ahora
+  // viene 100% del array `edgebanding_colors` (qty × unit_cost).
 
   product_type: z.enum(PRODUCT_TYPE_VALUES, { message: 'Tipo de producto inválido' }),
   purchase_type: z.enum(PURCHASE_TYPE_VALUES, { message: 'Tipo de compra inválido' }),
@@ -407,24 +387,19 @@ export const LeadCreateSchema = z.object({
   },
 )
 .refine(
-  // Si has_cubrecanto=true, al menos UNO de los dos campos debe
-  // estar definido:
-  //   - tipo de cubrecanto (19mm/3.5mm) con metros > 0
-  //   - al menos un color registrado (con su costo unitario)
-  // Cualquiera de los dos justifica activar la sección. El refine
-  // específico sobre `edge_banding_meters` (abajo) asegura que si
-  // el tipo está seleccionado, los metros sean > 0.
+  // Si has_cubrecanto=true, debe haber al menos un color de
+  // cubrecanto registrado (con cantidad ≥ 1 y costo unitario).
+  // Antes admitíamos también "tipo de cubrecanto" (19mm/3.5mm), pero
+  // se eliminó del form — el costo ahora viene 100% del array.
   (d) => {
     if (!d.has_cubrecanto) return true;
-    const typeIsSet =
-      d.edge_banding_type === '19mm' || d.edge_banding_type === '3.5mm';
-    const hasColors =
-      Array.isArray(d.edgebanding_colors) && d.edgebanding_colors.length > 0;
-    return typeIsSet || hasColors;
+    return (
+      Array.isArray(d.edgebanding_colors) && d.edgebanding_colors.length > 0
+    );
   },
   {
-    message: 'Define al menos el tipo de cubrecanto o un color.',
-    path: ['edge_banding_type'],
+    message: 'Agrega al menos un color de cubrecanto.',
+    path: ['edgebanding_colors'],
   },
 )
 .refine(
@@ -442,26 +417,6 @@ export const LeadCreateSchema = z.object({
     message:
       'El número de cortes es requerido cuando el producto es "Con corte"',
     path: ['cuts_count'],
-  },
-)
-.refine(
-  // Si has_cubrecanto=true y se eligió un tipo (no vacío/null), los
-  // metros deben venir definidos y > 0. El tipo + metros viven ahora
-  // en la sección Cubrecanto (antes estaba dentro de Hojas).
-  (d) => {
-    if (!d.has_cubrecanto) return true;
-    const typeIsSet = d.edge_banding_type && d.edge_banding_type !== '';
-    if (typeIsSet) {
-      return (
-        typeof d.edge_banding_meters === 'number' &&
-        d.edge_banding_meters > 0
-      );
-    }
-    return true;
-  },
-  {
-    message: 'Los metros son requeridos cuando seleccionas cubrecanto',
-    path: ['edge_banding_meters'],
   },
 )
 .refine(

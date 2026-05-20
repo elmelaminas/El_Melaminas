@@ -74,8 +74,7 @@ export default async function EditLeadPage({
         .select(
           `id, client_name, phone, address, maps_url, channel, seller_id,
            sale_place, sale_type, sale_date, purchase_type, product_type,
-           cost_per_sheet, cuts_count, edge_banding_type,
-           edge_banding_meters, delivery_cost,
+           cost_per_sheet, cuts_count, delivery_cost,
            has_hojas, has_cubrecanto, has_catalogo,
            catalog_price, extra_costs,
            driver_id, document_url, document_urls,
@@ -340,12 +339,6 @@ export default async function EditLeadPage({
           leadResult.data.cuts_count == null
             ? null
             : Number(leadResult.data.cuts_count),
-        edge_banding_type:
-          (leadResult.data.edge_banding_type as '' | '19mm' | '3.5mm') ?? '',
-        edge_banding_meters:
-          leadResult.data.edge_banding_meters == null
-            ? null
-            : Number(leadResult.data.edge_banding_meters),
         delivery_cost:
           leadResult.data.delivery_cost == null
             ? null

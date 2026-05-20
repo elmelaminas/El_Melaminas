@@ -7,7 +7,6 @@ import {
   LeadCreateSchema,
   NEW_COLOR_SENTINEL,
   CUT_RATE,
-  EDGE_BANDING_RATE,
   UploadLeadDocumentsSchema,
   LEAD_DOCUMENT_MAX_BYTES,
   LEAD_DOCUMENT_MAX_FILES,
@@ -331,25 +330,13 @@ export async function saveLeadAction(
     const cutsTotal =
       cutsCount != null ? cutsCount * CUT_RATE : null;
 
-    // Cubrecanto estructurado (tipo + metros): ahora vive en la
-    // sección Cubrecanto, gateada por `has_cubrecanto`. Antes estaba
-    // dentro de la sección Hojas; el move responde al rediseño del
-    // formulario donde el cubrecanto es su propio bloque.
-    const edgeType =
-      hasCubrecantoManual &&
-      (data.edge_banding_type === '19mm' || data.edge_banding_type === '3.5mm')
-        ? data.edge_banding_type
-        : null;
-    const edgeMeters =
-      edgeType !== null &&
-      typeof data.edge_banding_meters === 'number' &&
-      data.edge_banding_meters > 0
-        ? data.edge_banding_meters
-        : null;
-    const edgeTotal =
-      edgeType !== null && edgeMeters != null
-        ? edgeMeters * EDGE_BANDING_RATE[edgeType]
-        : null;
+    // Cubrecanto estructurado (tipo + metros): ELIMINADO del form.
+    // Las columnas `edge_banding_*` se persisten como null en leads
+    // nuevos; el costo del cubrecanto ahora viene 100% de
+    // `lead_edgebanding_colors` (qty × unit_cost por fila).
+    const edgeType: '19mm' | '3.5mm' | null = null;
+    const edgeMeters: number | null = null;
+    const edgeTotal: number | null = null;
 
     // Cubrecanto por color: cada fila tiene su propio `unit_cost`,
     // igual que hojas. El subtotal contribuido al `total_amount` es

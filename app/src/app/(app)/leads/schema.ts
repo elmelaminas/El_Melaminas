@@ -48,6 +48,25 @@ export const initialMarkFabricaDeliveredState: MarkFabricaDeliveredState = {
   status: 'idle',
 };
 
+/**
+ * `deleteLeadAction(lead_id)` — soft-delete del lead. Solo admin/admin2.
+ * El UPDATE setea `deleted_at = now()`. Las queries de listado filtran
+ * `deleted_at IS NULL`, así que la fila desaparece de la UI sin perder
+ * el registro físico (trazabilidad / reportes históricos).
+ */
+export const DeleteLeadSchema = z.object({
+  lead_id: z.string().uuid('lead_id inválido'),
+});
+
+export type DeleteLeadInput = z.infer<typeof DeleteLeadSchema>;
+
+export type DeleteLeadState =
+  | { status: 'idle' }
+  | { status: 'success' }
+  | { status: 'error'; message: string };
+
+export const initialDeleteLeadState: DeleteLeadState = { status: 'idle' };
+
 export const MarkFabricaDeliveredSchema = z.object({
   lead_id: z.string().uuid('lead_id inválido'),
 });
