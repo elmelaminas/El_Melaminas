@@ -21,7 +21,11 @@ import {
   reportIssueAction,
   markFailedDeliveryAction,
 } from './actions';
-import { ISSUE_TYPE_OPTIONS } from './schema';
+import {
+  ISSUE_TYPE_OPTIONS,
+  DRIVER_PAYMENT_METHOD_OPTIONS,
+  DRIVER_PAYMENT_METHOD_VALUES,
+} from './schema';
 
 export type DeliveryCardData = {
   id: string;
@@ -58,6 +62,23 @@ export type ReceiverOption = {
 };
 
 /**
+ * Fila del historial "Entregados hoy" — se renderiza al pie de la
+ * vista del chofer. Origen: driver_deliveries con delivered_at en el
+ * día UTC actual + JOIN con leads (client_name) y payments
+ * (payment_method del cobro del chofer, si lo hubo).
+ */
+export type DeliveredTodayRow = {
+  id: string;
+  lead_id: string;
+  client_name: string;
+  amount_collected: number;
+  /** 'efectivo' | 'transferencia' | 'clip' | null (cuando el lead ya
+   *  estaba liquidado y el chofer no cobró nada). */
+  payment_method: string | null;
+  delivered_at: string | null;
+};
+
+/**
  * Vista del chofer — mobile-first.
  *
  * El layout se restringe a max-w 420px. Botones tienen al menos 48px de
@@ -76,6 +97,7 @@ export function DriverClient({
   todayDeliveriesCount,
   todayCompletedCount,
   todayIso,
+  deliveredToday,
 }: {
   driverName: string;
   deliveries: DeliveryCardData[];
@@ -94,6 +116,10 @@ export function DriverClient({
   /** Hoy en YYYY-MM-DD (UTC) — viene del server para que el formato del
    *  banner sea consistente con lo que se SELECTeó. */
   todayIso: string;
+  /** Driver_deliveries completadas en el día UTC actual. Se muestra al
+   *  pie como historial — lista compacta con cliente + monto + método +
+   *  hora de entrega. */
+  deliveredToday: DeliveredTodayRow[];
 }) {
   // Modo secuencial vs lista (Grupo 2):
   //   - Si hay deliveries activas con delivery_date=hoy, mostramos
@@ -278,6 +304,9 @@ export function DriverClient({
             )}
           </>
         )}
+
+        {/* Historial del día: entregas ya completadas hoy. */}
+        <DeliveredTodaySection history={deliveredToday} />
       </div>
     </div>
   );
@@ -378,24 +407,48 @@ function DeliveryCard({
   const [pending, startTransition] = useTransition();
   const [receiverId, setReceiverId] = useState(receivers[0]?.id ?? '');
   const [amount, setAmount] = useState<number>(delivery.adeudo);
+  const [paymentMethod, setPaymentMethod] = useState<
+    (typeof DRIVER_PAYMENT_METHOD_VALUES)[number]
+  >('efectivo');
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const owes = delivery.adeudo > 0;
+  // Evidencia obligatoria solo para métodos digitales con cobro real.
+  // Para efectivo el cliente entrega cash sin recibo, foto opcional.
+  const evidenceRequired =
+    owes &&
+    amount > 0 &&
+    (paymentMethod === 'transferencia' || paymentMethod === 'clip');
+  const isEfectivo = paymentMethod === 'efectivo';
 
   const handleSubmit = () => {
     setError(null);
-    if (!receiverId) {
-      setError('Selecciona un admin para entregar el efectivo.');
-      return;
-    }
     if (owes && (!Number.isFinite(amount) || amount < 0)) {
       setError('Monto cobrado inválido.');
       return;
     }
-    if (owes && amount > 0 && !evidenceFile) {
-      // Política: si cobró efectivo/dinero hay que subir evidencia.
-      // Si quieres permitir entregas sin foto, quita este chequeo.
+    if (evidenceRequired && !evidenceFile) {
+      setError(
+        `La foto de evidencia es obligatoria para ${
+          paymentMethod === 'transferencia' ? 'Transferencia' : 'Clip'
+        }.`,
+      );
+      return;
+    }
+    if (owes && amount > 0 && isEfectivo && !receiverId) {
+      setError('Selecciona un admin para entregar el efectivo.');
+      return;
+    }
+    if (
+      owes &&
+      amount > 0 &&
+      isEfectivo &&
+      !evidenceFile
+    ) {
+      // Política: efectivo sin recibo es válido, pero pedimos confirmar
+      // explícitamente para que el chofer no envíe por error sin foto
+      // cuando sí la tomó.
       const ok = confirm(
         '¿Confirmar entrega sin foto del cobro? Lo recomendable es adjuntar comprobante.',
       );
@@ -404,8 +457,13 @@ function DeliveryCard({
 
     const fd = new FormData();
     fd.set('lead_id', delivery.id);
-    fd.set('receiver_id', receiverId);
     fd.set('amount_collected', String(owes ? amount : 0));
+    if (owes && amount > 0) {
+      fd.set('payment_method', paymentMethod);
+      if (isEfectivo && receiverId) {
+        fd.set('receiver_id', receiverId);
+      }
+    }
     if (evidenceFile && evidenceFile.size > 0) fd.set('evidence', evidenceFile);
 
     startTransition(async () => {
@@ -688,8 +746,55 @@ function DeliveryCard({
           </div>
         )}
 
-        {owes && (
+        {owes ? (
           <>
+            <div className="mb-3">
+              <label className="label">¿Cómo cobró el cliente?</label>
+              <div
+                role="radiogroup"
+                aria-label="Método de pago"
+                className="grid grid-cols-3 gap-2"
+              >
+                {DRIVER_PAYMENT_METHOD_OPTIONS.map((m) => {
+                  const active = paymentMethod === m.value;
+                  return (
+                    <button
+                      key={m.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => setPaymentMethod(m.value)}
+                      disabled={pending}
+                      className="btn"
+                      style={{
+                        padding: '8px 6px',
+                        fontSize: '0.8125rem',
+                        fontWeight: 600,
+                        background: active
+                          ? 'var(--brand-primary)'
+                          : 'var(--bg-subtle)',
+                        color: active ? '#fff' : 'var(--text-primary)',
+                        border: active
+                          ? '2px solid var(--brand-primary)'
+                          : '2px solid transparent',
+                        borderRadius: 8,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: 2,
+                        minHeight: 56,
+                      }}
+                    >
+                      <span aria-hidden="true" style={{ fontSize: '1.25rem' }}>
+                        {m.emoji}
+                      </span>
+                      <span>{m.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             <div className="mb-3">
               <label className="label">Monto cobrado</label>
               <input
@@ -718,7 +823,11 @@ function DeliveryCard({
                 className="text-sm font-medium"
                 style={{ color: 'var(--text-primary)' }}
               >
-                {evidenceFile ? evidenceFile.name : 'Sube foto del cobro'}
+                {evidenceFile
+                  ? evidenceFile.name
+                  : evidenceRequired
+                    ? 'Sube foto del cobro (obligatoria)'
+                    : 'Sube foto del cobro (opcional)'}
               </div>
               <div className="text-[11px]">
                 Comprobante de transferencia, ticket o efectivo
@@ -732,26 +841,46 @@ function DeliveryCard({
                 disabled={pending}
               />
             </div>
-          </>
-        )}
 
-        <div className="mb-3">
-          <label className="label">Entregar efectivo a</label>
-          <select
-            className="select"
-            value={receiverId}
-            onChange={(e) => setReceiverId(e.target.value)}
-            disabled={pending}
-            style={{ height: 48, fontSize: '1rem' }}
+            {/* Selector de admin receptor — sólo aplica cuando el cobro
+                es en efectivo (el chofer tiene que entregar ese dinero
+                a alguien). Transferencia/Clip va directo a cuenta. */}
+            {isEfectivo && amount > 0 && (
+              <div className="mb-3">
+                <label className="label">Entregar efectivo a</label>
+                <select
+                  className="select"
+                  value={receiverId}
+                  onChange={(e) => setReceiverId(e.target.value)}
+                  disabled={pending}
+                  style={{ height: 48, fontSize: '1rem' }}
+                >
+                  <option value="">— selecciona —</option>
+                  {receivers.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </>
+        ) : (
+          <div
+            className="mb-3 p-3 rounded-lg flex items-center gap-2"
+            style={{
+              background: '#DCFCE7',
+              border: '1px solid rgba(22,163,74,0.25)',
+              color: '#15803D',
+            }}
+            role="status"
           >
-            <option value="">— selecciona —</option>
-            {receivers.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.name}
-              </option>
-            ))}
-          </select>
-        </div>
+            <CircleCheckBig size={18} />
+            <span className="text-sm font-medium">
+              Este pedido ya está liquidado
+            </span>
+          </div>
+        )}
 
         {error && (
           <div
@@ -783,15 +912,110 @@ function DeliveryCard({
               <Loader size={20} className="animate-spin" />
               <span style={{ marginLeft: 6 }}>Confirmando…</span>
             </>
+          ) : owes ? (
+            <>
+              <CircleCheckBig size={20} /> Confirmar entrega y cobro
+            </>
           ) : (
             <>
-              <CircleCheckBig size={20} /> Entregado
+              <CircleCheckBig size={20} /> Confirmar entrega
             </>
           )}
         </button>
       </div>
     </div>
   );
+}
+
+/**
+ * Sección al pie de la vista del chofer con el historial del día. Lista
+ * compacta de las entregas marcadas como `entregado` hoy: cliente, monto,
+ * método de pago (badge) y hora de entrega. Solo se renderiza si hay
+ * ≥ 1 entrega; no mostramos card vacía.
+ */
+function DeliveredTodaySection({
+  history,
+}: {
+  history: DeliveredTodayRow[];
+}) {
+  if (history.length === 0) return null;
+  return (
+    <div className="card p-4 mt-5">
+      <div className="font-semibold mb-3 flex items-center gap-2">
+        <CircleCheckBig size={18} style={{ color: '#15803D' }} />
+        <span>Entregados hoy ({history.length})</span>
+      </div>
+      <div className="flex flex-col gap-2">
+        {history.map((d) => {
+          const methodMeta = DRIVER_PAYMENT_METHOD_OPTIONS.find(
+            (m) => m.value === d.payment_method,
+          );
+          return (
+            <div
+              key={d.id}
+              className="flex items-center justify-between gap-2 p-2 rounded-lg"
+              style={{
+                background: 'var(--bg-subtle)',
+                border: '1px solid var(--border)',
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="text-sm font-medium truncate">
+                  {d.client_name}
+                </div>
+                <div
+                  className="text-xs"
+                  style={{ color: 'var(--text-tertiary)' }}
+                >
+                  {formatTimeOfDay(d.delivered_at)}
+                  {d.amount_collected > 0
+                    ? ` · ${formatMXN(d.amount_collected)}`
+                    : ' · ya liquidado'}
+                </div>
+              </div>
+              {methodMeta ? (
+                <span
+                  className="badge"
+                  style={{
+                    background: '#E0E7FF',
+                    color: '#3730A3',
+                    fontSize: '0.6875rem',
+                    fontWeight: 600,
+                  }}
+                  title={`Cobrado via ${methodMeta.label}`}
+                >
+                  {methodMeta.emoji} {methodMeta.label}
+                </span>
+              ) : (
+                <span
+                  className="badge"
+                  style={{
+                    background: '#DCFCE7',
+                    color: '#15803D',
+                    fontSize: '0.6875rem',
+                    fontWeight: 600,
+                  }}
+                  title="Pedido ya liquidado, sin cobro hoy"
+                >
+                  ✓ Liquidado
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function formatTimeOfDay(iso: string | null): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleTimeString('es-MX', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 /**

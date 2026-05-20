@@ -553,9 +553,19 @@ export default async function EntregasPage({
     // patrón que los otros bulk-lookups arriba. Si la tabla no
     // existe / RLS bloquea, el catch loguea y la columna
     // "Evidencia cobro" queda vacía.
+    //
+    // Adicional 2026-05: también resolvemos el `payment_method` del
+    // cobro hecho por el chofer (último payment con driver_id != null
+    // por lead). Como `driver_deliveries` no almacena el método, lo
+    // sacamos de la tabla `payments` y lo combinamos por lead_id.
     const evidenceByLead: Record<
       string,
-      { url: string; amount: number; delivered_at: string | null }
+      {
+        url: string;
+        amount: number;
+        delivered_at: string | null;
+        payment_method: string | null;
+      }
     > = {};
     if (leadIds.length > 0) {
       try {
@@ -602,12 +612,43 @@ export default async function EntregasPage({
                 : 0;
               return tb - ta;
             });
-            evidenceByLead[leadId] = list[0];
+            evidenceByLead[leadId] = {
+              ...list[0],
+              payment_method: null,
+            };
           }
         }
       } catch (e) {
         console.error(
           '[EntregasPage] driver_deliveries lookup excepción (no fatal):',
+          e,
+        );
+      }
+
+      // Resolver payment_method del cobro del chofer (último payment
+      // del lead donde driver_id != null). Una query bulk; map por
+      // lead_id. Si falla, dejamos payment_method=null silenciosamente.
+      try {
+        const { data: driverPayments } = await admin
+          .from('payments')
+          .select('lead_id, payment_method, paid_at')
+          .in('lead_id', leadIds)
+          .not('driver_id', 'is', null)
+          .order('paid_at', { ascending: false });
+        const methodByLead = new Map<string, string>();
+        for (const p of driverPayments ?? []) {
+          if (!p.lead_id) continue;
+          if (!methodByLead.has(p.lead_id)) {
+            methodByLead.set(p.lead_id, (p.payment_method as string) ?? '');
+          }
+        }
+        for (const leadId of Object.keys(evidenceByLead)) {
+          const m = methodByLead.get(leadId);
+          if (m) evidenceByLead[leadId].payment_method = m;
+        }
+      } catch (e) {
+        console.error(
+          '[EntregasPage] driver payments lookup excepción (no fatal):',
           e,
         );
       }

@@ -167,12 +167,15 @@ export type LeadDetail = {
 /**
  * Evidencia de cobro hecho por el chofer (Grupo 4). Una entrada por
  * lead — si hubo múltiples driver_deliveries (re-entrega, etc.) la
- * página servirá la más reciente.
+ * página servirá la más reciente. `payment_method` viene de la tabla
+ * payments (último cobro con driver_id != null por lead) o null si
+ * no se pudo resolver / el lead se entregó ya liquidado.
  */
 export type DeliveryEvidence = {
   url: string;
   amount: number;
   delivered_at: string | null;
+  payment_method: string | null;
 };
 
 /**
@@ -529,7 +532,14 @@ export function EntregasClient({
           entrega={selectedLead}
           detail={leadDetails[selectedLead.id] ?? null}
           issues={issuesByLead[selectedLead.id] ?? []}
+          evidence={evidenceByLead[selectedLead.id] ?? null}
           onClose={() => setSelectedLead(null)}
+          onOpenEvidence={(ev) =>
+            setLightbox({
+              src: ev.url,
+              alt: `Evidencia de cobro de ${selectedLead.client_name}`,
+            })
+          }
         />
       )}
 
@@ -867,16 +877,42 @@ function Row({
       </td>
       <td data-label="Evidencia" className="text-center">
         {evidence ? (
-          <button
-            type="button"
-            onClick={() => onOpenEvidence(evidence)}
-            className="btn btn-ghost"
-            style={{ padding: 6, color: 'var(--brand-secondary)' }}
-            aria-label={`Ver evidencia de cobro de ${r.client_name}`}
-            title={`Ver foto del cobro · ${formatMXN(evidence.amount)}`}
-          >
-            <Camera size={16} />
-          </button>
+          <div className="inline-flex flex-col items-center gap-1">
+            <button
+              type="button"
+              onClick={() => onOpenEvidence(evidence)}
+              className="btn btn-ghost"
+              style={{ padding: 6, color: 'var(--brand-secondary)' }}
+              aria-label={`Ver evidencia de cobro de ${r.client_name}`}
+              title={`Ver foto del cobro · ${formatMXN(evidence.amount)}`}
+            >
+              <Camera size={16} />
+            </button>
+            {evidence.amount > 0 && (
+              <span
+                className="text-[10px] font-semibold"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                {formatMXN(evidence.amount)}
+              </span>
+            )}
+            {evidence.payment_method && (
+              <span
+                className="badge"
+                style={{
+                  fontSize: '0.625rem',
+                  padding: '1px 6px',
+                  background: '#E0E7FF',
+                  color: '#3730A3',
+                  fontWeight: 600,
+                }}
+                title={`Cobrado via ${paymentMethodLabel(evidence.payment_method)}`}
+              >
+                {paymentMethodEmoji(evidence.payment_method)}{' '}
+                {paymentMethodLabel(evidence.payment_method)}
+              </span>
+            )}
+          </div>
         ) : (
           <span
             className="text-xs"
@@ -1418,12 +1454,19 @@ function LeadDetailModal({
   entrega: r,
   detail,
   issues,
+  evidence,
   onClose,
+  onOpenEvidence,
 }: {
   entrega: EntregaRow;
   detail: LeadDetail | null;
   issues: IssueRow[];
+  /** Cobro hecho por el chofer (driver_delivery) más reciente para
+   *  este lead. null si nunca hubo entrega registrada por chofer (ej:
+   *  pedido todavía pendiente o ya estaba liquidado al entregar). */
+  evidence: DeliveryEvidence | null;
   onClose: () => void;
+  onOpenEvidence: (ev: DeliveryEvidence) => void;
 }) {
   // Cerrar con Escape. Listener montado solo mientras el modal está
   // abierto (este componente se desmonta cuando selectedLead = null).
@@ -1825,6 +1868,77 @@ function LeadDetailModal({
           </DetailSection>
         )}
 
+        {/* SECCIÓN 7a — Cobro del chofer (driver_delivery). Sólo se
+            renderiza si hubo una entrega registrada por el chofer
+            (puede ser un cobro o "ya liquidado") con su evidencia. */}
+        {evidence && (
+          <DetailSection title="Cobro del chofer">
+            {evidence.payment_method ? (
+              <KV
+                label="Método"
+                value={
+                  <span
+                    className="badge"
+                    style={{
+                      background: '#E0E7FF',
+                      color: '#3730A3',
+                      fontSize: '0.6875rem',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {paymentMethodEmoji(evidence.payment_method)}{' '}
+                    {paymentMethodLabel(evidence.payment_method)}
+                  </span>
+                }
+              />
+            ) : (
+              <KV
+                label="Método"
+                value={
+                  <span
+                    className="badge"
+                    style={{
+                      background: '#DCFCE7',
+                      color: '#15803D',
+                      fontSize: '0.6875rem',
+                      fontWeight: 600,
+                    }}
+                  >
+                    ✓ Pedido ya liquidado
+                  </span>
+                }
+              />
+            )}
+            <KV
+              label="Monto cobrado"
+              value={
+                <span style={{ fontWeight: 700 }}>
+                  {formatMXN(evidence.amount)}
+                </span>
+              }
+            />
+            <KV
+              label="Fecha de entrega"
+              value={formatDateTime(evidence.delivered_at)}
+            />
+            <button
+              type="button"
+              onClick={() => onOpenEvidence(evidence)}
+              className="btn btn-outline mt-2"
+              style={{
+                padding: '6px 12px',
+                fontSize: '0.75rem',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+              aria-label={`Ver foto del cobro de ${r.client_name}`}
+            >
+              <Camera size={14} /> Ver foto del cobro
+            </button>
+          </DetailSection>
+        )}
+
         {/* SECCIÓN 7 — Pagos */}
         {detail && detail.payments.length > 0 && (
           <DetailSection title="Pagos registrados">
@@ -1952,6 +2066,35 @@ function paymentTypeLabel(t: string): string {
       return 'Contra entrega';
     default:
       return t || '—';
+  }
+}
+
+/** Label corto de método de pago para badges del cobro del chofer. */
+function paymentMethodLabel(m: string | null): string {
+  switch (m) {
+    case 'efectivo':
+      return 'Efectivo';
+    case 'transferencia':
+      return 'Transferencia';
+    case 'clip':
+      return 'Clip';
+    default:
+      return m || '—';
+  }
+}
+
+/** Emoji asociado al método — refuerzo visual mínimo en celdas
+ *  compactas (tabla principal de /admin/entregas). */
+function paymentMethodEmoji(m: string | null): string {
+  switch (m) {
+    case 'efectivo':
+      return '💵';
+    case 'transferencia':
+      return '💳';
+    case 'clip':
+      return '📱';
+    default:
+      return '';
   }
 }
 

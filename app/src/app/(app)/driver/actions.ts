@@ -66,11 +66,18 @@ export async function confirmDeliveryAction(
     const amountRaw = formData.get('amount_collected');
     const amountNum =
       typeof amountRaw === 'string' ? Number(amountRaw) : 0;
+    const methodRaw = formData.get('payment_method');
+    const receiverRaw = formData.get('receiver_id');
 
     const parsed = ConfirmDeliverySchema.safeParse({
       lead_id: formData.get('lead_id'),
-      receiver_id: formData.get('receiver_id'),
+      receiver_id:
+        typeof receiverRaw === 'string' ? receiverRaw : '',
       amount_collected: Number.isFinite(amountNum) ? amountNum : 0,
+      payment_method:
+        typeof methodRaw === 'string' && methodRaw.length > 0
+          ? methodRaw
+          : null,
     });
     if (!parsed.success) {
       console.error(
@@ -84,6 +91,8 @@ export async function confirmDeliveryAction(
       };
     }
     const data = parsed.data;
+    const hasCollection =
+      data.amount_collected > 0 && data.payment_method != null;
 
     // ── Auth
     const userClient = await supabaseServer();
@@ -104,11 +113,13 @@ export async function confirmDeliveryAction(
     // ── Verificación de ownership: el lead debe estar asignado a este
     //    chofer y no estar ya entregado/cancelado. Defensa contra que un
     //    chofer cierre la entrega de otro chofer manipulando el lead_id.
-    //    Traemos también `client_name` para usarlo en la notificación
-    //    'entrega_confirmada' al final — evita un round-trip extra.
+    //    Traemos también `client_name` y `total_amount` para usarlo en
+    //    la notificación + recálculo de payment_status al final.
     const { data: leadRow, error: leadErr } = await admin
       .from('leads')
-      .select('id, driver_id, delivery_status, client_name')
+      .select(
+        'id, driver_id, delivery_status, client_name, total_amount',
+      )
       .eq('id', data.lead_id)
       .maybeSingle();
     if (leadErr) {
@@ -133,14 +144,32 @@ export async function confirmDeliveryAction(
       return { status: 'error', message: 'Esta entrega está cancelada.' };
     }
 
-    // ── Upload evidencia opcional
-    let evidenceUrl: string | null = null;
+    // ── Upload evidencia.
+    //    Obligatoria si el chofer cobró por transferencia o Clip
+    //    (necesitamos comprobante de la operación). Opcional para
+    //    efectivo (el cliente entrega cash sin recibo). Si no hay
+    //    cobro, la foto es siempre opcional.
     const evidence = formData.get('evidence');
-    if (evidence instanceof File && evidence.size > 0) {
-      if (evidence.size > MAX_EVIDENCE_BYTES) {
+    const hasEvidenceFile =
+      evidence instanceof File && evidence.size > 0;
+    const evidenceRequired =
+      hasCollection &&
+      (data.payment_method === 'transferencia' ||
+        data.payment_method === 'clip');
+    if (evidenceRequired && !hasEvidenceFile) {
+      return {
+        status: 'error',
+        message:
+          'La foto de evidencia es obligatoria para pagos por transferencia o Clip.',
+      };
+    }
+    let evidenceUrl: string | null = null;
+    if (hasEvidenceFile) {
+      const file = evidence as File;
+      if (file.size > MAX_EVIDENCE_BYTES) {
         return { status: 'error', message: 'La imagen excede 5 MB.' };
       }
-      const ext = (evidence.name.split('.').pop() ?? 'bin').toLowerCase();
+      const ext = (file.name.split('.').pop() ?? 'bin').toLowerCase();
       if (!(ALLOWED_EXTS as readonly string[]).includes(ext)) {
         return {
           status: 'error',
@@ -150,8 +179,8 @@ export async function confirmDeliveryAction(
       const path = `${data.lead_id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
       const { error: upErr } = await admin.storage
         .from(STORAGE_BUCKET)
-        .upload(path, evidence, {
-          contentType: evidence.type || `image/${ext}`,
+        .upload(path, file, {
+          contentType: file.type || `image/${ext}`,
           upsert: false,
         });
       if (upErr) {
@@ -167,6 +196,52 @@ export async function confirmDeliveryAction(
       });
     }
 
+    // ── INSERT payment (sólo si hubo cobro real).
+    //
+    // El chofer cobró al cliente y lo registramos como `payments` con
+    // `driver_id=auth.uid()`, `payment_type='liquidacion'` y
+    // `status='exitoso'`. Esto unifica el flujo con /payments/new — el
+    // admin ve estos cobros en /payments igual que los registrados a
+    // mano. La foto de evidencia se comparte (mismo bucket que
+    // driver_deliveries, mismo URL).
+    //
+    // Errores fatales aquí: rollback de upload (la entrega no se
+    // confirma). Si el INSERT a payments falla, no creamos el
+    // driver_delivery porque la trazabilidad quedaría rota.
+    let paymentId: string | null = null;
+    if (hasCollection) {
+      const { data: pmtRow, error: pmtErr } = await admin
+        .from('payments')
+        .insert({
+          lead_id: data.lead_id,
+          amount: data.amount_collected,
+          net_amount: data.amount_collected,
+          payment_method: data.payment_method,
+          payment_type: 'liquidacion',
+          driver_id: driverId,
+          status: 'exitoso',
+          evidence_photo_url: evidenceUrl,
+          paid_at: new Date().toISOString(),
+          registered_by: driverId,
+        })
+        .select('id')
+        .single();
+      if (pmtErr || !pmtRow) {
+        await txn.rollback('insert payment falló');
+        return {
+          status: 'error',
+          message: `No se pudo registrar el cobro: ${
+            pmtErr?.message ?? 'sin datos'
+          }`,
+        };
+      }
+      paymentId = pmtRow.id;
+      const pidLocal = paymentId;
+      txn.push(async () => {
+        await admin.from('payments').delete().eq('id', pidLocal);
+      });
+    }
+
     // ── INSERT driver_deliveries
     //
     // Nombres de columna del DDL real (algunos DIFERENTES al schema interno):
@@ -179,12 +254,20 @@ export async function confirmDeliveryAction(
     // default `now()` del DB) para que el timestamp registrado refleje
     // el momento del action, no el commit del INSERT — minimal pero útil
     // si hay latencia entre validación y persistencia.
+    //
+    // admin_receiver_id queda null cuando no es efectivo (transferencia/
+    // clip no necesitan que el chofer entregue cash físico) o cuando
+    // no hubo cobro (lead ya liquidado).
+    const receiverForInsert =
+      hasCollection && data.payment_method === 'efectivo'
+        ? data.receiver_id || null
+        : null;
     const { data: delRow, error: delErr } = await admin
       .from('driver_deliveries')
       .insert({
         lead_id: data.lead_id,
         driver_id: driverId,
-        admin_receiver_id: data.receiver_id,
+        admin_receiver_id: receiverForInsert,
         amount_collected: data.amount_collected,
         evidence_photo_url: evidenceUrl,
         delivered_at: new Date().toISOString(),
@@ -225,15 +308,15 @@ export async function confirmDeliveryAction(
     }
 
     // ── Cash transfer flow (non-fatal).
-    //    Si el chofer cobró efectivo (amount_collected > 0), creamos un
-    //    registro pendiente en `cash_transfers` que el contador verá en
-    //    /contador, y notificamos a todos los contadores activos.
+    //    Si el chofer cobró en EFECTIVO (no transferencia/clip), creamos
+    //    un registro pendiente en `cash_transfers` para que el admin lo
+    //    reciba en /admin/caja. Si fue por transferencia/clip el dinero
+    //    cayó directo a la cuenta y no hay efectivo físico que entregar.
     //
     //    Política de errores: si esto falla, la entrega física ya
     //    sucedió y está registrada — solo perdemos el tracking del
-    //    efectivo. Loguamos pero no abortamos. El admin puede crear el
-    //    cash_transfer manualmente desde DB si se necesita.
-    if (data.amount_collected > 0) {
+    //    efectivo. Loguamos pero no abortamos.
+    if (hasCollection && data.payment_method === 'efectivo') {
       try {
         const { error: ctErr } = await admin
           .from('cash_transfers')
@@ -288,7 +371,8 @@ export async function confirmDeliveryAction(
       }
     }
 
-    // ── UPDATE leads.delivery_status = 'entregado'
+    // ── UPDATE leads.delivery_status = 'entregado' (AUTOMÁTICO siempre,
+    //    independiente del estado de pago).
     const { error: updErr } = await admin
       .from('leads')
       .update({ delivery_status: 'entregado' })
@@ -300,6 +384,44 @@ export async function confirmDeliveryAction(
         status: 'error',
         message: `No se pudo actualizar el estado del lead: ${updErr.message}`,
       };
+    }
+
+    // ── Recalcular payment_status del lead.
+    //    Solo si hubo cobro este flujo. Si el lead ya estaba pagado y
+    //    el chofer no cobró nada, no hay nada que recalcular — el
+    //    status se queda como estaba (típicamente 'pagado').
+    if (hasCollection) {
+      try {
+        const { data: paidRows } = await admin
+          .from('payments')
+          .select('amount')
+          .eq('lead_id', data.lead_id)
+          .eq('status', 'exitoso');
+        const total = Number(leadRow.total_amount ?? 0);
+        const totalPaid = (paidRows ?? []).reduce(
+          (s, p) => s + Number(p.amount ?? 0),
+          0,
+        );
+        let nextPayStatus: 'pendiente' | 'parcial' | 'pagado';
+        if (total > 0 && totalPaid >= total) nextPayStatus = 'pagado';
+        else if (totalPaid > 0) nextPayStatus = 'parcial';
+        else nextPayStatus = 'pendiente';
+        const { error: payUpdErr } = await admin
+          .from('leads')
+          .update({ payment_status: nextPayStatus })
+          .eq('id', data.lead_id);
+        if (payUpdErr) {
+          console.error(
+            '[confirmDeliveryAction] recalc payment_status falló (no fatal):',
+            payUpdErr,
+          );
+        }
+      } catch (e) {
+        console.error(
+          '[confirmDeliveryAction] recalc payment_status excepción (no fatal):',
+          e,
+        );
+      }
     }
 
     // ── Notificación 'entrega_confirmada' a admins (best-effort, no fatal).
@@ -319,12 +441,24 @@ export async function confirmDeliveryAction(
         .eq('is_active', true);
 
       if (admins && admins.length > 0) {
-        const amountFmt = new Intl.NumberFormat('es-MX', {
-          style: 'currency',
-          currency: 'MXN',
-          minimumFractionDigits: 0,
-        }).format(data.amount_collected);
-        const message = `Entrega confirmada: ${clientName} — cobró ${amountFmt} — Chofer: ${driverName}`;
+        // Mensaje diferenciado según si hubo cobro o no.
+        let message: string;
+        if (hasCollection) {
+          const amountFmt = new Intl.NumberFormat('es-MX', {
+            style: 'currency',
+            currency: 'MXN',
+            minimumFractionDigits: 0,
+          }).format(data.amount_collected);
+          const methodLabel =
+            data.payment_method === 'efectivo'
+              ? 'Efectivo'
+              : data.payment_method === 'transferencia'
+                ? 'Transferencia'
+                : 'Clip';
+          message = `✅ ${driverName} entregó a ${clientName} — cobró ${amountFmt} via ${methodLabel}`;
+        } else {
+          message = `✅ ${driverName} entregó a ${clientName} — pedido ya liquidado previamente`;
+        }
         const inserts = admins.map((a) => ({
           recipient_id: a.id,
           type: 'entrega_confirmada',
@@ -371,6 +505,8 @@ export async function confirmDeliveryAction(
 
     revalidatePath('/driver');
     revalidatePath('/leads');
+    revalidatePath('/payments');
+    revalidatePath('/admin/entregas');
     revalidatePath('/admin/catalogs');
     return {
       status: 'success',

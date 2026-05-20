@@ -20,14 +20,72 @@
 
 import { z } from 'zod';
 
-export const ConfirmDeliverySchema = z.object({
-  lead_id: z.string().uuid('lead_id inválido'),
-  receiver_id: z.string().uuid('Selecciona un admin para recibir el efectivo'),
-  amount_collected: z
-    .number({ invalid_type_error: 'Monto inválido' })
-    .nonnegative('Monto debe ser ≥ 0')
-    .max(10_000_000, 'Monto demasiado grande'),
-});
+// Métodos de pago aceptados al confirmar una entrega. Mismo enum que
+// /payments/new (payment_method_enum en DB). Cuando el adeudo es 0
+// el chofer NO selecciona método — el campo viene como null.
+export const DRIVER_PAYMENT_METHOD_VALUES = [
+  'efectivo',
+  'transferencia',
+  'clip',
+] as const;
+export const DRIVER_PAYMENT_METHOD_OPTIONS: {
+  value: (typeof DRIVER_PAYMENT_METHOD_VALUES)[number];
+  label: string;
+  emoji: string;
+}[] = [
+  { value: 'efectivo', label: 'Efectivo', emoji: '💵' },
+  { value: 'transferencia', label: 'Transferencia', emoji: '💳' },
+  { value: 'clip', label: 'Clip', emoji: '📱' },
+];
+
+export const ConfirmDeliverySchema = z
+  .object({
+    lead_id: z.string().uuid('lead_id inválido'),
+    receiver_id: z
+      .string()
+      .uuid('Selecciona un admin para recibir el efectivo')
+      .optional()
+      .or(z.literal('')),
+    amount_collected: z
+      .number({ invalid_type_error: 'Monto inválido' })
+      .nonnegative('Monto debe ser ≥ 0')
+      .max(10_000_000, 'Monto demasiado grande'),
+    /** Método de pago. Required cuando `amount_collected > 0`.
+     *  El refine cross-field abajo aplica esa regla. */
+    payment_method: z
+      .enum(DRIVER_PAYMENT_METHOD_VALUES, {
+        message: 'Método de pago inválido',
+      })
+      .optional()
+      .nullable(),
+  })
+  .refine(
+    (d) => {
+      // Si hay cobro, el método es obligatorio.
+      if (d.amount_collected > 0) {
+        return d.payment_method != null;
+      }
+      return true;
+    },
+    {
+      message: 'Selecciona el método de pago.',
+      path: ['payment_method'],
+    },
+  )
+  .refine(
+    (d) => {
+      // Si pagó en efectivo el admin receptor es requerido (el chofer
+      // entrega ese cash a alguien). Para transferencia/clip no aplica.
+      if (d.amount_collected > 0 && d.payment_method === 'efectivo') {
+        return typeof d.receiver_id === 'string' && d.receiver_id.length > 0;
+      }
+      return true;
+    },
+    {
+      message: 'Selecciona un admin para entregar el efectivo.',
+      path: ['receiver_id'],
+    },
+  );
 
 export type ConfirmDeliveryInput = z.infer<typeof ConfirmDeliverySchema>;
 

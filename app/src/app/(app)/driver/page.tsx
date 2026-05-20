@@ -5,6 +5,7 @@ import {
   DriverClient,
   type DeliveryCardData,
   type ReceiverOption,
+  type DeliveredTodayRow,
 } from './driver-client';
 
 /**
@@ -254,6 +255,86 @@ export default async function DriverPage() {
       deliveries[i].failed_delivery_photo_url = signedFailedPhotos[i];
     }
 
+    // ── Historial "Entregados hoy".
+    //    SELECT driver_deliveries del chofer con delivered_at en el día
+    //    UTC actual. Resolvemos client_name y payment_method de los
+    //    payments en queries adicionales. Non-fatal: si falla, la
+    //    sección queda vacía.
+    const startOfTodayIso = `${todayIso}T00:00:00.000Z`;
+    const endOfTodayIso = (() => {
+      const d = new Date(`${todayIso}T00:00:00.000Z`);
+      d.setUTCDate(d.getUTCDate() + 1);
+      return d.toISOString();
+    })();
+    let deliveredToday: DeliveredTodayRow[] = [];
+    try {
+      const { data: doneRows, error: doneErr } = await admin
+        .from('driver_deliveries')
+        .select('id, lead_id, amount_collected, delivered_at')
+        .eq('driver_id', driverId)
+        .gte('delivered_at', startOfTodayIso)
+        .lt('delivered_at', endOfTodayIso)
+        .order('delivered_at', { ascending: false });
+      if (doneErr) {
+        console.error(
+          '[DriverPage] delivered today select falló (no fatal):',
+          doneErr,
+        );
+      } else {
+        const doneLeadIds = Array.from(
+          new Set(
+            (doneRows ?? [])
+              .map((r) => r.lead_id)
+              .filter((x): x is string => !!x),
+          ),
+        );
+        // Lookup client_name por lead_id.
+        const clientByLead = new Map<string, string>();
+        if (doneLeadIds.length > 0) {
+          const { data: leadsForDone } = await admin
+            .from('leads')
+            .select('id, client_name')
+            .in('id', doneLeadIds);
+          for (const l of leadsForDone ?? []) {
+            if (l.id) clientByLead.set(l.id, l.client_name ?? '(sin nombre)');
+          }
+        }
+        // Lookup payment_method por lead_id (último pago del chofer en
+        // ese lead). Una sola query por todos los leads del día.
+        const methodByLead = new Map<string, string>();
+        if (doneLeadIds.length > 0) {
+          const { data: payRows } = await admin
+            .from('payments')
+            .select('lead_id, payment_method, paid_at')
+            .eq('driver_id', driverId)
+            .in('lead_id', doneLeadIds)
+            .order('paid_at', { ascending: false });
+          for (const p of payRows ?? []) {
+            if (p.lead_id && !methodByLead.has(p.lead_id)) {
+              methodByLead.set(p.lead_id, (p.payment_method as string) ?? '');
+            }
+          }
+        }
+        deliveredToday = (doneRows ?? []).map((r) => ({
+          id: r.id,
+          lead_id: r.lead_id ?? '',
+          client_name: r.lead_id
+            ? clientByLead.get(r.lead_id) ?? '(sin nombre)'
+            : '(sin nombre)',
+          amount_collected: Number(r.amount_collected ?? 0),
+          payment_method: r.lead_id
+            ? methodByLead.get(r.lead_id) ?? null
+            : null,
+          delivered_at: r.delivered_at ?? null,
+        }));
+      }
+    } catch (e) {
+      console.error(
+        '[DriverPage] delivered today excepción (no fatal):',
+        e,
+      );
+    }
+
     return (
       <DriverClient
         driverName={driverName}
@@ -263,6 +344,7 @@ export default async function DriverPage() {
         todayDeliveriesCount={todayDeliveriesCount}
         todayCompletedCount={todayCompletedCount}
         todayIso={todayIso}
+        deliveredToday={deliveredToday}
       />
     );
   } catch (err) {
