@@ -331,8 +331,12 @@ export async function saveLeadAction(
     const cutsTotal =
       cutsCount != null ? cutsCount * CUT_RATE : null;
 
+    // Cubrecanto estructurado (tipo + metros): ahora vive en la
+    // sección Cubrecanto, gateada por `has_cubrecanto`. Antes estaba
+    // dentro de la sección Hojas; el move responde al rediseño del
+    // formulario donde el cubrecanto es su propio bloque.
     const edgeType =
-      hasHojas &&
+      hasCubrecantoManual &&
       (data.edge_banding_type === '19mm' || data.edge_banding_type === '3.5mm')
         ? data.edge_banding_type
         : null;
@@ -347,34 +351,20 @@ export async function saveLeadAction(
         ? edgeMeters * EDGE_BANDING_RATE[edgeType]
         : null;
 
-    // Cubrecanto manual (sección independiente). Solo cuando
-    // has_cubrecanto=true y el costo unitario es > 0. NO confundir
-    // con `edgeTotal` que es el cálculo estructurado dentro de la
-    // sección hojas.
-    //
-    // `edgebanding_manual_cost` ahora es el PRECIO UNITARIO por
-    // metro/pieza. Multiplicamos por la suma de `quantity` en
-    // `edgebanding_colors`. Sin colores definidos, contribuye el
-    // precio unitario solo (interpretado como pago fijo de 1
-    // unidad — coherente con el resumen del form).
-    const edgebandingUnitCost =
+    // Costo adicional del cubrecanto: flat amount OPCIONAL que se
+    // suma al total sin multiplicarse por cantidades. Sirve para
+    // cargos extras fuera del cálculo por metros (ej. instalación
+    // específica). `edgebanding_manual_cost` cambió de "precio
+    // unitario × qty" a "flat amount" como parte del rediseño del
+    // formulario; los leads viejos que tenían valor unitario se
+    // interpretan ahora como flat sin migración (cambio mínimo de
+    // semántica).
+    const edgebandingAdditionalCost =
       hasCubrecantoManual &&
       typeof data.edgebanding_manual_cost === 'number' &&
       data.edgebanding_manual_cost > 0
         ? data.edgebanding_manual_cost
         : 0;
-    const edgebandingQtySum = hasCubrecantoManual
-      ? (data.edgebanding_colors ?? []).reduce(
-          (s, c) => s + Number(c.quantity ?? 0),
-          0,
-        )
-      : 0;
-    const edgebandingManualCost =
-      edgebandingUnitCost === 0
-        ? null
-        : edgebandingQtySum > 0
-          ? edgebandingUnitCost * edgebandingQtySum
-          : edgebandingUnitCost;
 
     // Catálogo: precio fijo (default $500 en el form) sumado al total.
     const catalogPrice = hasCatalogo
@@ -406,11 +396,18 @@ export async function saveLeadAction(
     );
 
     // total_amount: suma de los tipos activos + envío + extras.
+    //   subtotal_hojas              = sheetsSubtotal
+    //   subtotal_cortes             = cutsTotal
+    //   subtotal_cubrecanto_metros  = edgeTotal (gateado por has_cubrecanto)
+    //   subtotal_cubrecanto_extra   = edgebandingAdditionalCost
+    //   subtotal_catalogo           = catalogPrice
+    //   subtotal_envio              = deliveryCost
+    //   subtotal_extras             = extraCostsTotal
     const total_amount =
       sheetsSubtotal +
       (cutsTotal ?? 0) +
       (edgeTotal ?? 0) +
-      (edgebandingManualCost ?? 0) +
+      edgebandingAdditionalCost +
       catalogPrice +
       (deliveryCost ?? 0) +
       extraCostsTotal;
@@ -453,12 +450,11 @@ export async function saveLeadAction(
         has_cubrecanto: hasCubrecantoManual,
         has_catalogo: hasCatalogo,
         catalog_price: hasCatalogo ? catalogPrice : 0,
-        // `edgebanding_manual_cost` se persiste como el PRECIO UNITARIO
-        // (por metro/pieza). El total contribuido al `total_amount` es
-        // unit × sum(edgebanding_colors.quantity), pero la columna
-        // guarda el unitario para que el cálculo sea reproducible al
-        // editar el lead.
-        edgebanding_manual_cost: edgebandingUnitCost,
+        // `edgebanding_manual_cost` se persiste como FLAT AMOUNT
+        // opcional: el costo adicional fuera del cálculo por metros.
+        // Antes era "precio unitario × qty"; el rediseño del form lo
+        // pasó a monto único.
+        edgebanding_manual_cost: edgebandingAdditionalCost,
         // Cargos extras como JSONB. Persistimos las filas saneadas
         // (description trimmed, amount numérico). Si no hay extras,
         // mandamos array vacío para que el default '[]' de DB no

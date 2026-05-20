@@ -278,14 +278,13 @@ export function NewLeadForm({
     () => extraCostsRows.reduce((s, e) => s + e.amount, 0),
     [extraCostsRows],
   );
-  // Cubrecanto manual: `edgebanding_manual_cost` es el precio UNITARIO
-  // por metro/pieza. Para el total multiplicamos por la suma de
-  // cantidades en `edgebanding_colors`. Si no hay colores definidos
-  // todavía, caemos al precio unitario solo (se interpreta como un
-  // pago fijo de 1 unidad). Política: si hay precio sin colores,
-  // contribuye el precio bruto; si hay colores y precio, contribuye
-  // precio × suma(qty).
-  const manualCubrecantoUnitCost = watchedHasCubrecanto
+  // Cubrecanto adicional: `edgebanding_manual_cost` ahora es un flat
+  // amount opcional (NO se multiplica por cantidad). El costo principal
+  // del cubrecanto viene del cálculo estructurado metros × tarifa
+  // (`edgeTotal`). Este input solo permite agregar cargos extras
+  // fuera del cálculo por metros (ej. instalación específica del
+  // cubrecanto).
+  const additionalCubrecantoCost = watchedHasCubrecanto
     ? typeof watchedManualCubre === 'number' && watchedManualCubre > 0
       ? watchedManualCubre
       : 0
@@ -300,12 +299,6 @@ export function NewLeadForm({
         return s + qty;
       }, 0)
     : 0;
-  const manualCubrecantoCost =
-    manualCubrecantoUnitCost === 0
-      ? 0
-      : edgeColorsTotalQty > 0
-        ? manualCubrecantoUnitCost * edgeColorsTotalQty
-        : manualCubrecantoUnitCost; // sin colores: precio = total bruto
 
   // Cuenta total de hojas: SUMA de las cantidades de TODAS las filas.
   // `Number(x) || 0` parsea uniformemente números, strings numéricas
@@ -335,6 +328,25 @@ export function NewLeadForm({
       }, 0),
     [watchedColors],
   );
+
+  // Lista de colores de cubrecanto (con nombre resuelto desde el
+  // catálogo) para mostrar en el resumen como información: "Malta 2 uds".
+  // Los colores nuevos (NEW_COLOR_SENTINEL) usan `new_name`.
+  const edgeColorsBreakdown = useMemo(() => {
+    return (watchedEdgeColors ?? [])
+      .map((c) => {
+        const qty = Number(c?.quantity) || 0;
+        let name: string;
+        if (c?.color_id === NEW_COLOR_SENTINEL) {
+          name = (c.new_name ?? '').trim() || 'Nuevo color';
+        } else {
+          name =
+            colors.find((cat) => cat.id === c?.color_id)?.name ?? 'Color';
+        }
+        return { name, qty };
+      })
+      .filter((c) => c.qty > 0);
+  }, [watchedEdgeColors, colors]);
 
   // Para el resumen: lista de filas normalizada (nombre + qty + cost)
   // y bandera "hay costos mixtos" para decidir si mostramos desglose
@@ -375,15 +387,19 @@ export function NewLeadForm({
   // El total a cobrar es la suma condicional de los tipos activos
   // + el envío a domicilio + los costos extras (independientes).
   //
-  //   has_hojas       → sheets + cuts + edge_banding estructurado
-  //   has_cubrecanto  → manualCubrecantoCost (input libre)
+  //   has_hojas       → sheets + cuts
+  //   has_cubrecanto  → edge_banding estructurado (metros × tarifa)
+  //                     + costo adicional opcional (flat)
   //   has_catalogo    → catalogPrice
   //   domicilio       → deliveryCost
   //   extras          → SUM(extra_costs.amount)
-  const hojasTotal = watchedHasHojas ? sheetsSubtotal + cutsTotal + edgeTotal : 0;
+  const hojasTotal = watchedHasHojas ? sheetsSubtotal + cutsTotal : 0;
+  const cubrecantoTotal = watchedHasCubrecanto
+    ? edgeTotal + additionalCubrecantoCost
+    : 0;
   const total =
     hojasTotal +
-    manualCubrecantoCost +
+    cubrecantoTotal +
     catalogPrice +
     deliveryCost +
     extrasTotal;
@@ -961,58 +977,6 @@ export function NewLeadForm({
               </div>
             </div>
 
-            {/* Cubrecanto (estructurado): tipo + metros, total derivado */}
-            <div id="field-edgebanding" className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Field
-                label="Cubrecanto"
-                error={errors.edge_banding_type?.message}
-              >
-                <select
-                  {...register('edge_banding_type')}
-                  className="select"
-                  disabled={pending}
-                >
-                  <option value="">Sin cubrecanto</option>
-                  {EDGE_BANDING_OPTIONS.map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              {(watchedEdgeType === '19mm' || watchedEdgeType === '3.5mm') && (
-                <Field
-                  label="Metros lineales"
-                  error={errors.edge_banding_meters?.message}
-                >
-                  <input
-                    type="number"
-                    min={0}
-                    step="0.5"
-                    className="input"
-                    placeholder="Ej. 4"
-                    disabled={pending}
-                    {...register('edge_banding_meters', {
-                      // Mapeo "" → null para que Zod nullable lo acepte;
-                      // valueAsNumber daría NaN sino.
-                      setValueAs: (v) => {
-                        if (v === '' || v == null) return null;
-                        const n = Number(v);
-                        return Number.isFinite(n) ? n : null;
-                      },
-                    })}
-                  />
-                  <div
-                    className="text-[11px] mt-1"
-                    style={{ color: 'var(--text-tertiary)' }}
-                  >
-                    Tarifa: {formatMXN(EDGE_BANDING_RATE[watchedEdgeType])}/m ·
-                    Total: <strong>{formatMXN(edgeTotal)}</strong>
-                  </div>
-                </Field>
-              )}
-            </div>
-
             {/* Cortes — solo cuando product_type='con_corte' */}
             {watchedProductType === 'con_corte' && (
               <div id="field-cuts" className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1048,45 +1012,94 @@ export function NewLeadForm({
               </div>
             )}
 
-            {/* ── SECCIÓN CUBRECANTO MANUAL ───────────────────────
-                Visible solo si has_cubrecanto. Costo libre (input
-                manual) + lista de colores informativa que el chofer
-                ve en la entrega. Los colores NO comprometen
-                inventario; salen de un stock distinto al de hojas. */}
+            {/* ── SECCIÓN CUBRECANTO ──────────────────────────────
+                Visible solo si has_cubrecanto. Incluye:
+                  1) Tipo (19mm/3.5mm) + Metros lineales (cálculo
+                     estructurado metros × tarifa).
+                  2) Número de cubrecanto (auto) = suma de qty por
+                     color en la tabla siguiente (informativo).
+                  3) Tabla de colores de cubrecanto.
+                  4) Costo adicional del cubrecanto (opcional) —
+                     flat amount para cargos extra fuera del cálculo
+                     por metros.
+                Los colores NO comprometen inventario; salen de un
+                stock distinto al de hojas. */}
             {watchedHasCubrecanto && (
               <div id="field-cubrecanto-manual" className="mt-6 flex flex-col gap-4">
-                <Field
-                  label="Costo por metro/pieza de cubrecanto"
-                  error={errors.edgebanding_manual_cost?.message}
-                >
-                  <input
-                    type="number"
-                    min={0}
-                    step="1"
-                    className="input"
-                    placeholder="Ej. 350"
-                    disabled={pending}
-                    {...register('edgebanding_manual_cost', {
-                      setValueAs: (v) => {
-                        if (v === '' || v == null) return null;
-                        const n = Number(v);
-                        return Number.isFinite(n) ? n : null;
-                      },
-                    })}
-                  />
-                  <div
-                    className="text-[11px] mt-1"
-                    style={{ color: 'var(--text-tertiary)' }}
+                {/* Tipo + metros (cálculo estructurado) */}
+                <div id="field-edgebanding" className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Field
+                    label="Tipo de cubrecanto"
+                    error={errors.edge_banding_type?.message}
                   >
-                    Se multiplica por la cantidad total de los colores
-                    de cubrecanto. Si no agregas colores, se cobra como
-                    monto único.
-                  </div>
-                </Field>
+                    <select
+                      {...register('edge_banding_type')}
+                      className="select"
+                      disabled={pending}
+                    >
+                      <option value="">Sin cubrecanto</option>
+                      {EDGE_BANDING_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                  {(watchedEdgeType === '19mm' || watchedEdgeType === '3.5mm') && (
+                    <Field
+                      label="Metros lineales"
+                      error={errors.edge_banding_meters?.message}
+                    >
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.5"
+                        className="input"
+                        placeholder="Ej. 4"
+                        disabled={pending}
+                        {...register('edge_banding_meters', {
+                          setValueAs: (v) => {
+                            if (v === '' || v == null) return null;
+                            const n = Number(v);
+                            return Number.isFinite(n) ? n : null;
+                          },
+                        })}
+                      />
+                      <div
+                        className="text-[11px] mt-1"
+                        style={{ color: 'var(--text-tertiary)' }}
+                      >
+                        Tarifa: {formatMXN(EDGE_BANDING_RATE[watchedEdgeType])}/m ·
+                        Total: <strong>{formatMXN(edgeTotal)}</strong>
+                      </div>
+                    </Field>
+                  )}
+                </div>
+
+                {/* Número de cubrecanto (auto): suma las cantidades
+                    de la tabla de colores. Mismo patrón que "Número
+                    de hojas (auto)". */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <Field label="Número de cubrecanto (auto)">
+                    <input
+                      className="input"
+                      type="number"
+                      value={edgeColorsTotalQty}
+                      readOnly
+                      style={{ background: 'var(--bg-muted)' }}
+                    />
+                    <div
+                      className="text-[11px] mt-1"
+                      style={{ color: 'var(--text-tertiary)' }}
+                    >
+                      Suma automática de las cantidades por color
+                    </div>
+                  </Field>
+                </div>
 
                 {/* Tabla de colores de cubrecanto (mismo patrón que la
                     tabla de hojas). Sin columna de costo — el costo
-                    total ya se ingresa arriba como monto manual. */}
+                    total viene del cálculo por metros + adicional. */}
                 <div id="field-edgebanding-colors">
                   <label className="label">Colores de cubrecanto</label>
                   {errors.edgebanding_colors?.message && (
@@ -1159,6 +1172,36 @@ export function NewLeadForm({
                     </div>
                   </div>
                 </div>
+
+                {/* Costo adicional del cubrecanto (opcional) — flat
+                    amount para cargos extra fuera del cálculo por
+                    metros. NO se multiplica por la cantidad. */}
+                <Field
+                  label="Costo adicional del cubrecanto (opcional)"
+                  error={errors.edgebanding_manual_cost?.message}
+                >
+                  <input
+                    type="number"
+                    min={0}
+                    step="1"
+                    className="input"
+                    placeholder="Ej. 700"
+                    disabled={pending}
+                    {...register('edgebanding_manual_cost', {
+                      setValueAs: (v) => {
+                        if (v === '' || v == null) return null;
+                        const n = Number(v);
+                        return Number.isFinite(n) ? n : null;
+                      },
+                    })}
+                  />
+                  <div
+                    className="text-[11px] mt-1"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Monto fijo extra fuera del cálculo por metros.
+                  </div>
+                </Field>
               </div>
             )}
 
@@ -1525,33 +1568,56 @@ export function NewLeadForm({
                   {cutsTotal > 0 && (
                     <div className="flex justify-between">
                       <span style={{ color: 'var(--text-secondary)' }}>
-                        Cortes ({watchedCutsCount ?? 0} × {formatMXN(CUT_RATE)})
+                        + Cortes ({watchedCutsCount ?? 0} × {formatMXN(CUT_RATE)})
                       </span>
                       <span className="font-semibold">{formatMXN(cutsTotal)}</span>
                     </div>
                   )}
-                  {edgeTotal > 0 && (
+                </>
+              )}
+              {watchedHasCubrecanto && (
+                <>
+                  {edgeTotal > 0 &&
+                    (watchedEdgeType === '19mm' ||
+                      watchedEdgeType === '3.5mm') && (
+                      <div className="flex justify-between">
+                        <span style={{ color: 'var(--text-secondary)' }}>
+                          + Cubrecanto {watchedEdgeType} (
+                          {watchedEdgeMeters ?? 0}m ×{' '}
+                          {formatMXN(EDGE_BANDING_RATE[watchedEdgeType])})
+                        </span>
+                        <span className="font-semibold">
+                          {formatMXN(edgeTotal)}
+                        </span>
+                      </div>
+                    )}
+                  {/* Colores de cubrecanto (informativos — no suman) */}
+                  {edgeColorsBreakdown.map((c, i) => (
+                    <div
+                      key={`edge-color-${i}`}
+                      className="flex justify-between text-xs"
+                      style={{ paddingLeft: 12 }}
+                    >
+                      <span
+                        style={{ color: 'var(--text-tertiary)' }}
+                        className="truncate"
+                        title={`${c.name} ${c.qty} ${c.qty === 1 ? 'ud' : 'uds'}`}
+                      >
+                        {c.name} {c.qty} {c.qty === 1 ? 'ud' : 'uds'}
+                      </span>
+                    </div>
+                  ))}
+                  {additionalCubrecantoCost > 0 && (
                     <div className="flex justify-between">
                       <span style={{ color: 'var(--text-secondary)' }}>
-                        Cubrecanto ({watchedEdgeMeters ?? 0}m)
+                        + Cubrecanto adicional
                       </span>
-                      <span className="font-semibold">{formatMXN(edgeTotal)}</span>
+                      <span className="font-semibold">
+                        {formatMXN(additionalCubrecantoCost)}
+                      </span>
                     </div>
                   )}
                 </>
-              )}
-              {watchedHasCubrecanto && manualCubrecantoCost > 0 && (
-                <div className="flex justify-between">
-                  <span style={{ color: 'var(--text-secondary)' }}>
-                    + Cubrecanto
-                    {edgeColorsTotalQty > 0
-                      ? ` (${edgeColorsTotalQty} ${edgeColorsTotalQty === 1 ? 'pieza' : 'piezas'} × ${formatMXN(manualCubrecantoUnitCost)})`
-                      : ''}
-                  </span>
-                  <span className="font-semibold">
-                    {formatMXN(manualCubrecantoCost)}
-                  </span>
-                </div>
               )}
               {watchedHasCatalogo && (
                 <div className="flex justify-between">

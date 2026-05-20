@@ -586,8 +586,11 @@ export async function updateLeadFullAction(
         : null;
     const cutsTotal = cutsCount != null ? cutsCount * CUT_RATE : null;
 
+    // Cubrecanto estructurado: ahora gateado por `has_cubrecanto`
+    // (el rediseño del form lo movió de la sección Hojas a su
+    // propia sección Cubrecanto).
     const edgeType =
-      hasHojas &&
+      hasCubrecantoManual &&
       (data.edge_banding_type === '19mm' || data.edge_banding_type === '3.5mm')
         ? data.edge_banding_type
         : null;
@@ -602,29 +605,15 @@ export async function updateLeadFullAction(
         ? edgeMeters * EDGE_BANDING_RATE[edgeType]
         : null;
 
-    // `edgebanding_manual_cost` ahora es el PRECIO UNITARIO por
-    // metro/pieza. El total cubrecanto = unitario × suma de
-    // cantidades en `edgebanding_colors`. Sin colores, contribuye
-    // el unitario (pago fijo de 1 unidad). Mismo cálculo que en
-    // saveLeadAction.
-    const edgebandingUnitCost =
+    // Costo adicional del cubrecanto: flat amount opcional (no se
+    // multiplica por cantidad). Mismo cambio de semántica que en
+    // saveLeadAction: antes era unit × qty, ahora es monto único.
+    const edgebandingAdditionalCost =
       hasCubrecantoManual &&
       typeof data.edgebanding_manual_cost === 'number' &&
       data.edgebanding_manual_cost > 0
         ? data.edgebanding_manual_cost
         : 0;
-    const edgebandingQtySum = hasCubrecantoManual
-      ? (data.edgebanding_colors ?? []).reduce(
-          (s, c) => s + Number(c.quantity ?? 0),
-          0,
-        )
-      : 0;
-    const edgebandingManualCost =
-      edgebandingUnitCost === 0
-        ? null
-        : edgebandingQtySum > 0
-          ? edgebandingUnitCost * edgebandingQtySum
-          : edgebandingUnitCost;
 
     const catalogPrice = hasCatalogo
       ? Number(data.catalog_price ?? 500)
@@ -654,7 +643,7 @@ export async function updateLeadFullAction(
       sheetsSubtotal +
       (cutsTotal ?? 0) +
       (edgeTotal ?? 0) +
-      (edgebandingManualCost ?? 0) +
+      edgebandingAdditionalCost +
       catalogPrice +
       (deliveryCost ?? 0) +
       extraCostsTotal;
@@ -689,10 +678,9 @@ export async function updateLeadFullAction(
         has_cubrecanto: hasCubrecantoManual,
         has_catalogo: hasCatalogo,
         catalog_price: hasCatalogo ? catalogPrice : 0,
-        // Persistimos el PRECIO UNITARIO (no el total ya calculado),
-        // para que la edición posterior recomponga el total
-        // multiplicando por la nueva suma de cantidades.
-        edgebanding_manual_cost: edgebandingUnitCost,
+        // Flat amount opcional (no se multiplica por qty); coherente
+        // con saveLeadAction tras el rediseño.
+        edgebanding_manual_cost: edgebandingAdditionalCost,
         // Reemplazo total del array de extras (no merge): el form
         // siempre envía la lista completa actualizada.
         extra_costs: extraCostsRows.map((e) => ({

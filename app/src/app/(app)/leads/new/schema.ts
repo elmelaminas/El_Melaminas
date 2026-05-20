@@ -413,19 +413,29 @@ export const LeadCreateSchema = z.object({
   },
 )
 .refine(
-  // Si has_cubrecanto=true (sección manual), el costo debe ser > 0.
-  // El input visible es `edgebanding_manual_cost` — no confundir
-  // con `edge_banding_total` (cálculo estructurado dentro de hojas).
+  // Si has_cubrecanto=true, al menos UNO de los tres campos debe
+  // estar definido:
+  //   - tipo de cubrecanto (19mm/3.5mm) con metros > 0
+  //   - costo adicional > 0
+  //   - al menos un color registrado
+  // Cualquiera de los tres justifica activar la sección. El refine
+  // específico sobre `edge_banding_meters` (abajo) asegura que si
+  // el tipo está seleccionado, los metros sean > 0.
   (d) => {
     if (!d.has_cubrecanto) return true;
-    return (
+    const typeIsSet =
+      d.edge_banding_type === '19mm' || d.edge_banding_type === '3.5mm';
+    const hasAdditionalCost =
       typeof d.edgebanding_manual_cost === 'number' &&
-      d.edgebanding_manual_cost > 0
-    );
+      d.edgebanding_manual_cost > 0;
+    const hasColors =
+      Array.isArray(d.edgebanding_colors) && d.edgebanding_colors.length > 0;
+    return typeIsSet || hasAdditionalCost || hasColors;
   },
   {
-    message: 'Ingresa el costo del cubrecanto adicional.',
-    path: ['edgebanding_manual_cost'],
+    message:
+      'Define al menos el tipo de cubrecanto, un costo adicional o un color.',
+    path: ['edge_banding_type'],
   },
 )
 .refine(
@@ -446,10 +456,11 @@ export const LeadCreateSchema = z.object({
   },
 )
 .refine(
-  // Si has_hojas y se eligió un tipo de cubrecanto estructurado (no
-  // vacío/null), los metros deben venir definidos y > 0.
+  // Si has_cubrecanto=true y se eligió un tipo (no vacío/null), los
+  // metros deben venir definidos y > 0. El tipo + metros viven ahora
+  // en la sección Cubrecanto (antes estaba dentro de Hojas).
   (d) => {
-    if (!d.has_hojas) return true;
+    if (!d.has_cubrecanto) return true;
     const typeIsSet = d.edge_banding_type && d.edge_banding_type !== '';
     if (typeIsSet) {
       return (
