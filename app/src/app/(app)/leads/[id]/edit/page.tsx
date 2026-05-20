@@ -77,7 +77,7 @@ export default async function EditLeadPage({
            cost_per_sheet, cuts_count, edge_banding_type,
            edge_banding_meters, delivery_cost,
            has_hojas, has_cubrecanto, has_catalogo,
-           catalog_price, edgebanding_manual_cost, extra_costs,
+           catalog_price, extra_costs,
            driver_id, document_url, document_urls,
            delivery_status, deleted_at`,
         )
@@ -105,7 +105,7 @@ export default async function EditLeadPage({
         .order('full_name', { ascending: true }),
       admin
         .from('lead_edgebanding_colors')
-        .select('color_id, quantity')
+        .select('color_id, quantity, unit_cost')
         .eq('lead_id', id),
     ]);
 
@@ -277,7 +277,11 @@ export default async function EditLeadPage({
         ecResult.error,
       );
     }
-    type RawEc = { color_id: string; quantity: number };
+    type RawEc = {
+      color_id: string;
+      quantity: number;
+      unit_cost: number | string | null;
+    };
     const edgebandingColors = (ecResult.data ?? [])
       .filter(
         (r): r is RawEc =>
@@ -287,6 +291,7 @@ export default async function EditLeadPage({
         color_id: r.color_id,
         quantity: Number(r.quantity),
         new_name: '',
+        unit_cost: r.unit_cost == null ? 0 : Number(r.unit_cost),
       }));
 
     // `lead-documents` es bucket PÚBLICO — la URL guardada funciona
@@ -358,11 +363,6 @@ export default async function EditLeadPage({
           leadResult.data.catalog_price == null
             ? 500
             : Number(leadResult.data.catalog_price),
-        edgebanding_manual_cost:
-          leadResult.data.edgebanding_manual_cost == null ||
-          Number(leadResult.data.edgebanding_manual_cost) === 0
-            ? null
-            : Number(leadResult.data.edgebanding_manual_cost),
         colors: leadColors,
         edgebanding_colors: edgebandingColors,
         // Costos extras: vienen como JSONB (array de {description,

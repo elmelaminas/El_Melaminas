@@ -175,10 +175,9 @@ export function NewLeadForm({
       has_cubrecanto: initialValues?.has_cubrecanto ?? false,
       has_catalogo: initialValues?.has_catalogo ?? false,
       catalog_price: initialValues?.catalog_price ?? 500,
-      edgebanding_manual_cost: initialValues?.edgebanding_manual_cost ?? null,
-      // Lista de colores del cubrecanto. Vacío por default; el usuario
-      // agrega filas explícitamente desde la sección Cubrecanto cuando
-      // `has_cubrecanto=true`.
+      // Lista de colores del cubrecanto. Cada fila ahora carga su
+      // costo unitario (antes existía un `edgebanding_manual_cost`
+      // global; se eliminó). Vacío por default.
       edgebanding_colors: initialValues?.edgebanding_colors ?? [],
       // Costos extras (JSONB): lista libre de cargos adicionales.
       // Vacío por default; en edit precargamos lo que venga del lead.
@@ -252,7 +251,6 @@ export function NewLeadForm({
   const watchedHasCubrecanto = watch('has_cubrecanto');
   const watchedHasCatalogo = watch('has_catalogo');
   const watchedCatalogPrice = watch('catalog_price');
-  const watchedManualCubre = watch('edgebanding_manual_cost');
   const watchedEdgeColors = watch('edgebanding_colors');
 
   const catalogPrice = watchedHasCatalogo
@@ -278,17 +276,10 @@ export function NewLeadForm({
     () => extraCostsRows.reduce((s, e) => s + e.amount, 0),
     [extraCostsRows],
   );
-  // Cubrecanto adicional: `edgebanding_manual_cost` ahora es un flat
-  // amount opcional (NO se multiplica por cantidad). El costo principal
-  // del cubrecanto viene del cálculo estructurado metros × tarifa
-  // (`edgeTotal`). Este input solo permite agregar cargos extras
-  // fuera del cálculo por metros (ej. instalación específica del
-  // cubrecanto).
-  const additionalCubrecantoCost = watchedHasCubrecanto
-    ? typeof watchedManualCubre === 'number' && watchedManualCubre > 0
-      ? watchedManualCubre
-      : 0
-    : 0;
+  // Cubrecanto por color: cada fila del array `edgebanding_colors`
+  // tiene su propio `unit_cost`. El subtotal de colores es
+  // SUM(quantity × unit_cost) sobre todas las filas. Esto reemplaza
+  // al antiguo `edgebanding_manual_cost` (input global eliminado).
   const edgeColorsTotalQty = watchedHasCubrecanto
     ? (watchedEdgeColors ?? []).reduce((s, c) => {
         // Defensive parse: RHF puede devolver el value como string
@@ -297,6 +288,13 @@ export function NewLeadForm({
         // strings numéricas, NaN y undefined uniformemente.
         const qty = Number(c?.quantity) || 0;
         return s + qty;
+      }, 0)
+    : 0;
+  const edgeColorsSubtotal = watchedHasCubrecanto
+    ? (watchedEdgeColors ?? []).reduce((s, c) => {
+        const qty = Number(c?.quantity) || 0;
+        const cost = Number(c?.unit_cost) || 0;
+        return s + qty * cost;
       }, 0)
     : 0;
 
@@ -329,13 +327,14 @@ export function NewLeadForm({
     [watchedColors],
   );
 
-  // Lista de colores de cubrecanto (con nombre resuelto desde el
-  // catálogo) para mostrar en el resumen como información: "Malta 2 uds".
+  // Lista de colores de cubrecanto (nombre + qty + cost por fila)
+  // para el resumen. Mismo patrón que `colorBreakdown` de hojas.
   // Los colores nuevos (NEW_COLOR_SENTINEL) usan `new_name`.
   const edgeColorsBreakdown = useMemo(() => {
     return (watchedEdgeColors ?? [])
       .map((c) => {
         const qty = Number(c?.quantity) || 0;
+        const cost = Number(c?.unit_cost) || 0;
         let name: string;
         if (c?.color_id === NEW_COLOR_SENTINEL) {
           name = (c.new_name ?? '').trim() || 'Nuevo color';
@@ -343,7 +342,7 @@ export function NewLeadForm({
           name =
             colors.find((cat) => cat.id === c?.color_id)?.name ?? 'Color';
         }
-        return { name, qty };
+        return { name, qty, cost, line: qty * cost };
       })
       .filter((c) => c.qty > 0);
   }, [watchedEdgeColors, colors]);
@@ -389,13 +388,13 @@ export function NewLeadForm({
   //
   //   has_hojas       → sheets + cuts
   //   has_cubrecanto  → edge_banding estructurado (metros × tarifa)
-  //                     + costo adicional opcional (flat)
+  //                     + SUM(edgebanding_colors[].quantity × unit_cost)
   //   has_catalogo    → catalogPrice
   //   domicilio       → deliveryCost
   //   extras          → SUM(extra_costs.amount)
   const hojasTotal = watchedHasHojas ? sheetsSubtotal + cutsTotal : 0;
   const cubrecantoTotal = watchedHasCubrecanto
-    ? edgeTotal + additionalCubrecantoCost
+    ? edgeTotal + edgeColorsSubtotal
     : 0;
   const total =
     hojasTotal +
@@ -1122,8 +1121,9 @@ export function NewLeadForm({
                         borderBottom: '1px solid var(--border)',
                       }}
                     >
-                      <div className="col-span-3">Cantidad</div>
-                      <div className="col-span-7">Color</div>
+                      <div className="col-span-2">Cantidad</div>
+                      <div className="col-span-5">Color</div>
+                      <div className="col-span-3">Costo</div>
                       <div className="col-span-2 text-right">Acción</div>
                     </div>
 
@@ -1161,6 +1161,7 @@ export function NewLeadForm({
                             color_id: colors[0]?.id ?? '',
                             new_name: '',
                             quantity: 1,
+                            unit_cost: 0,
                           })
                         }
                         className="btn btn-outline"
@@ -1173,35 +1174,6 @@ export function NewLeadForm({
                   </div>
                 </div>
 
-                {/* Costo adicional del cubrecanto (opcional) — flat
-                    amount para cargos extra fuera del cálculo por
-                    metros. NO se multiplica por la cantidad. */}
-                <Field
-                  label="Costo adicional del cubrecanto (opcional)"
-                  error={errors.edgebanding_manual_cost?.message}
-                >
-                  <input
-                    type="number"
-                    min={0}
-                    step="1"
-                    className="input"
-                    placeholder="Ej. 700"
-                    disabled={pending}
-                    {...register('edgebanding_manual_cost', {
-                      setValueAs: (v) => {
-                        if (v === '' || v == null) return null;
-                        const n = Number(v);
-                        return Number.isFinite(n) ? n : null;
-                      },
-                    })}
-                  />
-                  <div
-                    className="text-[11px] mt-1"
-                    style={{ color: 'var(--text-tertiary)' }}
-                  >
-                    Monto fijo extra fuera del cálculo por metros.
-                  </div>
-                </Field>
               </div>
             )}
 
@@ -1591,31 +1563,42 @@ export function NewLeadForm({
                         </span>
                       </div>
                     )}
-                  {/* Colores de cubrecanto (informativos — no suman) */}
-                  {edgeColorsBreakdown.map((c, i) => (
-                    <div
-                      key={`edge-color-${i}`}
-                      className="flex justify-between text-xs"
-                      style={{ paddingLeft: 12 }}
-                    >
-                      <span
-                        style={{ color: 'var(--text-tertiary)' }}
-                        className="truncate"
-                        title={`${c.name} ${c.qty} ${c.qty === 1 ? 'ud' : 'uds'}`}
-                      >
-                        {c.name} {c.qty} {c.qty === 1 ? 'ud' : 'uds'}
-                      </span>
-                    </div>
-                  ))}
-                  {additionalCubrecantoCost > 0 && (
-                    <div className="flex justify-between">
-                      <span style={{ color: 'var(--text-secondary)' }}>
-                        + Cubrecanto adicional
-                      </span>
-                      <span className="font-semibold">
-                        {formatMXN(additionalCubrecantoCost)}
-                      </span>
-                    </div>
+                  {/* Desglose por color con costo unitario. Cada fila
+                      contribuye `qty × cost` al subtotal de cubrecanto.
+                      Mismo patrón que el desglose de hojas. */}
+                  {edgeColorsBreakdown.length > 0 && (
+                    <>
+                      {edgeColorsBreakdown.map((c, i) => (
+                        <div
+                          key={`edge-color-${i}`}
+                          className="flex justify-between"
+                        >
+                          <span
+                            style={{ color: 'var(--text-secondary)' }}
+                            className="truncate"
+                            title={`${c.name} ${c.qty} × ${formatMXN(c.cost)}`}
+                          >
+                            {c.name} {c.qty} × {formatMXN(c.cost)}
+                          </span>
+                          <span className="font-semibold">
+                            {formatMXN(c.line)}
+                          </span>
+                        </div>
+                      ))}
+                      {edgeColorsSubtotal > 0 && (
+                        <div
+                          className="flex justify-between border-t pt-2 mt-1"
+                          style={{ borderColor: 'var(--border)' }}
+                        >
+                          <span style={{ color: 'var(--text-secondary)' }}>
+                            Subtotal cubrecanto
+                          </span>
+                          <span className="font-semibold">
+                            {formatMXN(edgeColorsSubtotal)}
+                          </span>
+                        </div>
+                      )}
+                    </>
                   )}
                 </>
               )}
@@ -1883,10 +1866,10 @@ function ColorRowFields({
 }
 
 /**
- * Una fila del editor de colores de CUBRECANTO. Misma UX que
- * `ColorRowFields` pero sin la columna de costo (el cubrecanto cobra
- * por monto total libre, no por fila). Comparte el patrón de
- * NEW_COLOR_SENTINEL para colores nuevos.
+ * Una fila del editor de colores de CUBRECANTO. Cada fila tiene su
+ * propio `unit_cost` (precio unitario), igual que `ColorRowFields`
+ * — el subtotal de cubrecanto = SUM(quantity × unit_cost). Comparte
+ * el patrón de NEW_COLOR_SENTINEL para colores nuevos.
  */
 function EdgebandingColorRowFields({
   idx,
@@ -1917,7 +1900,7 @@ function EdgebandingColorRowFields({
       className="grid grid-cols-12 items-start gap-3 px-4 py-2 border-t"
       style={{ borderColor: 'var(--border)' }}
     >
-      <div className="col-span-3">
+      <div className="col-span-2">
         <input
           {...register(`edgebanding_colors.${idx}.quantity`, {
             valueAsNumber: true,
@@ -1925,7 +1908,7 @@ function EdgebandingColorRowFields({
           type="number"
           min={1}
           className="input"
-          placeholder="metros"
+          placeholder="cant."
           disabled={disabled}
         />
         {rowErrors?.quantity?.message && (
@@ -1938,7 +1921,7 @@ function EdgebandingColorRowFields({
         )}
       </div>
 
-      <div className="col-span-7 flex flex-col gap-2">
+      <div className="col-span-5 flex flex-col gap-2">
         <select
           {...register(`edgebanding_colors.${idx}.color_id`)}
           className="select"
@@ -1978,6 +1961,41 @@ function EdgebandingColorRowFields({
               </p>
             )}
           </>
+        )}
+      </div>
+
+      {/* Costo unitario POR FILA — cada color de cubrecanto carga su
+          propio precio. SUM(qty × unit_cost) entra al total. Sin
+          valor default: el admin ingresa el precio explícitamente. */}
+      <div className="col-span-3">
+        <div className="relative">
+          <span
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-sm"
+            style={{ color: 'var(--text-tertiary)' }}
+            aria-hidden="true"
+          >
+            $
+          </span>
+          <input
+            {...register(`edgebanding_colors.${idx}.unit_cost`, {
+              valueAsNumber: true,
+            })}
+            type="number"
+            min={0}
+            step="1"
+            className="input"
+            style={{ paddingLeft: 24 }}
+            placeholder="Ej. 850"
+            disabled={disabled}
+          />
+        </div>
+        {rowErrors?.unit_cost?.message && (
+          <p
+            className="text-xs mt-1"
+            style={{ color: 'var(--danger, #dc2626)' }}
+          >
+            {rowErrors.unit_cost.message}
+          </p>
         )}
       </div>
 

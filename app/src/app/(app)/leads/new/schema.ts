@@ -151,10 +151,14 @@ export const ColorRowSchema = z
 export type ColorRowInput = z.infer<typeof ColorRowSchema>;
 
 /**
- * Una fila de cubrecanto (color + cantidad/metros). Estructura
- * parecida a ColorRowSchema pero SIN `cost_per_sheet` — el costo del
- * cubrecanto se ingresa manualmente como total libre en
- * `edgebanding_manual_cost`, no por fila.
+ * Una fila de cubrecanto (color + cantidad + costo unitario). El
+ * costo del cubrecanto ahora se ingresa POR FILA (cada color con su
+ * propio precio unitario), igual que en hojas. El total contribuido
+ * al `total_amount` del lead es SUM(quantity × unit_cost) sobre todas
+ * las filas. El campo `edgebanding_manual_cost` ya no existe.
+ *
+ * Persistencia: el `unit_cost` viaja a `lead_edgebanding_colors.unit_cost`
+ * (columna agregada vía migración manual).
  *
  * `color_id` puede ser un UUID o el sentinel NEW_COLOR_SENTINEL; en
  * el segundo caso `new_name` debe traer un nombre nuevo (mín. 2
@@ -168,6 +172,10 @@ export const EdgebandingColorRowSchema = z
       .number({ invalid_type_error: 'Cantidad debe ser un número' })
       .int('Cantidad debe ser entero')
       .positive('Cantidad debe ser ≥ 1'),
+    unit_cost: z
+      .number({ invalid_type_error: 'Costo inválido' })
+      .min(0, 'El costo no puede ser negativo')
+      .max(1_000_000, 'Costo demasiado grande'),
   })
   .refine(
     (v) => {
@@ -354,20 +362,6 @@ export const LeadCreateSchema = z.object({
     .number({ invalid_type_error: 'Precio del catálogo inválido' })
     .min(0, 'El precio del catálogo no puede ser negativo'),
 
-  /** PRECIO UNITARIO (por metro/pieza) del cubrecanto manual,
-   *  ingresado cuando `has_cubrecanto=true`. El total contribuido
-   *  al `total_amount` del lead es:
-   *    edgebanding_manual_cost × SUM(edgebanding_colors[].quantity)
-   *  Si no se agregan colores, contribuye el precio unitario solo
-   *  (interpretado como pago fijo de 1 unidad). Distinto de
-   *  `edge_banding_total` que es el cálculo estructurado metros ×
-   *  tarifa dentro de la sección hojas. */
-  edgebanding_manual_cost: z
-    .number({ invalid_type_error: 'Costo del cubrecanto inválido' })
-    .min(0, 'No puede ser negativo')
-    .optional()
-    .nullable(),
-
   // Colores: la lista vive en el schema siempre; el server decide
   // si crear lead_colors/inventory según `has_hojas`. Si has_hojas
   // es true se exige al menos un color; si es false la lista puede
@@ -413,28 +407,23 @@ export const LeadCreateSchema = z.object({
   },
 )
 .refine(
-  // Si has_cubrecanto=true, al menos UNO de los tres campos debe
+  // Si has_cubrecanto=true, al menos UNO de los dos campos debe
   // estar definido:
   //   - tipo de cubrecanto (19mm/3.5mm) con metros > 0
-  //   - costo adicional > 0
-  //   - al menos un color registrado
-  // Cualquiera de los tres justifica activar la sección. El refine
+  //   - al menos un color registrado (con su costo unitario)
+  // Cualquiera de los dos justifica activar la sección. El refine
   // específico sobre `edge_banding_meters` (abajo) asegura que si
   // el tipo está seleccionado, los metros sean > 0.
   (d) => {
     if (!d.has_cubrecanto) return true;
     const typeIsSet =
       d.edge_banding_type === '19mm' || d.edge_banding_type === '3.5mm';
-    const hasAdditionalCost =
-      typeof d.edgebanding_manual_cost === 'number' &&
-      d.edgebanding_manual_cost > 0;
     const hasColors =
       Array.isArray(d.edgebanding_colors) && d.edgebanding_colors.length > 0;
-    return typeIsSet || hasAdditionalCost || hasColors;
+    return typeIsSet || hasColors;
   },
   {
-    message:
-      'Define al menos el tipo de cubrecanto, un costo adicional o un color.',
+    message: 'Define al menos el tipo de cubrecanto o un color.',
     path: ['edge_banding_type'],
   },
 )

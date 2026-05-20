@@ -605,15 +605,15 @@ export async function updateLeadFullAction(
         ? edgeMeters * EDGE_BANDING_RATE[edgeType]
         : null;
 
-    // Costo adicional del cubrecanto: flat amount opcional (no se
-    // multiplica por cantidad). Mismo cambio de semántica que en
-    // saveLeadAction: antes era unit × qty, ahora es monto único.
-    const edgebandingAdditionalCost =
-      hasCubrecantoManual &&
-      typeof data.edgebanding_manual_cost === 'number' &&
-      data.edgebanding_manual_cost > 0
-        ? data.edgebanding_manual_cost
-        : 0;
+    // Cubrecanto por color: subtotal = SUM(quantity × unit_cost) sobre
+    // las filas. Mismo cálculo que en saveLeadAction.
+    const edgebandingColorsSubtotal = hasCubrecantoManual
+      ? (data.edgebanding_colors ?? []).reduce(
+          (s, c) =>
+            s + Number(c.quantity ?? 0) * Number(c.unit_cost ?? 0),
+          0,
+        )
+      : 0;
 
     const catalogPrice = hasCatalogo
       ? Number(data.catalog_price ?? 500)
@@ -643,7 +643,7 @@ export async function updateLeadFullAction(
       sheetsSubtotal +
       (cutsTotal ?? 0) +
       (edgeTotal ?? 0) +
-      edgebandingAdditionalCost +
+      edgebandingColorsSubtotal +
       catalogPrice +
       (deliveryCost ?? 0) +
       extraCostsTotal;
@@ -678,9 +678,10 @@ export async function updateLeadFullAction(
         has_cubrecanto: hasCubrecantoManual,
         has_catalogo: hasCatalogo,
         catalog_price: hasCatalogo ? catalogPrice : 0,
-        // Flat amount opcional (no se multiplica por qty); coherente
-        // con saveLeadAction tras el rediseño.
-        edgebanding_manual_cost: edgebandingAdditionalCost,
+        // `edgebanding_manual_cost` ELIMINADO: el costo ahora vive
+        // por fila en `lead_edgebanding_colors.unit_cost`. Limpiamos
+        // la columna en update para no dejar valores stale.
+        edgebanding_manual_cost: null,
         // Reemplazo total del array de extras (no merge): el form
         // siempre envía la lista completa actualizada.
         extra_costs: extraCostsRows.map((e) => ({
@@ -734,6 +735,7 @@ export async function updateLeadFullAction(
             lead_id: leadId,
             color_id: c.color_id,
             quantity: c.quantity,
+            unit_cost: c.unit_cost,
           }));
           const { error: ecErr } = await admin
             .from('lead_edgebanding_colors')

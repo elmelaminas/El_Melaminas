@@ -351,20 +351,17 @@ export async function saveLeadAction(
         ? edgeMeters * EDGE_BANDING_RATE[edgeType]
         : null;
 
-    // Costo adicional del cubrecanto: flat amount OPCIONAL que se
-    // suma al total sin multiplicarse por cantidades. Sirve para
-    // cargos extras fuera del cálculo por metros (ej. instalación
-    // específica). `edgebanding_manual_cost` cambió de "precio
-    // unitario × qty" a "flat amount" como parte del rediseño del
-    // formulario; los leads viejos que tenían valor unitario se
-    // interpretan ahora como flat sin migración (cambio mínimo de
-    // semántica).
-    const edgebandingAdditionalCost =
-      hasCubrecantoManual &&
-      typeof data.edgebanding_manual_cost === 'number' &&
-      data.edgebanding_manual_cost > 0
-        ? data.edgebanding_manual_cost
-        : 0;
+    // Cubrecanto por color: cada fila tiene su propio `unit_cost`,
+    // igual que hojas. El subtotal contribuido al `total_amount` es
+    // SUM(quantity × unit_cost) sobre `edgebanding_colors`. Reemplaza
+    // al antiguo `edgebanding_manual_cost` (input global eliminado).
+    const edgebandingColorsSubtotal = hasCubrecantoManual
+      ? (data.edgebanding_colors ?? []).reduce(
+          (s, c) =>
+            s + Number(c.quantity ?? 0) * Number(c.unit_cost ?? 0),
+          0,
+        )
+      : 0;
 
     // Catálogo: precio fijo (default $500 en el form) sumado al total.
     const catalogPrice = hasCatalogo
@@ -396,18 +393,18 @@ export async function saveLeadAction(
     );
 
     // total_amount: suma de los tipos activos + envío + extras.
-    //   subtotal_hojas              = sheetsSubtotal
-    //   subtotal_cortes             = cutsTotal
-    //   subtotal_cubrecanto_metros  = edgeTotal (gateado por has_cubrecanto)
-    //   subtotal_cubrecanto_extra   = edgebandingAdditionalCost
-    //   subtotal_catalogo           = catalogPrice
-    //   subtotal_envio              = deliveryCost
-    //   subtotal_extras             = extraCostsTotal
+    //   subtotal_hojas               = sheetsSubtotal
+    //   subtotal_cortes              = cutsTotal
+    //   subtotal_cubrecanto_metros   = edgeTotal (gateado por has_cubrecanto)
+    //   subtotal_cubrecanto_colores  = edgebandingColorsSubtotal
+    //   subtotal_catalogo            = catalogPrice
+    //   subtotal_envio               = deliveryCost
+    //   subtotal_extras              = extraCostsTotal
     const total_amount =
       sheetsSubtotal +
       (cutsTotal ?? 0) +
       (edgeTotal ?? 0) +
-      edgebandingAdditionalCost +
+      edgebandingColorsSubtotal +
       catalogPrice +
       (deliveryCost ?? 0) +
       extraCostsTotal;
@@ -450,11 +447,11 @@ export async function saveLeadAction(
         has_cubrecanto: hasCubrecantoManual,
         has_catalogo: hasCatalogo,
         catalog_price: hasCatalogo ? catalogPrice : 0,
-        // `edgebanding_manual_cost` se persiste como FLAT AMOUNT
-        // opcional: el costo adicional fuera del cálculo por metros.
-        // Antes era "precio unitario × qty"; el rediseño del form lo
-        // pasó a monto único.
-        edgebanding_manual_cost: edgebandingAdditionalCost,
+        // `edgebanding_manual_cost` ELIMINADO: el costo ahora vive
+        // por fila en `lead_edgebanding_colors.unit_cost`. La columna
+        // se deja en NULL para leads nuevos; los viejos conservan el
+        // valor histórico solo como referencia.
+        edgebanding_manual_cost: null,
         // Cargos extras como JSONB. Persistimos las filas saneadas
         // (description trimmed, amount numérico). Si no hay extras,
         // mandamos array vacío para que el default '[]' de DB no
@@ -621,6 +618,7 @@ export async function saveLeadAction(
           lead_id: leadId,
           color_id: c.color_id,
           quantity: c.quantity,
+          unit_cost: c.unit_cost,
         }));
         const { error: ecErr } = await admin
           .from('lead_edgebanding_colors')

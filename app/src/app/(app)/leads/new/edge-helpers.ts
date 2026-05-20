@@ -19,18 +19,20 @@ export type EdgeTxnLog = {
 };
 
 /** Input que aceptamos por fila — color_id (uuid o sentinel) + opcional
- *  new_name + quantity. Mismo shape que `EdgebandingColorRowSchema`
- *  con tipos relajados (después del parse de Zod). */
+ *  new_name + quantity + unit_cost (precio unitario por fila). Mismo
+ *  shape que `EdgebandingColorRowSchema` con tipos relajados (después
+ *  del parse de Zod). `unit_cost` se preserva intacto al deduplicar. */
 export type EdgeInputRow = {
   color_id: string;
   new_name?: string;
   quantity: number;
+  unit_cost?: number;
 };
 
 export type EdgeResolveResult =
   | {
       kind: 'success';
-      rows: { color_id: string; quantity: number }[];
+      rows: { color_id: string; quantity: number; unit_cost: number }[];
     }
   | { kind: 'error'; message: string };
 
@@ -59,17 +61,25 @@ export async function resolveEdgebandingColors(
 
   // Dedupe por color_id (existente) y normalized_name (nuevo). Suma
   // cantidades cuando hay duplicados — el UNIQUE constraint en
-  // (lead_id, color_id) prohíbe filas repetidas.
+  // (lead_id, color_id) prohíbe filas repetidas. `unit_cost` sigue el
+  // patrón first-wins (mismo criterio que hojas).
   type Bucket =
-    | { kind: 'existing'; color_id: string; quantity: number }
+    | {
+        kind: 'existing';
+        color_id: string;
+        quantity: number;
+        unit_cost: number;
+      }
     | {
         kind: 'new';
         new_name: string;
         normalized: string;
         quantity: number;
+        unit_cost: number;
       };
   const byKey = new Map<string, Bucket>();
   for (const row of inputColors) {
+    const unitCost = Number(row.unit_cost ?? 0);
     if (row.color_id === NEW_COLOR_SENTINEL) {
       const name = (row.new_name ?? '').trim();
       const normalized = normalizeName(name);
@@ -83,6 +93,7 @@ export async function resolveEdgebandingColors(
           new_name: name,
           normalized,
           quantity: row.quantity,
+          unit_cost: unitCost,
         });
       }
     } else {
@@ -95,6 +106,7 @@ export async function resolveEdgebandingColors(
           kind: 'existing',
           color_id: row.color_id,
           quantity: row.quantity,
+          unit_cost: unitCost,
         });
       }
     }
@@ -131,6 +143,7 @@ export async function resolveEdgebandingColors(
             kind: 'existing',
             color_id: id,
             quantity: b.quantity,
+            unit_cost: b.unit_cost,
           };
         }
       }
@@ -184,6 +197,7 @@ export async function resolveEdgebandingColors(
           kind: 'existing',
           color_id: id,
           quantity: b.quantity,
+          unit_cost: b.unit_cost,
         };
       }
     }
@@ -194,6 +208,10 @@ export async function resolveEdgebandingColors(
       (b): b is Extract<Bucket, { kind: 'existing' }> =>
         b.kind === 'existing',
     )
-    .map((b) => ({ color_id: b.color_id, quantity: b.quantity }));
+    .map((b) => ({
+      color_id: b.color_id,
+      quantity: b.quantity,
+      unit_cost: b.unit_cost,
+    }));
   return { kind: 'success', rows };
 }
