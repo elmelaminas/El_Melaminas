@@ -27,6 +27,10 @@ import {
   DRIVER_PAYMENT_METHOD_VALUES,
 } from './schema';
 import { formatTimeCDMX } from '@/lib/format-date';
+import {
+  validatePhotoFile,
+  PHOTO_ACCEPT_ATTR,
+} from '@/lib/validate-photo';
 
 export type DeliveryCardData = {
   id: string;
@@ -439,12 +443,8 @@ function DeliveryCard({
     }
     return false;
   });
-  // Evidencia obligatoria solo para métodos digitales con cobro real.
-  // Para efectivo el cliente entrega cash sin recibo, foto opcional.
-  const evidenceRequired =
-    owes &&
-    amount > 0 &&
-    (paymentMethod === 'transferencia' || paymentMethod === 'clip');
+  // Foto SIEMPRE obligatoria (2026-05/3) — cualquier confirmación de
+  // entrega exige evidencia visual, esté liquidado o no.
   const isEfectivo = paymentMethod === 'efectivo';
 
   const handleSubmit = () => {
@@ -453,12 +453,9 @@ function DeliveryCard({
       setError('Monto cobrado inválido.');
       return;
     }
-    if (evidenceRequired && !evidenceFile) {
-      setError(
-        `La foto de evidencia es obligatoria para ${
-          paymentMethod === 'transferencia' ? 'Transferencia' : 'Clip'
-        }.`,
-      );
+    const photoCheck = validatePhotoFile(evidenceFile);
+    if (!photoCheck.ok) {
+      setError(`Foto de la entrega: ${photoCheck.message}`);
       return;
     }
     if (owes && amount > 0 && isEfectivo && !receiverRole) {
@@ -472,20 +469,6 @@ function DeliveryCard({
           : 'Selecciona el admin que recibirá el efectivo.',
       );
       return;
-    }
-    if (
-      owes &&
-      amount > 0 &&
-      isEfectivo &&
-      !evidenceFile
-    ) {
-      // Política: efectivo sin recibo es válido, pero pedimos confirmar
-      // explícitamente para que el chofer no envíe por error sin foto
-      // cuando sí la tomó.
-      const ok = confirm(
-        '¿Confirmar entrega sin foto del cobro? Lo recomendable es adjuntar comprobante.',
-      );
-      if (!ok) return;
     }
 
     const fd = new FormData();
@@ -848,11 +831,16 @@ function DeliveryCard({
             <div
               className="dropzone mb-3"
               onClick={() => !pending && fileRef.current?.click()}
-              style={{ cursor: pending ? 'not-allowed' : 'pointer' }}
+              style={{
+                cursor: pending ? 'not-allowed' : 'pointer',
+                // Borde rojo cuando no hay foto — refuerzo visual de
+                // que es obligatoria.
+                borderColor: evidenceFile ? undefined : '#FCA5A5',
+              }}
             >
               <Camera
                 size={22}
-                style={{ color: 'var(--text-tertiary)' }}
+                style={{ color: evidenceFile ? '#B91C1C' : '#DC2626' }}
                 className="mx-auto mb-1"
               />
               <div
@@ -861,17 +849,16 @@ function DeliveryCard({
               >
                 {evidenceFile
                   ? evidenceFile.name
-                  : evidenceRequired
-                    ? 'Sube foto del cobro (obligatoria)'
-                    : 'Sube foto del cobro (opcional)'}
+                  : 'Foto de la entrega (obligatoria)'}
               </div>
-              <div className="text-[11px]">
-                Comprobante de transferencia, ticket o efectivo
+              <div className="text-[11px]" style={{ color: '#B91C1C' }}>
+                Obligatoria · JPG, PNG, WEBP o HEIC · máx. 10 MB
               </div>
               <input
                 ref={fileRef}
                 type="file"
-                accept="image/png,image/jpeg,image/webp"
+                accept={PHOTO_ACCEPT_ATTR}
+                capture="environment"
                 onChange={(e) => setEvidenceFile(e.target.files?.[0] ?? null)}
                 style={{ display: 'none' }}
                 disabled={pending}
@@ -1073,8 +1060,13 @@ function DeliveryCard({
           onClick={handleSubmit}
           className="btn btn-primary w-full"
           style={{ height: 56, fontSize: '1rem', fontWeight: 600 }}
-          disabled={pending}
+          disabled={pending || !evidenceFile || evidenceFile.size === 0}
           aria-busy={pending}
+          title={
+            !evidenceFile && !pending
+              ? 'Sube la foto de la entrega para continuar'
+              : undefined
+          }
         >
           {pending ? (
             <>
@@ -1225,6 +1217,11 @@ function ReportIssueBlock({
       setError('Describe el problema (mínimo 3 caracteres).');
       return;
     }
+    const photoCheck = validatePhotoFile(photo);
+    if (!photoCheck.ok) {
+      setError(`Foto del problema: ${photoCheck.message}`);
+      return;
+    }
     const fd = new FormData();
     fd.set('lead_id', leadId);
     fd.set('issue_type', issueType);
@@ -1343,26 +1340,30 @@ function ReportIssueBlock({
       <div
         className="dropzone mb-3"
         onClick={() => !pending && fileRef.current?.click()}
-        style={{ cursor: pending ? 'not-allowed' : 'pointer' }}
+        style={{
+          cursor: pending ? 'not-allowed' : 'pointer',
+          borderColor: photo ? undefined : '#FCA5A5',
+        }}
       >
         <Camera
           size={20}
-          style={{ color: 'var(--text-tertiary)' }}
+          style={{ color: photo ? '#92400E' : '#DC2626' }}
           className="mx-auto mb-1"
         />
         <div
           className="text-sm font-medium"
           style={{ color: 'var(--text-primary)' }}
         >
-          {photo ? photo.name : 'Foto del problema (opcional)'}
+          {photo ? photo.name : 'Foto del problema (obligatoria)'}
         </div>
-        <div className="text-[11px]">
-          PNG, JPG o WEBP — recomendado para que el admin vea
+        <div className="text-[11px]" style={{ color: '#B91C1C' }}>
+          Obligatoria · JPG, PNG, WEBP o HEIC · máx. 10 MB
         </div>
         <input
           ref={fileRef}
           type="file"
-          accept="image/png,image/jpeg,image/webp"
+          accept={PHOTO_ACCEPT_ATTR}
+          capture="environment"
           onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
           style={{ display: 'none' }}
           disabled={pending}
@@ -1408,8 +1409,13 @@ function ReportIssueBlock({
         onClick={handleSubmit}
         className="btn btn-primary w-full"
         style={{ height: 48, fontSize: '1rem', fontWeight: 600 }}
-        disabled={pending || success}
+        disabled={pending || success || !photo || photo.size === 0}
         aria-busy={pending}
+        title={
+          !photo && !pending
+            ? 'Sube la foto del problema para continuar'
+            : undefined
+        }
       >
         {pending ? (
           <>
@@ -1469,14 +1475,15 @@ function FailedDeliveryBlock({
       setError('El motivo debe tener al menos 10 caracteres.');
       return;
     }
-    if (!photo || photo.size === 0) {
-      setError('La foto del lugar es obligatoria.');
+    const photoCheck = validatePhotoFile(photo);
+    if (!photoCheck.ok) {
+      setError(`Foto del lugar: ${photoCheck.message}`);
       return;
     }
     const fd = new FormData();
     fd.set('lead_id', leadId);
     fd.set('reason', reason.trim());
-    fd.set('photo', photo);
+    if (photo) fd.set('photo', photo);
 
     startTransition(async () => {
       try {
@@ -1611,7 +1618,7 @@ function FailedDeliveryBlock({
           type="file"
           // capture="environment" abre la cámara trasera en mobile
           // (Android/iOS). En desktop cae al picker normal.
-          accept="image/*"
+          accept={PHOTO_ACCEPT_ATTR}
           capture="environment"
           onChange={(e) => setPhoto(e.target.files?.[0] ?? null)}
           style={{ display: 'none' }}
@@ -1664,8 +1671,13 @@ function FailedDeliveryBlock({
           background: '#DC2626',
           color: '#fff',
         }}
-        disabled={pending || success}
+        disabled={pending || success || !photo || photo.size === 0}
         aria-busy={pending}
+        title={
+          !photo && !pending
+            ? 'Sube la foto del lugar para continuar'
+            : undefined
+        }
       >
         {pending ? (
           <>

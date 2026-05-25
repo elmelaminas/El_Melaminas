@@ -7,12 +7,11 @@ import {
   PaymentCreateSchema,
   type PaymentFormState,
 } from './schema';
+import { validatePhotoFile } from '@/lib/validate-photo';
 
 // NB: 'use server' file — solo async functions. Schemas/types en ./schema.
 
 const STORAGE_BUCKET = 'payments-evidence';
-const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024; // 5 MB
-const ALLOWED_EXTS = ['png', 'jpg', 'jpeg', 'webp'] as const;
 
 /**
  * Mini txn log para rollback manual de los efectos de `savePaymentAction`.
@@ -123,43 +122,38 @@ export async function savePaymentAction(
 
     const admin = supabaseAdmin();
 
-    // ── 3. Upload evidencia (opcional)
-    let evidenceUrl: string | null = null;
+    // ── 3. Upload evidencia (OBLIGATORIA para cualquier método).
+    //    Política unificada 2026-05/3: toda foto de pago/entrega es
+    //    requerida, sin distinguir efectivo vs digital. Defensa en
+    //    profundidad con `validatePhotoFile` que aplica las mismas
+    //    reglas que el cliente (size, extensión).
     const evidence = formData.get('evidence');
-    if (evidence instanceof File && evidence.size > 0) {
-      if (evidence.size > MAX_EVIDENCE_BYTES) {
-        return {
-          status: 'error',
-          message: 'La imagen excede 5 MB.',
-        };
-      }
-      const ext = (evidence.name.split('.').pop() ?? 'bin').toLowerCase();
-      if (!(ALLOWED_EXTS as readonly string[]).includes(ext)) {
-        return {
-          status: 'error',
-          message: 'Formato de imagen no soportado. Usa PNG, JPG o WEBP.',
-        };
-      }
-      const path = `${data.lead_id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      const { error: upErr } = await admin.storage
-        .from(STORAGE_BUCKET)
-        .upload(path, evidence, {
-          contentType: evidence.type || `image/${ext}`,
-          upsert: false,
-        });
-      if (upErr) {
-        console.error('[savePaymentAction] storage upload falló:', upErr);
-        return {
-          status: 'error',
-          message: `No se pudo subir la evidencia: ${upErr.message}`,
-        };
-      }
-      const { data: pub } = admin.storage.from(STORAGE_BUCKET).getPublicUrl(path);
-      evidenceUrl = pub.publicUrl;
-      txn.push(async () => {
-        await admin.storage.from(STORAGE_BUCKET).remove([path]);
-      });
+    const photoResult = validatePhotoFile(evidence);
+    if (!photoResult.ok) {
+      return { status: 'error', message: photoResult.message };
     }
+    const evidenceFile = evidence as File;
+    const ext = (photoResult.file.name.split('.').pop() ?? 'bin').toLowerCase();
+    let evidenceUrl: string | null = null;
+    const path = `${data.lead_id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error: upErr } = await admin.storage
+      .from(STORAGE_BUCKET)
+      .upload(path, evidenceFile, {
+        contentType: photoResult.file.type || `image/${ext}`,
+        upsert: false,
+      });
+    if (upErr) {
+      console.error('[savePaymentAction] storage upload falló:', upErr);
+      return {
+        status: 'error',
+        message: `No se pudo subir la evidencia: ${upErr.message}`,
+      };
+    }
+    const { data: pub } = admin.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+    evidenceUrl = pub.publicUrl;
+    txn.push(async () => {
+      await admin.storage.from(STORAGE_BUCKET).remove([path]);
+    });
 
     // ── 4. INSERT payment
     const totalDed = data.deductibles.reduce((s, d) => s + d.amount, 0);

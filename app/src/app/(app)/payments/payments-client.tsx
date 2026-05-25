@@ -25,6 +25,10 @@ import {
 import { ImageLightbox } from '@/components/ui/ImageLightbox';
 import { formatDateCDMX } from '@/lib/format-date';
 import {
+  validatePhotoFile,
+  PHOTO_ACCEPT_ATTR,
+} from '@/lib/validate-photo';
+import {
   getLeadRowStyle,
   LeadRowLegend,
 } from '@/components/ui/lead-row-color';
@@ -556,10 +560,10 @@ function PaymentRowItem({
   const [liqError, setLiqError] = useState<string | null>(null);
   const [liqDone, setLiqDone] = useState(false);
   // Evidencia: archivo seleccionado + URL de preview (object URL).
+  // SIEMPRE obligatoria (2026-05/3) — la política antigua de exigirla
+  // sólo en transferencia/Clip se eliminó.
   const [liqFile, setLiqFile] = useState<File | null>(null);
   const [liqPreview, setLiqPreview] = useState<string | null>(null);
-  const liqEvidenceRequired =
-    liqMethod === 'transferencia' || liqMethod === 'clip';
 
   const ded = p.deductibles.reduce((a, d) => a + d.amount, 0);
 
@@ -611,11 +615,10 @@ function PaymentRowItem({
 
   const handleConfirmLiquidate = () => {
     setLiqError(null);
-    // Validación cliente — el server también la enforces.
-    if (liqEvidenceRequired && !liqFile) {
-      setLiqError(
-        'Foto del comprobante requerida para transferencias y Clip.',
-      );
+    // Foto SIEMPRE obligatoria (2026-05/3). Server revalida.
+    const photoCheck = validatePhotoFile(liqFile);
+    if (!photoCheck.ok) {
+      setLiqError(`Foto del comprobante: ${photoCheck.message}`);
       return;
     }
     const fd = new FormData();
@@ -734,16 +737,12 @@ function PaymentRowItem({
                 }}
               >
                 Foto del comprobante
-                {liqEvidenceRequired ? (
-                  <span style={{ color: '#DC2626' }}> *</span>
-                ) : (
-                  <span style={{ color: 'var(--text-tertiary)' }}> (opcional)</span>
-                )}
+                <span style={{ color: '#DC2626' }}> * (obligatoria)</span>
               </label>
               <input
                 ref={liqFileRef}
                 type="file"
-                accept="image/*"
+                accept={PHOTO_ACCEPT_ATTR}
                 capture="environment"
                 onChange={(e) =>
                   handleLiqFileChange(e.target.files?.[0] ?? null)
@@ -802,7 +801,12 @@ function PaymentRowItem({
                   borderRadius: 6,
                 }}
                 onClick={handleConfirmLiquidate}
-                disabled={liqPending}
+                disabled={liqPending || !liqFile || liqFile.size === 0}
+                title={
+                  !liqFile && !liqPending
+                    ? 'Sube la foto del comprobante para continuar'
+                    : undefined
+                }
               >
                 {liqPending ? (
                   <>

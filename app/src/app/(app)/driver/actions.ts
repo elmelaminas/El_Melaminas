@@ -11,12 +11,11 @@ import {
   type ReportIssueState,
   type MarkFailedDeliveryState,
 } from './schema';
+import { validatePhotoFile } from '@/lib/validate-photo';
 
 // NB: 'use server' file — solo async functions. Schemas/types en ./schema.
 
 const STORAGE_BUCKET = 'driver-evidence';
-const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024;
-const ALLOWED_EXTS = ['png', 'jpg', 'jpeg', 'webp'] as const;
 const EDGE_FN = 'commit-stock-delivery';
 
 /**
@@ -149,57 +148,39 @@ export async function confirmDeliveryAction(
       return { status: 'error', message: 'Esta entrega está cancelada.' };
     }
 
-    // ── Upload evidencia.
-    //    Obligatoria si el chofer cobró por transferencia o Clip
-    //    (necesitamos comprobante de la operación). Opcional para
-    //    efectivo (el cliente entrega cash sin recibo). Si no hay
-    //    cobro, la foto es siempre opcional.
+    // ── Upload evidencia. SIEMPRE OBLIGATORIA (2026-05/3): cada
+    //    confirmación de entrega requiere foto, sin distinguir si
+    //    hay adeudo o método. La foto sirve también como evidencia
+    //    de que el material llegó al cliente cuando ya estaba
+    //    liquidado.
     const evidence = formData.get('evidence');
-    const hasEvidenceFile =
-      evidence instanceof File && evidence.size > 0;
-    const evidenceRequired =
-      hasCollection &&
-      (data.payment_method === 'transferencia' ||
-        data.payment_method === 'clip');
-    if (evidenceRequired && !hasEvidenceFile) {
+    const photoResult = validatePhotoFile(evidence);
+    if (!photoResult.ok) {
       return {
         status: 'error',
-        message:
-          'La foto de evidencia es obligatoria para pagos por transferencia o Clip.',
+        message: `Foto de la entrega: ${photoResult.message}`,
       };
     }
-    let evidenceUrl: string | null = null;
-    if (hasEvidenceFile) {
-      const file = evidence as File;
-      if (file.size > MAX_EVIDENCE_BYTES) {
-        return { status: 'error', message: 'La imagen excede 5 MB.' };
-      }
-      const ext = (file.name.split('.').pop() ?? 'bin').toLowerCase();
-      if (!(ALLOWED_EXTS as readonly string[]).includes(ext)) {
-        return {
-          status: 'error',
-          message: 'Formato no soportado. Usa PNG, JPG o WEBP.',
-        };
-      }
-      const path = `${data.lead_id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      const { error: upErr } = await admin.storage
-        .from(STORAGE_BUCKET)
-        .upload(path, file, {
-          contentType: file.type || `image/${ext}`,
-          upsert: false,
-        });
-      if (upErr) {
-        return {
-          status: 'error',
-          message: `No se pudo subir la evidencia: ${upErr.message}`,
-        };
-      }
-      const { data: pub } = admin.storage.from(STORAGE_BUCKET).getPublicUrl(path);
-      evidenceUrl = pub.publicUrl;
-      txn.push(async () => {
-        await admin.storage.from(STORAGE_BUCKET).remove([path]);
+    const file = evidence as File;
+    const ext = (photoResult.file.name.split('.').pop() ?? 'bin').toLowerCase();
+    const path = `${data.lead_id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error: upErr } = await admin.storage
+      .from(STORAGE_BUCKET)
+      .upload(path, file, {
+        contentType: photoResult.file.type || `image/${ext}`,
+        upsert: false,
       });
+    if (upErr) {
+      return {
+        status: 'error',
+        message: `No se pudo subir la evidencia: ${upErr.message}`,
+      };
     }
+    const { data: pub } = admin.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+    const evidenceUrl: string = pub.publicUrl;
+    txn.push(async () => {
+      await admin.storage.from(STORAGE_BUCKET).remove([path]);
+    });
 
     // ── INSERT payment (sólo si hubo cobro real).
     //
@@ -602,36 +583,33 @@ export async function reportIssueAction(
       };
     }
 
-    // Foto opcional al mismo bucket que la evidencia de entrega.
-    let photoUrl: string | null = null;
+    // Foto OBLIGATORIA (2026-05/3). Sin foto el admin no puede valorar
+    // el faltante/detalle reportado.
     const photo = formData.get('photo');
-    if (photo instanceof File && photo.size > 0) {
-      if (photo.size > MAX_EVIDENCE_BYTES) {
-        return { status: 'error', message: 'La imagen excede 5 MB.' };
-      }
-      const ext = (photo.name.split('.').pop() ?? 'bin').toLowerCase();
-      if (!(ALLOWED_EXTS as readonly string[]).includes(ext)) {
-        return {
-          status: 'error',
-          message: 'Formato no soportado. Usa PNG, JPG o WEBP.',
-        };
-      }
-      const path = `${data.lead_id}/issues/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
-      const { error: upErr } = await admin.storage
-        .from(STORAGE_BUCKET)
-        .upload(path, photo, {
-          contentType: photo.type || `image/${ext}`,
-          upsert: false,
-        });
-      if (upErr) {
-        return {
-          status: 'error',
-          message: `No se pudo subir la foto: ${upErr.message}`,
-        };
-      }
-      const { data: pub } = admin.storage.from(STORAGE_BUCKET).getPublicUrl(path);
-      photoUrl = pub.publicUrl;
+    const photoResult = validatePhotoFile(photo);
+    if (!photoResult.ok) {
+      return {
+        status: 'error',
+        message: `Foto del problema: ${photoResult.message}`,
+      };
     }
+    const photoFile = photo as File;
+    const ext = (photoResult.file.name.split('.').pop() ?? 'bin').toLowerCase();
+    const path = `${data.lead_id}/issues/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    const { error: upErr } = await admin.storage
+      .from(STORAGE_BUCKET)
+      .upload(path, photoFile, {
+        contentType: photoResult.file.type || `image/${ext}`,
+        upsert: false,
+      });
+    if (upErr) {
+      return {
+        status: 'error',
+        message: `No se pudo subir la foto: ${upErr.message}`,
+      };
+    }
+    const { data: pub } = admin.storage.from(STORAGE_BUCKET).getPublicUrl(path);
+    const photoUrl: string = pub.publicUrl;
 
     // INSERT delivery_issues
     const { error: insErr } = await admin.from('delivery_issues').insert({
@@ -786,32 +764,25 @@ export async function markFailedDeliveryAction(
 
     // Foto OBLIGATORIA. Sin evidencia el reporte no se acepta — el
     // admin necesita ver el lugar para tomar acción (reagendar,
-    // contactar al cliente, etc.).
+    // contactar al cliente, etc.). Validamos vía helper compartido.
     const photo = formData.get('photo');
-    if (!(photo instanceof File) || photo.size === 0) {
+    const photoResult = validatePhotoFile(photo);
+    if (!photoResult.ok) {
       return {
         status: 'error',
-        message: 'La foto del lugar es obligatoria.',
+        message: `Foto del lugar: ${photoResult.message}`,
       };
     }
-    if (photo.size > MAX_EVIDENCE_BYTES) {
-      return { status: 'error', message: 'La imagen excede 5 MB.' };
-    }
-    const ext = (photo.name.split('.').pop() ?? 'bin').toLowerCase();
-    if (!(ALLOWED_EXTS as readonly string[]).includes(ext)) {
-      return {
-        status: 'error',
-        message: 'Formato no soportado. Usa PNG, JPG o WEBP.',
-      };
-    }
+    const photoFile = photo as File;
+    const ext = (photoResult.file.name.split('.').pop() ?? 'bin').toLowerCase();
     // Ruta `failed/{lead_id}/{timestamp}.ext` siguiendo el patrón
     // sugerido por la spec — separa visualmente las fotos de fallas
     // de las de cobros (que viven directamente en `{lead_id}/...`).
     const path = `failed/${data.lead_id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
     const { error: upErr } = await admin.storage
       .from(STORAGE_BUCKET)
-      .upload(path, photo, {
-        contentType: photo.type || `image/${ext}`,
+      .upload(path, photoFile, {
+        contentType: photoResult.file.type || `image/${ext}`,
         upsert: false,
       });
     if (upErr) {

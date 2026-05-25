@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
+import { validatePhotoFile } from '@/lib/validate-photo';
 
 // NB: 'use server' — solo async functions. El schema vive inline porque
 // es muy chico y no se reusa cliente-side (el form de liquidación se
@@ -19,8 +20,6 @@ const LiquidateLeadSchema = z.object({
 });
 
 const EVIDENCE_BUCKET = 'payments-evidence';
-const MAX_EVIDENCE_BYTES = 5 * 1024 * 1024; // 5 MB — mismo límite que savePaymentAction
-const ALLOWED_EVIDENCE_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'heic'] as const;
 
 export type LiquidateLeadState =
   | { status: 'idle' }
@@ -144,58 +143,42 @@ export async function liquidateLeadAction(
       };
     }
 
-    // Paso 3.5: Evidencia (opcional para efectivo, requerida para
-    // transferencia y clip). El archivo viene como `evidence` en el
-    // FormData. Validamos tamaño + extensión y subimos al bucket
-    // `payments-evidence`. Si la subida falla y la evidencia es
-    // requerida, abortamos antes de tocar `payments`. Si es
-    // opcional y falla, abortamos también — la action es atómica.
-    let evidenceUrl: string | null = null;
+    // Paso 3.5: Evidencia OBLIGATORIA para cualquier método (política
+    // unificada 2026-05/3). El archivo viene como `evidence` en el
+    // FormData. Validamos via helper compartido (size, extensión)
+    // como defensa en profundidad — el cliente ya validó pero NO
+    // confiamos en él. Si la subida falla, abortamos antes de tocar
+    // `payments` (la action es atómica).
     const evidence = formData.get('evidence');
-    const hasFile = evidence instanceof File && evidence.size > 0;
-    const evidenceRequired =
-      payment_method === 'transferencia' || payment_method === 'clip';
-    if (evidenceRequired && !hasFile) {
+    const photoResult = validatePhotoFile(evidence);
+    if (!photoResult.ok) {
       return {
         status: 'error',
-        message:
-          'Foto del comprobante requerida para transferencias y Clip.',
+        message: `Foto del comprobante: ${photoResult.message}`,
       };
     }
-    if (hasFile) {
-      const file = evidence as File;
-      if (file.size > MAX_EVIDENCE_BYTES) {
-        return {
-          status: 'error',
-          message: 'La foto excede 5 MB. Comprime o reduce la imagen.',
-        };
-      }
-      const ext = (file.name.split('.').pop() ?? '').toLowerCase();
-      if (!(ALLOWED_EVIDENCE_EXTS as readonly string[]).includes(ext)) {
-        return {
-          status: 'error',
-          message:
-            'Formato no soportado. Usa PNG, JPG, WEBP o HEIC.',
-        };
-      }
-      const path = `${lead_id}/liquidacion_${Date.now()}.${ext}`;
-      const { error: upErr } = await admin.storage
-        .from(EVIDENCE_BUCKET)
-        .upload(path, file, {
-          contentType: file.type || `image/${ext === 'jpg' ? 'jpeg' : ext}`,
-          upsert: false,
-        });
-      if (upErr) {
-        return {
-          status: 'error',
-          message: `No se pudo subir la foto: ${upErr.message}`,
-        };
-      }
-      const { data: pub } = admin.storage
-        .from(EVIDENCE_BUCKET)
-        .getPublicUrl(path);
-      evidenceUrl = pub.publicUrl;
+    const file = evidence as File;
+    const ext = (photoResult.file.name.split('.').pop() ?? '').toLowerCase();
+    let evidenceUrl: string | null = null;
+    const path = `${lead_id}/liquidacion_${Date.now()}.${ext}`;
+    const { error: upErr } = await admin.storage
+      .from(EVIDENCE_BUCKET)
+      .upload(path, file, {
+        contentType:
+          photoResult.file.type ||
+          `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+        upsert: false,
+      });
+    if (upErr) {
+      return {
+        status: 'error',
+        message: `No se pudo subir la foto: ${upErr.message}`,
+      };
     }
+    const { data: pub } = admin.storage
+      .from(EVIDENCE_BUCKET)
+      .getPublicUrl(path);
+    evidenceUrl = pub.publicUrl;
 
     // Paso 4: INSERT payment.
     const { data: payRow, error: payErr } = await admin

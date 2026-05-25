@@ -25,6 +25,10 @@ import {
   type DeductibleInput,
 } from './schema';
 import { savePaymentAction } from './actions';
+import {
+  validatePhotoFile,
+  PHOTO_ACCEPT_ATTR,
+} from '@/lib/validate-photo';
 
 export type LeadOption = {
   id: string;
@@ -128,6 +132,13 @@ export function NewPaymentForm({
     }
     if (!Number.isFinite(amount) || amount <= 0) {
       setError('El monto debe ser mayor a 0.');
+      return;
+    }
+    // Política 2026-05/3: la foto de evidencia es OBLIGATORIA para
+    // cualquier método de pago, sin distinguir efectivo vs digital.
+    const photoResult = validatePhotoFile(evidenceFile);
+    if (!photoResult.ok) {
+      setError(photoResult.message);
       return;
     }
 
@@ -436,21 +447,34 @@ export function NewPaymentForm({
               </div>
             </div>
 
-            {/* Evidencia */}
+            {/* Evidencia — OBLIGATORIA para cualquier método (2026-05/3).
+                Borde rojo cuando no hay foto seleccionada para señalar
+                visualmente que falta. */}
             <div id="field-evidence" className="mt-6">
-              <label className="label">Evidencia del pago (opcional)</label>
+              <label className="label">
+                Foto del comprobante{' '}
+                <span style={{ color: '#DC2626' }}>* (obligatoria)</span>
+              </label>
               <div
                 className="dropzone flex flex-col items-center gap-2"
                 onClick={() => fileRef.current?.click()}
-                style={{ cursor: pending ? 'not-allowed' : 'pointer' }}
+                style={{
+                  cursor: pending ? 'not-allowed' : 'pointer',
+                  borderColor: evidenceFile ? undefined : '#FCA5A5',
+                }}
               >
-                <Camera size={28} style={{ color: 'var(--text-tertiary)' }} />
+                <Camera
+                  size={28}
+                  style={{
+                    color: evidenceFile ? 'var(--text-tertiary)' : '#DC2626',
+                  }}
+                />
                 <div className="font-medium" style={{ color: 'var(--text-primary)' }}>
                   {evidenceFile
                     ? evidenceFile.name
-                    : 'Haz clic para subir una foto'}
+                    : 'Toca para subir una foto'}
                 </div>
-                <div className="text-xs">PNG, JPG o WEBP hasta 5 MB</div>
+                <div className="text-xs">JPG, PNG, WEBP o HEIC · máx. 10 MB</div>
                 <button
                   type="button"
                   className="btn btn-outline mt-1"
@@ -466,7 +490,8 @@ export function NewPaymentForm({
                 <input
                   ref={fileRef}
                   type="file"
-                  accept="image/png,image/jpeg,image/webp"
+                  accept={PHOTO_ACCEPT_ATTR}
+                  capture="environment"
                   onChange={handleFileChange}
                   style={{ display: 'none' }}
                   disabled={pending}
@@ -546,8 +571,18 @@ export function NewPaymentForm({
               type="submit"
               className="btn btn-primary w-full mt-5"
               style={{ height: 44 }}
-              disabled={pending || !selectedLeadId}
+              disabled={
+                pending ||
+                !selectedLeadId ||
+                !evidenceFile ||
+                evidenceFile.size === 0
+              }
               aria-busy={pending}
+              title={
+                !evidenceFile && !pending
+                  ? 'Sube una foto del comprobante para continuar'
+                  : undefined
+              }
             >
               {pending ? (
                 <>
