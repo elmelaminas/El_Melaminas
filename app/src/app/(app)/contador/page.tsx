@@ -117,8 +117,19 @@ export default async function ContadorPage() {
       contadorId
         ? admin
             .from('cash_transfers')
-            .select('id, driver_id, amount, status, created_at')
-            .eq('contador_id', contadorId)
+            .select(
+              'id, driver_id, amount, status, created_at, receiver_id, receiver_role',
+            )
+            // Refactor 2026-05/2: el chofer ahora elige a quién
+            // entregar el efectivo (admin o contador). El contador
+            // ve sólo los cash_transfers dirigidos a él vía
+            // receiver_id=auth.uid() AND receiver_role='contador'.
+            // Mantenemos el OR sobre contador_id histórico para que
+            // los registros pre-refactor (donde el contador_id se
+            // llenaba al recibir) sigan apareciendo en su historial.
+            .or(
+              `and(receiver_role.eq.contador,receiver_id.eq.${contadorId}),contador_id.eq.${contadorId}`,
+            )
             .order('created_at', { ascending: false })
             .limit(20)
         : Promise.resolve({ data: [], error: null }),

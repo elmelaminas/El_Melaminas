@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { formatMXN } from '@/data/mock';
 import { adminReceivesDriverCashAction } from './actions';
+import { PinConfirmModal } from '@/components/ui/PinConfirmModal';
 
 export type TransferRow = {
   id: string;
@@ -598,31 +599,12 @@ function BalanceCard({
 
 function PendingRow({ transfer }: { transfer: TransferRow }) {
   const router = useRouter();
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
   const [done, setDone] = useState(false);
-
-  const handleReceive = () => {
-    setError(null);
-    const fd = new FormData();
-    fd.set('transfer_id', transfer.id);
-
-    startTransition(async () => {
-      try {
-        const r = await adminReceivesDriverCashAction({ status: 'idle' }, fd);
-        if (r.status === 'success') {
-          setDone(true);
-          router.refresh();
-        } else if (r.status === 'error') {
-          setError(r.message);
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Error de red';
-        setError(message);
-      }
-    });
-  };
-
+  // Pending visual cuando el modal está activo. La server action
+  // ahora se invoca desde el modal (no startTransition aquí). No
+  // hay loader inline.
+  void useTransition;
   return (
     <tr
       style={{
@@ -648,35 +630,52 @@ function PendingRow({ transfer }: { transfer: TransferRow }) {
       </td>
       <td data-label="Acción">
         <div className="flex justify-end items-center gap-2 flex-wrap">
-          {error && (
-            <span
-              className="text-xs"
-              style={{ color: 'var(--danger, #dc2626)' }}
-              role="alert"
-            >
-              {error}
-            </span>
-          )}
           <button
             type="button"
             className="btn btn-primary"
             style={{ padding: '6px 14px', fontSize: '0.875rem' }}
-            onClick={handleReceive}
-            disabled={pending || done}
-            aria-busy={pending}
+            onClick={() => setModalOpen(true)}
+            disabled={done}
+            aria-label={`Recibir efectivo de ${transfer.driver_name}`}
           >
-            {pending ? (
-              <>
-                <Loader size={14} className="animate-spin" />
-                <span style={{ marginLeft: 6 }}>Recibiendo…</span>
-              </>
-            ) : (
-              <>
-                <CircleCheckBig size={14} /> Recibí efectivo
-              </>
-            )}
+            <CircleCheckBig size={14} /> Recibí efectivo
           </button>
         </div>
+        <PinConfirmModal
+          isOpen={modalOpen}
+          onClose={() => setModalOpen(false)}
+          title="Confirmar recepción de efectivo"
+          details={[
+            { label: 'Chofer', value: transfer.driver_name },
+            {
+              label: 'Monto',
+              value: (
+                <strong style={{ color: '#15803D' }}>
+                  {formatMXN(transfer.amount)}
+                </strong>
+              ),
+            },
+          ]}
+          onConfirm={async (pin) => {
+            const r = await adminReceivesDriverCashAction(transfer.id, pin);
+            if (r.status === 'success') {
+              setDone(true);
+              router.refresh();
+              return { success: true };
+            }
+            if (r.status === 'error') {
+              if (r.reason === 'already_received') {
+                router.refresh();
+              }
+              return {
+                success: false,
+                error: r.message,
+                reason: r.reason,
+              };
+            }
+            return { success: false, error: 'Estado inesperado.' };
+          }}
+        />
       </td>
     </tr>
   );

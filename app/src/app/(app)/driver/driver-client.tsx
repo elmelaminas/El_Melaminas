@@ -59,6 +59,12 @@ export type DeliveryCardData = {
 export type ReceiverOption = {
   id: string;
   name: string;
+  /** Rol DB del receptor. El form filtra el dropdown por
+   *  `receiver_role` elegido por el chofer:
+   *    - 'admin' → admin + admin2 + supervisor (la spec habla de
+   *      "el jefe", incluye los administrativos)
+   *    - 'contador' → contadores activos. */
+  role: 'admin' | 'admin2' | 'supervisor' | 'contador';
 };
 
 /**
@@ -405,7 +411,14 @@ function DeliveryCard({
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [receiverId, setReceiverId] = useState(receivers[0]?.id ?? '');
+  // Rol del destinatario del efectivo: 'admin' o 'contador'. Null
+  // hasta que el chofer elija una de las dos cards. Cambiar el rol
+  // resetea el receiver_id para evitar enviar un id que no pertenece
+  // al rol elegido.
+  const [receiverRole, setReceiverRole] = useState<
+    'admin' | 'contador' | null
+  >(null);
+  const [receiverId, setReceiverId] = useState<string>('');
   const [amount, setAmount] = useState<number>(delivery.adeudo);
   const [paymentMethod, setPaymentMethod] = useState<
     (typeof DRIVER_PAYMENT_METHOD_VALUES)[number]
@@ -414,6 +427,17 @@ function DeliveryCard({
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const owes = delivery.adeudo > 0;
+  // Receptores filtrados según el rol elegido. La spec mapea
+  // 'admin' → admins+supervisores ("al jefe"), 'contador' → contadores.
+  const eligibleReceivers = receivers.filter((r) => {
+    if (receiverRole === 'admin') {
+      return r.role === 'admin' || r.role === 'admin2' || r.role === 'supervisor';
+    }
+    if (receiverRole === 'contador') {
+      return r.role === 'contador';
+    }
+    return false;
+  });
   // Evidencia obligatoria solo para métodos digitales con cobro real.
   // Para efectivo el cliente entrega cash sin recibo, foto opcional.
   const evidenceRequired =
@@ -436,8 +460,16 @@ function DeliveryCard({
       );
       return;
     }
+    if (owes && amount > 0 && isEfectivo && !receiverRole) {
+      setError('Selecciona a quién entregas el efectivo (admin o contador).');
+      return;
+    }
     if (owes && amount > 0 && isEfectivo && !receiverId) {
-      setError('Selecciona un admin para entregar el efectivo.');
+      setError(
+        receiverRole === 'contador'
+          ? 'Selecciona el contador que recibirá el efectivo.'
+          : 'Selecciona el admin que recibirá el efectivo.',
+      );
       return;
     }
     if (
@@ -462,6 +494,9 @@ function DeliveryCard({
       fd.set('payment_method', paymentMethod);
       if (isEfectivo && receiverId) {
         fd.set('receiver_id', receiverId);
+      }
+      if (isEfectivo && receiverRole) {
+        fd.set('receiver_role', receiverRole);
       }
     }
     if (evidenceFile && evidenceFile.size > 0) fd.set('evidence', evidenceFile);
@@ -842,26 +877,159 @@ function DeliveryCard({
               />
             </div>
 
-            {/* Selector de admin receptor — sólo aplica cuando el cobro
-                es en efectivo (el chofer tiene que entregar ese dinero
-                a alguien). Transferencia/Clip va directo a cuenta. */}
+            {/* Selector de DESTINATARIO del efectivo. Sólo cuando
+                el cobro es en efectivo (transferencia/Clip va directo
+                a cuenta). Dos pasos:
+                  1) Elegir rol — 'admin' o 'contador' (cards visuales).
+                  2) Elegir persona específica de ese rol (dropdown).
+                Cambiar el rol resetea el receiver_id. */}
             {isEfectivo && amount > 0 && (
               <div className="mb-3">
-                <label className="label">Entregar efectivo a</label>
-                <select
-                  className="select"
-                  value={receiverId}
-                  onChange={(e) => setReceiverId(e.target.value)}
-                  disabled={pending}
-                  style={{ height: 48, fontSize: '1rem' }}
+                <label className="label">
+                  ¿A quién entregas el efectivo?
+                </label>
+                <div
+                  role="radiogroup"
+                  aria-label="Destinatario del efectivo"
+                  className="grid grid-cols-2 gap-2"
                 >
-                  <option value="">— selecciona —</option>
-                  {receivers.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={receiverRole === 'admin'}
+                    onClick={() => {
+                      setReceiverRole('admin');
+                      setReceiverId('');
+                    }}
+                    disabled={pending}
+                    className="btn"
+                    style={{
+                      padding: 12,
+                      fontSize: '0.8125rem',
+                      fontWeight: 600,
+                      background:
+                        receiverRole === 'admin'
+                          ? 'var(--brand-primary)'
+                          : 'var(--bg-subtle)',
+                      color:
+                        receiverRole === 'admin'
+                          ? '#fff'
+                          : 'var(--text-primary)',
+                      border:
+                        receiverRole === 'admin'
+                          ? '2px solid var(--brand-primary)'
+                          : '2px solid transparent',
+                      borderRadius: 8,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 4,
+                      minHeight: 72,
+                    }}
+                  >
+                    <span aria-hidden="true" style={{ fontSize: '1.5rem' }}>
+                      👔
+                    </span>
+                    <span>Al Admin</span>
+                    <span
+                      className="text-[10px]"
+                      style={{
+                        opacity: 0.8,
+                        fontWeight: 400,
+                        whiteSpace: 'normal',
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      Entregar directamente al jefe
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={receiverRole === 'contador'}
+                    onClick={() => {
+                      setReceiverRole('contador');
+                      setReceiverId('');
+                    }}
+                    disabled={pending}
+                    className="btn"
+                    style={{
+                      padding: 12,
+                      fontSize: '0.8125rem',
+                      fontWeight: 600,
+                      background:
+                        receiverRole === 'contador'
+                          ? 'var(--brand-primary)'
+                          : 'var(--bg-subtle)',
+                      color:
+                        receiverRole === 'contador'
+                          ? '#fff'
+                          : 'var(--text-primary)',
+                      border:
+                        receiverRole === 'contador'
+                          ? '2px solid var(--brand-primary)'
+                          : '2px solid transparent',
+                      borderRadius: 8,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: 4,
+                      minHeight: 72,
+                    }}
+                  >
+                    <span aria-hidden="true" style={{ fontSize: '1.5rem' }}>
+                      💼
+                    </span>
+                    <span>Al Contador</span>
+                    <span
+                      className="text-[10px]"
+                      style={{
+                        opacity: 0.8,
+                        fontWeight: 400,
+                        whiteSpace: 'normal',
+                        lineHeight: 1.2,
+                      }}
+                    >
+                      Entregar al contador de caja
+                    </span>
+                  </button>
+                </div>
+
+                {receiverRole && (
+                  <div className="mt-3">
+                    <label className="label">
+                      {receiverRole === 'contador'
+                        ? 'Selecciona el contador'
+                        : 'Selecciona el admin'}
+                    </label>
+                    <select
+                      className="select"
+                      value={receiverId}
+                      onChange={(e) => setReceiverId(e.target.value)}
+                      disabled={pending}
+                      style={{ height: 48, fontSize: '1rem' }}
+                    >
+                      <option value="">— selecciona —</option>
+                      {eligibleReceivers.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.name}
+                        </option>
+                      ))}
+                    </select>
+                    {eligibleReceivers.length === 0 && (
+                      <p
+                        className="text-xs mt-1"
+                        style={{ color: 'var(--danger, #dc2626)' }}
+                      >
+                        No hay{' '}
+                        {receiverRole === 'contador'
+                          ? 'contadores'
+                          : 'admins'}{' '}
+                        activos en el sistema.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </>

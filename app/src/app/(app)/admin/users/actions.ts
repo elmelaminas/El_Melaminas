@@ -214,18 +214,18 @@ export async function updateUserAction(
 
     const { profile_id, full_name, phone, role, confirmation_pin } = parsed.data;
     const normalizedPhone = phone && phone.length > 0 ? phone : null;
-    // PIN: solo persistido cuando rol=contador. Si llega cualquier
-    // otro rol, lo limpiamos a null para evitar PINs huérfanos
-    // colgando en la columna tras cambios de rol.
+    // PIN: persistido para roles que reciben o validan efectivo
+    // (admin, admin2, contador). Cualquier otro rol limpia el PIN
+    // a null para evitar valores huérfanos tras cambios de rol.
+    const roleNeedsPin =
+      role === 'contador' || role === 'admin' || role === 'admin2';
     let pinForUpdate: string | null | undefined = undefined;
-    if (role === 'contador') {
+    if (roleNeedsPin) {
       if (typeof confirmation_pin === 'string') {
         const trimmed = confirmation_pin.trim();
         if (trimmed === '') {
           // El admin dejó el campo vacío: NO tocamos el PIN existente.
-          // (Permite editar otros campos del contador sin re-pegar el
-          // PIN. Para borrar el PIN explícitamente, se cambiaría el
-          // rol y se restauraría.)
+          // Permite editar otros campos sin re-pegar el PIN.
           pinForUpdate = undefined;
         } else if (/^\d{4}$/.test(trimmed)) {
           pinForUpdate = trimmed;
@@ -240,8 +240,8 @@ export async function updateUserAction(
         }
       }
     } else {
-      // Cambio de rol: limpia el PIN para que un ex-contador no lo
-      // arrastre si vuelve al rol más tarde con un PIN viejo válido.
+      // Cambio a rol que no usa PIN (driver, seller, etc.): limpiamos
+      // para que el PIN viejo no quede huérfano en DB.
       pinForUpdate = null;
     }
 

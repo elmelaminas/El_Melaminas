@@ -45,16 +45,21 @@ import {
  * revertimos — el evento financiero ya quedó consistente.
  */
 export async function adminReceivesDriverCashAction(
-  _prev: ReceiveDriverCashState,
-  formData: FormData,
+  transferId: string,
+  pin: string,
 ): Promise<ReceiveDriverCashState> {
   try {
     const parsed = ReceiveDriverCashSchema.safeParse({
-      transfer_id: formData.get('transfer_id'),
+      transfer_id: transferId,
+      pin,
     });
     if (!parsed.success) {
-      return { status: 'error', message: 'Datos inválidos' };
+      const flat = parsed.error.flatten().fieldErrors;
+      const first =
+        flat.pin?.[0] ?? flat.transfer_id?.[0] ?? 'Datos inválidos.';
+      return { status: 'error', message: first, reason: 'other' };
     }
+    const { transfer_id, pin: providedPin } = parsed.data;
 
     const userClient = await supabaseServer();
     const {
@@ -65,6 +70,7 @@ export async function adminReceivesDriverCashAction(
       return {
         status: 'error',
         message: 'Sesión no válida. Vuelve a iniciar sesión.',
+        reason: 'other',
       };
     }
     const adminId = user.id;
@@ -72,44 +78,86 @@ export async function adminReceivesDriverCashAction(
     const admin = supabaseAdmin();
 
     // Defense-in-depth: solo admin o admin2 reciben de choferes.
+    // Leemos `confirmation_pin` en la misma query para evitar un
+    // round-trip extra al validar PIN.
     const { data: caller, error: callerErr } = await admin
       .from('profiles')
-      .select('role')
+      .select('role, confirmation_pin')
       .eq('id', adminId)
       .maybeSingle();
     if (callerErr) {
       return {
         status: 'error',
         message: `No se pudo verificar tu rol: ${callerErr.message}`,
+        reason: 'other',
       };
     }
     if (caller?.role !== 'admin' && caller?.role !== 'admin2') {
       return {
         status: 'error',
         message: 'Solo un administrador puede recibir efectivo del chofer.',
+        reason: 'other',
+      };
+    }
+    const storedPin =
+      typeof caller.confirmation_pin === 'string'
+        ? caller.confirmation_pin.trim()
+        : '';
+    if (storedPin === '') {
+      return {
+        status: 'error',
+        message:
+          'No tienes PIN configurado. Pide a un admin que te lo asigne en /admin/users.',
+        reason: 'pin_missing',
+      };
+    }
+    if (storedPin !== providedPin) {
+      return {
+        status: 'error',
+        message: 'PIN incorrecto. Intenta de nuevo.',
+        reason: 'pin_incorrect',
       };
     }
 
     // Snapshot del transfer (necesitamos amount + driver_id para el
     // ingreso a admin_cash_register y para el mensaje de la notif).
+    // Validamos también que este admin es el receiver_id real del
+    // transfer — defensa contra que un admin reciba un cash transfer
+    // dirigido a otro admin via id manipulado.
     const { data: tf, error: tErr } = await admin
       .from('cash_transfers')
-      .select('id, status, amount, driver_id')
-      .eq('id', parsed.data.transfer_id)
+      .select('id, status, amount, driver_id, receiver_id, receiver_role')
+      .eq('id', transfer_id)
       .maybeSingle();
     if (tErr) {
       return {
         status: 'error',
         message: `No se pudo leer la transferencia: ${tErr.message}`,
+        reason: 'other',
       };
     }
     if (!tf) {
-      return { status: 'error', message: 'Transferencia no encontrada.' };
+      return {
+        status: 'error',
+        message: 'Transferencia no encontrada.',
+        reason: 'other',
+      };
+    }
+    // Ownership: el admin debe ser el receiver_id real del transfer.
+    // Si el receiver_role no es 'admin' o el receiver_id apunta a otra
+    // persona, rechazamos.
+    if (tf.receiver_role !== 'admin' || tf.receiver_id !== adminId) {
+      return {
+        status: 'error',
+        message: 'Esta transferencia no está dirigida a ti.',
+        reason: 'other',
+      };
     }
     if (tf.status !== 'pendiente') {
       return {
         status: 'error',
         message: `Esta transferencia ya está en estado "${tf.status}".`,
+        reason: 'already_received',
       };
     }
 
@@ -128,6 +176,7 @@ export async function adminReceivesDriverCashAction(
       return {
         status: 'error',
         message: `No se pudo marcar la transferencia: ${updErr.message}`,
+        reason: 'other',
       };
     }
 
@@ -163,12 +212,15 @@ export async function adminReceivesDriverCashAction(
       return {
         status: 'error',
         message: `No se pudo registrar en tu caja: ${cashErr.message}`,
+        reason: 'other',
       };
     }
 
-    // Paso 3 (non-fatal): notif a contadores activos. El admin se
-    // siente avisado por la UI; los contadores quieren saber que hay
-    // efectivo en la caja del admin pendiente de validar.
+    // Paso 3 (non-fatal): notif al CHOFER directo + a contadores
+    // activos. Refactor 2026-05/2: el chofer es quien necesita
+    // confirmación inmediata (libera su banner de "efectivo que
+    // llevas"); los contadores también deben saber que hay efectivo
+    // pendiente de validar en la caja de este admin específico.
     try {
       const { data: adminProfile } = await admin
         .from('profiles')
@@ -184,18 +236,36 @@ export async function adminReceivesDriverCashAction(
         : { data: null };
       const driverName = driverProfile?.full_name ?? 'Chofer';
       const adminName = adminProfile?.full_name ?? 'Admin';
+      const amountFmt = new Intl.NumberFormat('es-MX', {
+        style: 'currency',
+        currency: 'MXN',
+        minimumFractionDigits: 0,
+      }).format(amount);
 
+      // Notif al chofer.
+      if (tf.driver_id) {
+        const { error: driverNotifErr } = await admin
+          .from('notifications')
+          .insert({
+            recipient_id: tf.driver_id,
+            type: 'efectivo_confirmado',
+            message: `✅ ${adminName} confirmó recepción de ${amountFmt}`,
+          });
+        if (driverNotifErr) {
+          console.error(
+            '[adminReceivesDriverCashAction] notif chofer falló (no fatal):',
+            driverNotifErr,
+          );
+        }
+      }
+
+      // Notif a contadores activos.
       const { data: contadores } = await admin
         .from('profiles')
         .select('id')
         .eq('role', 'contador')
         .eq('is_active', true);
       if (contadores && contadores.length > 0) {
-        const amountFmt = new Intl.NumberFormat('es-MX', {
-          style: 'currency',
-          currency: 'MXN',
-          minimumFractionDigits: 0,
-        }).format(amount);
         const message = `${adminName} recibió ${amountFmt} del chofer ${driverName}`;
         const inserts = contadores.map((c) => ({
           recipient_id: c.id,
@@ -233,6 +303,6 @@ export async function adminReceivesDriverCashAction(
       '[adminReceivesDriverCashAction] excepción no controlada:',
       err,
     );
-    return { status: 'error', message };
+    return { status: 'error', message, reason: 'other' };
   }
 }

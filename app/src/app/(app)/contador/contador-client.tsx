@@ -1,22 +1,21 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useEffect, useRef, useState, useTransition } from 'react';
+import { useState, useTransition } from 'react';
 import {
   DollarSign,
   Loader,
   CircleCheckBig,
   Wallet,
   Banknote,
-  KeyRound,
   ShieldAlert,
-  X,
 } from 'lucide-react';
 import { formatMXN } from '@/data/mock';
 import {
   receiveAdminCashAction,
   receiveIndividualCashAction,
 } from './actions';
+import { PinConfirmModal } from '@/components/ui/PinConfirmModal';
 
 /**
  * Un admin con su saldo de caja + ingresos del mes. Saldo = sum
@@ -583,6 +582,7 @@ function CashPaymentsSection({
   cashPayments: CashPaymentRow[];
   contadorHasPin: boolean;
 }) {
+  const router = useRouter();
   const total = cashPayments.reduce((s, p) => s + p.amount, 0);
   const count = cashPayments.length;
   // Fila seleccionada para el flujo de confirmación. null = modal
@@ -816,345 +816,56 @@ function CashPaymentsSection({
         )}
       </div>
 
-      {pendingRow && (
-        <PinConfirmModal
-          row={pendingRow}
-          onClose={() => setPendingRow(null)}
-        />
-      )}
-    </div>
-  );
-}
-
-/**
- * Modal de confirmación en dos pasos:
- *   1) Resumen del cobro (cliente, monto, admin) — el contador
- *      confirma que está físicamente recibiendo ese efectivo.
- *   2) Input de PIN de 4 dígitos. Hasta 3 intentos fallidos seguidos
- *      antes de bloquear el modal por 30 segundos (anti-bruteforce
- *      básico — la última línea de defensa vive en el servidor que
- *      sigue comparando el PIN contra el almacenado en `profiles`).
- *
- * Al éxito → `router.refresh()` y cierre del modal. Al ser
- * exitoso el server marca la fila como `validated=true` en el
- * próximo render → desaparece el botón "✓ Recibí" y aparece el
- * badge verde "✓ Validado".
- */
-function PinConfirmModal({
-  row,
-  onClose,
-}: {
-  row: CashPaymentRow;
-  onClose: () => void;
-}) {
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
-  const [step, setStep] = useState<'confirm' | 'pin'>('confirm');
-  const [pin, setPin] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [attempts, setAttempts] = useState(0);
-  // Lockout: cuando llega a 3 intentos fallidos, fijamos un timestamp
-  // para 30s en el futuro. Mientras `lockUntil > Date.now()` el botón
-  // de confirmar queda disabled y el contador ve un mensaje con
-  // segundos restantes que se autoactualiza cada segundo.
-  const [lockUntil, setLockUntil] = useState<number | null>(null);
-  const [, forceTick] = useState(0);
-  const pinInputRef = useRef<HTMLInputElement>(null);
-
-  // ESC para cerrar — coherente con el resto de modales del módulo.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !pending) onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, pending]);
-
-  // Auto-focus al entrar al paso PIN.
-  useEffect(() => {
-    if (step === 'pin') {
-      pinInputRef.current?.focus();
-    }
-  }, [step]);
-
-  // Tick de 1s mientras hay lockout activo para refrescar el contador.
-  useEffect(() => {
-    if (lockUntil == null) return;
-    const id = setInterval(() => {
-      if (lockUntil <= Date.now()) {
-        setLockUntil(null);
-        setAttempts(0);
-      } else {
-        forceTick((n) => n + 1);
-      }
-    }, 1000);
-    return () => clearInterval(id);
-  }, [lockUntil]);
-
-  const lockedSecondsLeft =
-    lockUntil != null
-      ? Math.max(0, Math.ceil((lockUntil - Date.now()) / 1000))
-      : 0;
-  const isLocked = lockedSecondsLeft > 0;
-
-  const handleSubmit = () => {
-    if (!row.payment_id) {
-      setError('Este cobro no tiene un pago asociado.');
-      return;
-    }
-    if (!/^\d{4}$/.test(pin)) {
-      setError('Ingresa los 4 dígitos del PIN.');
-      return;
-    }
-    if (isLocked) return;
-    setError(null);
-    startTransition(async () => {
-      try {
-        const result = await receiveIndividualCashAction(
-          row.payment_id as string,
-          pin,
-        );
-        if (result.status === 'success') {
-          // Refresh + cierre. La fila reaparece como `validated`
-          // tras el siguiente fetch del Server Component.
-          router.refresh();
-          onClose();
-          return;
+      <PinConfirmModal
+        isOpen={pendingRow != null}
+        onClose={() => setPendingRow(null)}
+        title="Confirmar recepción de efectivo"
+        details={
+          pendingRow
+            ? [
+                { label: 'Cliente', value: pendingRow.client_name },
+                {
+                  label: 'Monto',
+                  value: (
+                    <strong style={{ color: '#15803D' }}>
+                      {formatMXN(pendingRow.amount)}
+                    </strong>
+                  ),
+                },
+                { label: 'Admin', value: pendingRow.admin_name },
+              ]
+            : []
         }
-        if (result.status !== 'error') return;
-        if (result.reason === 'pin_incorrect') {
-          const next = attempts + 1;
-          setAttempts(next);
-          setPin('');
-          if (next >= 3) {
-            setLockUntil(Date.now() + 30_000);
-            setError(
-              'Demasiados intentos fallidos. Espera 30 segundos antes de reintentar.',
-            );
-          } else {
-            setError(
-              `PIN incorrecto. Intento ${next} de 3.`,
-            );
+        onConfirm={async (pin) => {
+          if (!pendingRow?.payment_id) {
+            return {
+              success: false,
+              error: 'Este cobro no tiene un pago asociado.',
+            };
           }
-        } else if (result.reason === 'pin_missing') {
-          setError(result.message);
-          // Sin PIN configurado, no tiene sentido permitir más
-          // intentos en este modal — el contador debe contactar
-          // al admin. Bloqueamos el botón sin lockout temporal.
-          setLockUntil(Number.MAX_SAFE_INTEGER);
-        } else if (result.reason === 'already_validated') {
-          setError(result.message);
-          // Refresh para que la UI muestre el badge "✓ Validado".
-          router.refresh();
-        } else {
-          setError(result.message);
-        }
-      } catch (err) {
-        const message =
-          err instanceof Error ? err.message : 'Error de red';
-        setError(message);
-      }
-    });
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(15,23,42,0.55)' }}
-      onClick={() => {
-        if (!pending) onClose();
-      }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="pin-modal-title"
-    >
-      <div
-        className="card w-full max-w-md p-6 animate-fade"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <h3
-            id="pin-modal-title"
-            className="font-semibold text-lg flex items-center gap-2"
-          >
-            {step === 'confirm' ? (
-              <>
-                <ShieldAlert size={18} style={{ color: '#D97706' }} />
-                Confirmar recepción de efectivo
-              </>
-            ) : (
-              <>
-                <KeyRound size={18} style={{ color: '#4338CA' }} />
-                Ingresa tu PIN de confirmación
-              </>
-            )}
-          </h3>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            style={{ padding: '6px' }}
-            onClick={onClose}
-            disabled={pending}
-            aria-label="Cerrar"
-          >
-            <X size={18} />
-          </button>
-        </div>
-
-        {step === 'confirm' ? (
-          <>
-            <p
-              className="text-sm mb-4"
-              style={{ color: 'var(--text-secondary)' }}
-            >
-              ¿Estás recibiendo el efectivo de:
-            </p>
-            <div
-              className="card p-4 mb-4"
-              style={{
-                background: 'var(--bg-subtle)',
-                border: '1px solid var(--border)',
-              }}
-            >
-              <ConfirmRow label="Cliente" value={row.client_name} />
-              <ConfirmRow
-                label="Monto"
-                value={
-                  <strong style={{ color: '#15803D' }}>
-                    {formatMXN(row.amount)}
-                  </strong>
-                }
-              />
-              <ConfirmRow label="Admin" value={row.admin_name} />
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="btn btn-outline flex-1"
-                onClick={onClose}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary flex-1"
-                onClick={() => setStep('pin')}
-              >
-                Sí, continuar →
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <input
-              ref={pinInputRef}
-              type="password"
-              inputMode="numeric"
-              pattern="[0-9]{4}"
-              maxLength={4}
-              autoComplete="off"
-              className="input mb-2"
-              style={{
-                textAlign: 'center',
-                fontSize: '1.5rem',
-                letterSpacing: '0.6em',
-                paddingLeft: '0.6em',
-              }}
-              placeholder="••••"
-              value={pin}
-              onChange={(e) => {
-                // Sanitize: solo dígitos, máximo 4.
-                const onlyDigits = e.target.value.replace(/\D/g, '').slice(0, 4);
-                setPin(onlyDigits);
-                if (error && !isLocked) setError(null);
-              }}
-              onKeyDown={(e) => {
-                if (
-                  e.key === 'Enter' &&
-                  pin.length === 4 &&
-                  !pending &&
-                  !isLocked
-                ) {
-                  handleSubmit();
-                }
-              }}
-              disabled={pending || isLocked}
-            />
-            <p
-              className="text-xs mb-3"
-              style={{ color: 'var(--text-tertiary)' }}
-            >
-              4 dígitos numéricos. Si no tienes PIN, contacta al admin.
-            </p>
-
-            {error && (
-              <div
-                role="alert"
-                className="text-sm mb-3"
-                style={{
-                  color: 'var(--danger, #dc2626)',
-                  background: 'var(--danger-bg, rgba(220,38,38,0.08))',
-                  border: '1px solid rgba(220,38,38,0.25)',
-                  padding: '8px 12px',
-                  borderRadius: 6,
-                }}
-              >
-                {error}
-                {isLocked && lockedSecondsLeft < 60 && (
-                  <span style={{ marginLeft: 4 }}>
-                    ({lockedSecondsLeft}s)
-                  </span>
-                )}
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="btn btn-outline flex-1"
-                onClick={onClose}
-                disabled={pending}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary flex-1"
-                onClick={handleSubmit}
-                disabled={pending || isLocked || pin.length !== 4}
-                aria-busy={pending}
-              >
-                {pending ? (
-                  <>
-                    <Loader size={14} className="animate-spin" />
-                    <span style={{ marginLeft: 6 }}>Validando…</span>
-                  </>
-                ) : (
-                  'Confirmar recepción'
-                )}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** Fila clave-valor del bloque de confirmación (paso 1 del modal). */
-function ConfirmRow({
-  label,
-  value,
-}: {
-  label: string;
-  value: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 text-sm py-1">
-      <span style={{ color: 'var(--text-tertiary)' }}>{label}:</span>
-      <span style={{ color: 'var(--text-primary)', textAlign: 'right' }}>
-        {value}
-      </span>
+          const result = await receiveIndividualCashAction(
+            pendingRow.payment_id,
+            pin,
+          );
+          if (result.status === 'success') {
+            router.refresh();
+            return { success: true };
+          }
+          if (result.status === 'error') {
+            // `already_validated` también refresca para que la UI
+            // sincronice el badge — luego mostramos el error.
+            if (result.reason === 'already_validated') {
+              router.refresh();
+            }
+            return {
+              success: false,
+              error: result.message,
+              reason: result.reason,
+            };
+          }
+          return { success: false, error: 'Estado inesperado.' };
+        }}
+      />
     </div>
   );
 }

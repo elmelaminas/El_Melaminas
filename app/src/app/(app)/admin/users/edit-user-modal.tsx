@@ -78,11 +78,18 @@ export function EditUserModal({
     },
   });
 
-  // Watch role para mostrar/ocultar el campo de PIN dinámicamente:
-  // si el admin cambia el rol mientras edita, el campo aparece sin
-  // perder los cambios ya hechos en otros campos.
+  // Watch role para mostrar/ocultar el campo de PIN dinámicamente.
+  // El PIN aplica a todos los roles que validan recepciones de
+  // efectivo:
+  //   - contador: valida cobros en efectivo en /contador
+  //   - admin, admin2: reciben efectivo de choferes en /admin/caja
+  // Si el admin cambia el rol mientras edita, el campo aparece o
+  // desaparece sin perder los cambios ya hechos en otros campos.
   const watchedRole = watch('role');
-  const isContador = watchedRole === 'contador';
+  const needsPin =
+    watchedRole === 'contador' ||
+    watchedRole === 'admin' ||
+    watchedRole === 'admin2';
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -269,12 +276,12 @@ export function EditUserModal({
             </select>
           </Field>
 
-          {/* PIN de confirmación — visible solo para rol contador.
-              El servidor lo persiste cuando llega 4-dígitos; un valor
-              vacío deja el PIN existente sin tocar. Dejar el campo
-              fuera del DOM cuando no es contador limpia el value y
-              evita persistir basura. */}
-          {isContador && (
+          {/* PIN de confirmación — visible para roles que reciben
+              o validan efectivo (admin, admin2, contador). El servidor
+              lo persiste cuando llega 4-dígitos; un valor vacío deja
+              el PIN existente sin tocar. Dejar el campo fuera del DOM
+              cuando no aplica limpia el value y evita persistir basura. */}
+          {needsPin && (
             <Field
               label="PIN de confirmación (4 dígitos)"
               error={errors.confirmation_pin?.message}
@@ -302,8 +309,10 @@ export function EditUserModal({
                 className="text-xs mt-1"
                 style={{ color: 'var(--text-tertiary)' }}
               >
-                El contador usará este PIN para confirmar recepciones
-                de efectivo. Déjalo vacío para conservar el PIN actual.
+                {watchedRole === 'contador'
+                  ? 'El contador usará este PIN para validar cobros en efectivo.'
+                  : 'El admin usará este PIN para confirmar recepciones de efectivo del chofer.'}{' '}
+                Déjalo vacío para conservar el PIN actual.
               </p>
             </Field>
           )}

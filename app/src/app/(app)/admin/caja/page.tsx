@@ -64,28 +64,38 @@ export default async function CajaPage({
     const admin = supabaseAdmin();
 
     // Tres queries en paralelo:
-    //   1. cash_transfers status='pendiente' → choferes con efectivo
-    //      esperando que algún admin lo reciba.
-    //   2. cash_transfers status='recibido' → historial de recibidos
-    //      (últimos 200).
+    //   1. cash_transfers status='pendiente' dirigidos a este admin
+    //      específico (receiver_role='admin' AND receiver_id=uid()).
+    //      El chofer eligió a quién entregar el cash — sólo ese
+    //      admin lo ve en su panel.
+    //   2. cash_transfers status='recibido' → historial completo de
+    //      recibidos por este admin (últimos 200).
     //   3. admin_cash_register del usuario actual → tab "Mi caja".
     const [pendingResult, receivedResult, myMovementsResult] =
       await Promise.all([
-        admin
-          .from('cash_transfers')
-          .select(
-            'id, driver_id, contador_id, amount, status, created_at, notes',
-          )
-          .eq('status', 'pendiente')
-          .order('created_at', { ascending: false }),
-        admin
-          .from('cash_transfers')
-          .select(
-            'id, driver_id, contador_id, admin_id, amount, status, created_at, admin_validated_at, notes',
-          )
-          .eq('status', 'recibido')
-          .order('created_at', { ascending: false })
-          .limit(200),
+        currentUserId
+          ? admin
+              .from('cash_transfers')
+              .select(
+                'id, driver_id, contador_id, receiver_id, receiver_role, amount, status, created_at, notes',
+              )
+              .eq('status', 'pendiente')
+              .eq('receiver_role', 'admin')
+              .eq('receiver_id', currentUserId)
+              .order('created_at', { ascending: false })
+          : Promise.resolve({ data: [], error: null }),
+        currentUserId
+          ? admin
+              .from('cash_transfers')
+              .select(
+                'id, driver_id, contador_id, admin_id, receiver_id, receiver_role, amount, status, created_at, admin_validated_at, notes',
+              )
+              .eq('status', 'recibido')
+              .eq('receiver_role', 'admin')
+              .eq('receiver_id', currentUserId)
+              .order('created_at', { ascending: false })
+              .limit(200)
+          : Promise.resolve({ data: [], error: null }),
         currentUserId
           ? admin
               .from('admin_cash_register')

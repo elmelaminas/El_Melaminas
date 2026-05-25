@@ -38,14 +38,30 @@ export const DRIVER_PAYMENT_METHOD_OPTIONS: {
   { value: 'clip', label: 'Clip', emoji: '📱' },
 ];
 
+/**
+ * Roles posibles a los que el chofer puede entregar el efectivo
+ * cobrado en una entrega. Se usa para gatear el dropdown de
+ * destinatarios y para alimentar `cash_transfers.receiver_role`.
+ */
+export const RECEIVER_ROLE_VALUES = ['admin', 'contador'] as const;
+export type ReceiverRole = (typeof RECEIVER_ROLE_VALUES)[number];
+
 export const ConfirmDeliverySchema = z
   .object({
     lead_id: z.string().uuid('lead_id inválido'),
     receiver_id: z
       .string()
-      .uuid('Selecciona un admin para recibir el efectivo')
+      .uuid('Selecciona la persona que recibirá el efectivo')
       .optional()
       .or(z.literal('')),
+    /** Rol del destinatario del efectivo — 'admin' o 'contador'.
+     *  Required cuando se cobra en efectivo. Se persiste como
+     *  `cash_transfers.receiver_role` para que el receptor correcto
+     *  vea la transferencia en su panel. */
+    receiver_role: z
+      .enum(RECEIVER_ROLE_VALUES, { message: 'Destinatario inválido' })
+      .optional()
+      .nullable(),
     amount_collected: z
       .number({ invalid_type_error: 'Monto inválido' })
       .nonnegative('Monto debe ser ≥ 0')
@@ -74,15 +90,29 @@ export const ConfirmDeliverySchema = z
   )
   .refine(
     (d) => {
-      // Si pagó en efectivo el admin receptor es requerido (el chofer
-      // entrega ese cash a alguien). Para transferencia/clip no aplica.
+      // Si pagó en efectivo, el chofer debe escoger el rol de la
+      // persona que recibirá ese cash (admin o contador).
+      if (d.amount_collected > 0 && d.payment_method === 'efectivo') {
+        return d.receiver_role != null;
+      }
+      return true;
+    },
+    {
+      message: 'Selecciona a quién entregas el efectivo.',
+      path: ['receiver_role'],
+    },
+  )
+  .refine(
+    (d) => {
+      // Si pagó en efectivo, el receiver_id (persona específica con
+      // ese rol) también es requerido.
       if (d.amount_collected > 0 && d.payment_method === 'efectivo') {
         return typeof d.receiver_id === 'string' && d.receiver_id.length > 0;
       }
       return true;
     },
     {
-      message: 'Selecciona un admin para entregar el efectivo.',
+      message: 'Selecciona la persona que recibirá el efectivo.',
       path: ['receiver_id'],
     },
   );

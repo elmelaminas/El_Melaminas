@@ -68,11 +68,16 @@ export async function confirmDeliveryAction(
       typeof amountRaw === 'string' ? Number(amountRaw) : 0;
     const methodRaw = formData.get('payment_method');
     const receiverRaw = formData.get('receiver_id');
+    const receiverRoleRaw = formData.get('receiver_role');
 
     const parsed = ConfirmDeliverySchema.safeParse({
       lead_id: formData.get('lead_id'),
       receiver_id:
         typeof receiverRaw === 'string' ? receiverRaw : '',
+      receiver_role:
+        typeof receiverRoleRaw === 'string' && receiverRoleRaw.length > 0
+          ? receiverRoleRaw
+          : null,
       amount_collected: Number.isFinite(amountNum) ? amountNum : 0,
       payment_method:
         typeof methodRaw === 'string' && methodRaw.length > 0
@@ -318,6 +323,18 @@ export async function confirmDeliveryAction(
     //    efectivo. Loguamos pero no abortamos.
     if (hasCollection && data.payment_method === 'efectivo') {
       try {
+        // El chofer eligió a quién entregar el efectivo (admin o
+        // contador específico). `receiver_role` viene del form +
+        // refine; el id concreto en `receiver_id`. Si por algún
+        // motivo no llegó receiver_role (lead viejo, manipulación),
+        // caemos a 'contador' como default histórico para no perder
+        // el tracking.
+        const receiverRole: 'admin' | 'contador' =
+          data.receiver_role === 'admin' ? 'admin' : 'contador';
+        const receiverIdForInsert =
+          typeof data.receiver_id === 'string' && data.receiver_id.length > 0
+            ? data.receiver_id
+            : null;
         const { error: ctErr } = await admin
           .from('cash_transfers')
           .insert({
@@ -325,6 +342,8 @@ export async function confirmDeliveryAction(
             contador_id: null,
             amount: data.amount_collected,
             status: 'pendiente',
+            receiver_role: receiverRole,
+            receiver_id: receiverIdForInsert,
           });
         if (ctErr) {
           console.error(
@@ -332,32 +351,31 @@ export async function confirmDeliveryAction(
             ctErr,
           );
         } else {
-          // Refactor 2026-05: el admin (no el contador) ahora recibe
-          // efectivo del chofer. Notificamos a admins + admin2 para
-          // que cualquiera pueda procesar el efectivo.
-          const { data: admins } = await admin
-            .from('profiles')
-            .select('id')
-            .in('role', ['admin', 'admin2'])
-            .eq('is_active', true);
-          if (admins && admins.length > 0) {
-            const amountFmt = new Intl.NumberFormat('es-MX', {
-              style: 'currency',
-              currency: 'MXN',
-              minimumFractionDigits: 0,
-            }).format(data.amount_collected);
-            const message = `El chofer ${driverName} trae ${amountFmt} en efectivo para entregar`;
-            const notifInserts = admins.map((c) => ({
-              recipient_id: c.id,
-              type: 'efectivo_pendiente',
-              message,
-            }));
+          // Notif al destinatario específico (no broadcast a todos
+          // los admins/contadores). El chofer eligió a quién le va
+          // a entregar el cash; solo esa persona debe ver el badge
+          // de "Tienes efectivo pendiente".
+          const amountFmt = new Intl.NumberFormat('es-MX', {
+            style: 'currency',
+            currency: 'MXN',
+            minimumFractionDigits: 0,
+          }).format(data.amount_collected);
+          const clientName =
+            leadRow.client_name ?? `Lead ${data.lead_id.slice(0, 8)}`;
+          if (receiverIdForInsert) {
+            const message =
+              `🚗 El chofer ${driverName} te entregará ${amountFmt} de ` +
+              `${clientName}. Confirma la recepción en tu panel.`;
             const { error: notifErr } = await admin
               .from('notifications')
-              .insert(notifInserts);
+              .insert({
+                recipient_id: receiverIdForInsert,
+                type: 'efectivo_chofer_pendiente',
+                message,
+              });
             if (notifErr) {
               console.error(
-                '[confirmDeliveryAction] notif efectivo_pendiente falló (no fatal):',
+                '[confirmDeliveryAction] notif efectivo_chofer_pendiente falló (no fatal):',
                 notifErr,
               );
             }

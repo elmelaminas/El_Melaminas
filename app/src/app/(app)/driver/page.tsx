@@ -92,7 +92,7 @@ export default async function DriverPage() {
       admin
         .from('profiles')
         .select('id, full_name, role')
-        .in('role', ['admin', 'supervisor'])
+        .in('role', ['admin', 'admin2', 'supervisor', 'contador'])
         .eq('is_active', true)
         .order('full_name'),
       admin
@@ -239,6 +239,7 @@ export default async function DriverPage() {
     const receivers: ReceiverOption[] = (receiversResult.data ?? []).map((r) => ({
       id: r.id,
       name: r.full_name ?? '(sin nombre)',
+      role: (r.role as 'admin' | 'admin2' | 'supervisor' | 'contador') ?? 'admin',
     }));
 
     const driverName = profileResult.data?.full_name ?? user.email ?? 'Chofer';
