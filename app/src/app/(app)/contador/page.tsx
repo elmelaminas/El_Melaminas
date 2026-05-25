@@ -38,6 +38,39 @@ export default async function ContadorPage() {
     } = await userClient.auth.getUser();
     const contadorId = user?.id ?? null;
 
+    // ¿El contador autenticado tiene PIN configurado? Lo usamos para
+    // gatear los botones "✓ Recibí" en la UI: sin PIN configurado, el
+    // contador no puede validar y mostramos un banner que pide
+    // contactar al admin. Best-effort: si la columna no existe (DDL
+    // pendiente) o la query falla, asumimos `false` y bloqueamos.
+    let contadorHasPin = false;
+    if (contadorId) {
+      try {
+        const { data: profile, error: profileErr } = await supabaseAdmin()
+          .from('profiles')
+          .select('confirmation_pin')
+          .eq('id', contadorId)
+          .maybeSingle();
+        if (profileErr) {
+          console.error(
+            '[ContadorPage] pin lookup falló (no fatal):',
+            profileErr,
+          );
+        } else {
+          const pin =
+            typeof profile?.confirmation_pin === 'string'
+              ? profile.confirmation_pin.trim()
+              : '';
+          contadorHasPin = pin.length > 0;
+        }
+      } catch (e) {
+        console.error(
+          '[ContadorPage] pin lookup excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
     // Inicio del mes en UTC — usado en (cashRes para `this_month` por
     // admin) y en (cashPaymentsRes para listar cobros del mes en curso).
     const nowForQuery = new Date();
@@ -255,6 +288,35 @@ export default async function ContadorPage() {
       }
     }
 
+    // Idempotencia / estado: marcamos como "validado" cada ingreso que
+    // ya tenga un egreso `source='validado_contador'` con el mismo
+    // payment_id. Un lookup bulk sobre los payment_ids del listado.
+    const validatedPaymentIds = new Set<string>();
+    if (paymentIds.length > 0) {
+      try {
+        const { data: validatedRows, error: valErr } = await admin
+          .from('admin_cash_register')
+          .select('payment_id')
+          .eq('operation_type', 'egreso')
+          .eq('source', 'validado_contador')
+          .in('payment_id', paymentIds);
+        if (valErr) {
+          console.error(
+            '[ContadorPage] validated lookup falló (no fatal):',
+            valErr,
+          );
+        }
+        for (const v of validatedRows ?? []) {
+          if (v.payment_id) validatedPaymentIds.add(v.payment_id);
+        }
+      } catch (e) {
+        console.error(
+          '[ContadorPage] validated lookup excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
     const cashPayments: CashPaymentRow[] = cashPaymentsRaw.map((r) => {
       const leadId = r.payment_id ? leadIdByPayment.get(r.payment_id) : null;
       const clientName =
@@ -264,10 +326,14 @@ export default async function ContadorPage() {
         : '—';
       return {
         id: r.id,
+        payment_id: r.payment_id ?? null,
         client_name: clientName,
         admin_name: adminName,
         amount: Number(r.amount ?? 0),
         created_at: r.created_at ?? null,
+        validated: r.payment_id
+          ? validatedPaymentIds.has(r.payment_id)
+          : false,
       };
     });
 
@@ -297,6 +363,7 @@ export default async function ContadorPage() {
         history={history}
         receivedHistory={receivedHistory}
         cashPayments={cashPayments}
+        contadorHasPin={contadorHasPin}
       />
     );
   } catch (err) {

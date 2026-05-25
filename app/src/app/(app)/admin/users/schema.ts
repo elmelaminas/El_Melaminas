@@ -85,6 +85,18 @@ export const EditUserSchema = z.object({
     .optional()
     .or(z.literal('')),
   role: z.enum(ROLES, { message: 'Rol inválido' }),
+  /** PIN de confirmación SOLO aplicable al rol contador. Cuatro
+   *  dígitos numéricos. El campo viaja siempre (aunque vacío); el
+   *  server lo persiste únicamente cuando `role === 'contador'` y
+   *  el valor cumple `/^\d{4}$/`. La validación cliente acepta
+   *  cualquier string ≤4 — el match estricto lo hace el server. */
+  confirmation_pin: z
+    .string()
+    .trim()
+    .max(4, 'El PIN debe tener máximo 4 dígitos')
+    .regex(/^\d*$/, 'Solo dígitos numéricos')
+    .optional()
+    .or(z.literal('')),
 });
 
 export type EditUserInput = z.infer<typeof EditUserSchema>;

@@ -3,7 +3,7 @@
 import { useEffect, useTransition } from 'react';
 import { useForm, type FieldErrors } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { X, Mail, Phone, Loader } from 'lucide-react';
+import { X, Mail, Phone, Loader, KeyRound } from 'lucide-react';
 import {
   EditUserSchema,
   initialEditUserState,
@@ -65,6 +65,7 @@ export function EditUserModal({
     handleSubmit,
     setError,
     clearErrors,
+    watch,
     formState: { errors, isDirty },
   } = useForm<EditUserInput>({
     resolver: zodResolver(EditUserSchema),
@@ -73,8 +74,15 @@ export function EditUserModal({
       full_name: initialValues.full_name,
       phone: initialValues.phone ?? '',
       role: initialValues.role,
+      confirmation_pin: '',
     },
   });
+
+  // Watch role para mostrar/ocultar el campo de PIN dinámicamente:
+  // si el admin cambia el rol mientras edita, el campo aparece sin
+  // perder los cambios ya hechos en otros campos.
+  const watchedRole = watch('role');
+  const isContador = watchedRole === 'contador';
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -92,10 +100,13 @@ export function EditUserModal({
     fd.set('full_name', values.full_name);
     fd.set('phone', values.phone ?? '');
     fd.set('role', values.role);
+    fd.set('confirmation_pin', values.confirmation_pin ?? '');
 
     console.log('[EditUserModal] enviando updateUserAction…', {
       ...values,
       phone: values.phone,
+      // NO logueamos el PIN — secreto compartido.
+      confirmation_pin: values.confirmation_pin ? '[set]' : '[empty]',
     });
 
     startTransition(async () => {
@@ -257,6 +268,45 @@ export function EditUserModal({
               ))}
             </select>
           </Field>
+
+          {/* PIN de confirmación — visible solo para rol contador.
+              El servidor lo persiste cuando llega 4-dígitos; un valor
+              vacío deja el PIN existente sin tocar. Dejar el campo
+              fuera del DOM cuando no es contador limpia el value y
+              evita persistir basura. */}
+          {isContador && (
+            <Field
+              label="PIN de confirmación (4 dígitos)"
+              error={errors.confirmation_pin?.message}
+            >
+              <div className="relative">
+                <KeyRound
+                  size={16}
+                  className="absolute left-3 top-1/2 -translate-y-1/2"
+                  style={{ color: 'var(--text-tertiary)' }}
+                />
+                <input
+                  {...register('confirmation_pin')}
+                  type="password"
+                  inputMode="numeric"
+                  pattern="[0-9]{4}"
+                  maxLength={4}
+                  autoComplete="off"
+                  className="input"
+                  style={{ paddingLeft: 36, letterSpacing: '0.3em' }}
+                  placeholder="••••"
+                  disabled={pending}
+                />
+              </div>
+              <p
+                className="text-xs mt-1"
+                style={{ color: 'var(--text-tertiary)' }}
+              >
+                El contador usará este PIN para confirmar recepciones
+                de efectivo. Déjalo vacío para conservar el PIN actual.
+              </p>
+            </Field>
+          )}
 
           {pending && (
             <div

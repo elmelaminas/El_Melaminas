@@ -188,6 +188,7 @@ export async function updateUserAction(
       full_name: formData.get('full_name'),
       phone: formData.get('phone'),
       role: formData.get('role'),
+      confirmation_pin: formData.get('confirmation_pin'),
     });
 
     if (!parsed.success) {
@@ -211,8 +212,38 @@ export async function updateUserAction(
       };
     }
 
-    const { profile_id, full_name, phone, role } = parsed.data;
+    const { profile_id, full_name, phone, role, confirmation_pin } = parsed.data;
     const normalizedPhone = phone && phone.length > 0 ? phone : null;
+    // PIN: solo persistido cuando rol=contador. Si llega cualquier
+    // otro rol, lo limpiamos a null para evitar PINs huérfanos
+    // colgando en la columna tras cambios de rol.
+    let pinForUpdate: string | null | undefined = undefined;
+    if (role === 'contador') {
+      if (typeof confirmation_pin === 'string') {
+        const trimmed = confirmation_pin.trim();
+        if (trimmed === '') {
+          // El admin dejó el campo vacío: NO tocamos el PIN existente.
+          // (Permite editar otros campos del contador sin re-pegar el
+          // PIN. Para borrar el PIN explícitamente, se cambiaría el
+          // rol y se restauraría.)
+          pinForUpdate = undefined;
+        } else if (/^\d{4}$/.test(trimmed)) {
+          pinForUpdate = trimmed;
+        } else {
+          return {
+            status: 'error',
+            message: 'El PIN debe tener exactamente 4 dígitos numéricos.',
+            fieldErrors: {
+              confirmation_pin: ['Debe tener exactamente 4 dígitos numéricos.'],
+            },
+          };
+        }
+      }
+    } else {
+      // Cambio de rol: limpia el PIN para que un ex-contador no lo
+      // arrastre si vuelve al rol más tarde con un PIN viejo válido.
+      pinForUpdate = null;
+    }
 
     // ── Auth: necesitamos auth.uid() para anti-self-demote y el role
     //    check. supabaseServer() lee de cookies; supabaseAdmin() es
@@ -267,18 +298,29 @@ export async function updateUserAction(
       };
     }
 
+    // Construimos el UPDATE como objeto plano y agregamos
+    // confirmation_pin solo si pinForUpdate !== undefined. Así
+    // distinguimos "no tocar" (undefined → key ausente) de
+    // "borrar" (null → key=null) y "asignar" (string → key=pin).
+    const updatePatch: {
+      full_name: string;
+      phone: string | null;
+      role: string;
+      updated_at: string;
+      confirmation_pin?: string | null;
+    } = {
+      full_name,
+      phone: normalizedPhone,
+      role,
+      updated_at: new Date().toISOString(),
+    };
+    if (pinForUpdate !== undefined) {
+      updatePatch.confirmation_pin = pinForUpdate;
+    }
+
     const { error: updErr } = await admin
       .from('profiles')
-      .update({
-        full_name,
-        phone: normalizedPhone,
-        role,
-        // updated_at: now() en el server. Si la columna tiene un
-        // trigger BEFORE UPDATE que lo maneja, este valor lo
-        // sobreescribe el trigger con el suyo — sin daño. Si no hay
-        // trigger, queda el nuestro.
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePatch)
       .eq('id', profile_id);
 
     if (updErr) {
