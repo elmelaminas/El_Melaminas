@@ -50,6 +50,20 @@ export type ReceivedCashHistoryRow = {
 };
 
 /**
+ * Fila de "Cobros en efectivo registrados" — un ingreso en
+ * `admin_cash_register` con `source='pago_efectivo'`. Resolución de
+ * `client_name` (via payment → lead) y `admin_name` (via profiles)
+ * la hace el server; el cliente solo renderiza.
+ */
+export type CashPaymentRow = {
+  id: string;
+  client_name: string;
+  admin_name: string;
+  amount: number;
+  created_at: string | null;
+};
+
+/**
  * Vista del contador. Refactor 2026-05: solo valida la caja del admin.
  *
  * Layout:
@@ -65,11 +79,15 @@ export function ContadorClient({
   grandTotal,
   history,
   receivedHistory,
+  cashPayments,
 }: {
   admins: AdminWithCash[];
   grandTotal: number;
   history: ValidationHistoryRow[];
   receivedHistory: ReceivedCashHistoryRow[];
+  /** Cobros en efectivo del mes actual registrados por admins, con
+   *  nombre del cliente y del admin ya resueltos en el server. */
+  cashPayments: CashPaymentRow[];
 }) {
   return (
     <div className="flex flex-col gap-6 max-w-3xl">
@@ -79,6 +97,12 @@ export function ContadorClient({
           Valida el efectivo acumulado en la caja de cada administrador.
         </p>
       </div>
+
+      {/* SECCIÓN 0: Cobros en efectivo registrados por admins este mes.
+          Va arriba porque es la novedad principal de esta vista — el
+          contador entra y lo primero que ve es cuánto efectivo "real"
+          está flotando en el sistema antes de cualquier validación. */}
+      <CashPaymentsSection cashPayments={cashPayments} />
 
       {/* Card de total pendiente. */}
       <div
@@ -520,6 +544,168 @@ function ValidationHistory({
             )}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Sección "💰 Cobros en efectivo registrados" — card resumen +
+ * tabla de detalle del mes en curso. Cada fila corresponde a un
+ * ingreso en `admin_cash_register` con `source='pago_efectivo'`,
+ * con el cliente y el admin ya resueltos por el server.
+ */
+function CashPaymentsSection({
+  cashPayments,
+}: {
+  cashPayments: CashPaymentRow[];
+}) {
+  const total = cashPayments.reduce((s, p) => s + p.amount, 0);
+  const count = cashPayments.length;
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-lg font-semibold">
+          💰 Cobros en efectivo registrados
+        </h2>
+        <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+          Pagos en efectivo que los administradores registraron este mes.
+        </p>
+      </div>
+
+      {/* Card resumen */}
+      <div
+        className="card p-5 flex items-center gap-4"
+        style={{
+          background:
+            count > 0
+              ? 'linear-gradient(135deg, #DCFCE7 0%, #F0FDF4 100%)'
+              : 'var(--bg-subtle)',
+          border:
+            count > 0
+              ? '1px solid rgba(22,163,74,0.25)'
+              : '1px solid var(--border)',
+        }}
+      >
+        <div
+          className="flex items-center justify-center"
+          style={{
+            width: 48,
+            height: 48,
+            borderRadius: 12,
+            background: count > 0 ? '#16A34A' : 'var(--text-tertiary)',
+            color: '#fff',
+            flexShrink: 0,
+          }}
+        >
+          <DollarSign size={24} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            className="text-xs uppercase tracking-wide"
+            style={{
+              color: count > 0 ? '#15803D' : 'var(--text-tertiary)',
+              fontWeight: 600,
+            }}
+          >
+            Efectivo en sistema
+          </div>
+          <div
+            className="text-2xl font-bold leading-tight mt-1"
+            style={{
+              color: count > 0 ? '#15803D' : 'var(--text-tertiary)',
+            }}
+          >
+            {formatMXN(total)}
+          </div>
+          <div
+            className="text-xs mt-1"
+            style={{ color: 'var(--text-tertiary)' }}
+          >
+            {count} {count === 1 ? 'cobro' : 'cobros'} este mes
+          </div>
+        </div>
+      </div>
+
+      {/* Tabla de detalle */}
+      <div className="tbl-wrap">
+        <div className="overflow-x-auto">
+          <table className="tbl table-to-cards">
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>Admin</th>
+                <th className="text-right">Monto</th>
+                <th>Fecha</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cashPayments.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={4}
+                    className="text-center py-6 text-sm"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    No hay cobros en efectivo este mes.
+                  </td>
+                </tr>
+              ) : (
+                cashPayments.map((p) => (
+                  <tr key={p.id}>
+                    <td data-label="Cliente" className="font-medium">
+                      {p.client_name}
+                    </td>
+                    <td
+                      data-label="Admin"
+                      className="text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {p.admin_name}
+                    </td>
+                    <td
+                      data-label="Monto"
+                      className="text-right font-bold"
+                      style={{ color: '#15803D' }}
+                    >
+                      <Banknote
+                        size={14}
+                        style={{
+                          display: 'inline',
+                          verticalAlign: 'middle',
+                          marginRight: 4,
+                          color: '#15803D',
+                        }}
+                      />
+                      {formatMXN(p.amount)}
+                    </td>
+                    <td
+                      data-label="Fecha"
+                      className="text-sm"
+                      style={{ color: 'var(--text-secondary)' }}
+                    >
+                      {formatDateTime(p.created_at)}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+        {cashPayments.length > 0 && (
+          <div
+            className="px-6 py-3 border-t text-xs flex justify-end"
+            style={{
+              borderColor: 'var(--border)',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            Total en efectivo este mes:{' '}
+            <strong style={{ color: '#15803D', marginLeft: 4 }}>
+              {formatMXN(total)}
+            </strong>
+          </div>
+        )}
       </div>
     </div>
   );

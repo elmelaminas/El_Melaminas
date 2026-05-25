@@ -5,6 +5,7 @@ import {
   type AdminWithCash,
   type ValidationHistoryRow,
   type ReceivedCashHistoryRow,
+  type CashPaymentRow,
 } from './contador-client';
 
 /**
@@ -37,7 +38,14 @@ export default async function ContadorPage() {
     } = await userClient.auth.getUser();
     const contadorId = user?.id ?? null;
 
-    // Cuatro queries en paralelo:
+    // Inicio del mes en UTC — usado en (cashRes para `this_month` por
+    // admin) y en (cashPaymentsRes para listar cobros del mes en curso).
+    const nowForQuery = new Date();
+    const startOfMonthIso = new Date(
+      Date.UTC(nowForQuery.getUTCFullYear(), nowForQuery.getUTCMonth(), 1),
+    ).toISOString();
+
+    // Cinco queries en paralelo:
     //   1. Admins activos (admin + admin2)
     //   2. admin_cash_register completo (para sumar por admin)
     //   3. Historial personal de validaciones del contador actual
@@ -48,7 +56,11 @@ export default async function ContadorPage() {
     //      registros antiguos (donde un contador real cerraba el ciclo)
     //      siguen vivos en DB y este historial los expone. Si la tabla
     //      no aplica al rol actual el resultado queda vacío.
-    const [adminsRes, cashRes, historyRes, receivedRes] = await Promise.all([
+    //   5. Cobros en efectivo del mes registrados por admins
+    //      (admin_cash_register ingresos con source='pago_efectivo').
+    //      Resolvemos client_name + admin_name via lookups posteriores
+    //      porque supabase-js no soporta JOIN multi-tabla directo.
+    const [adminsRes, cashRes, historyRes, receivedRes, cashPaymentsRes] = await Promise.all([
       admin
         .from('profiles')
         .select('id, full_name, role')
@@ -77,6 +89,13 @@ export default async function ContadorPage() {
             .order('created_at', { ascending: false })
             .limit(20)
         : Promise.resolve({ data: [], error: null }),
+      admin
+        .from('admin_cash_register')
+        .select('id, admin_id, amount, created_at, payment_id')
+        .eq('operation_type', 'ingreso')
+        .eq('source', 'pago_efectivo')
+        .gte('created_at', startOfMonthIso)
+        .order('created_at', { ascending: false }),
     ]);
 
     if (adminsRes.error) {
@@ -104,13 +123,15 @@ export default async function ContadorPage() {
         receivedRes.error,
       );
     }
+    if (cashPaymentsRes.error) {
+      console.error(
+        '[ContadorPage] cash payments select falló (no fatal):',
+        cashPaymentsRes.error,
+      );
+    }
 
     // Agregar por admin_id: ingresos totales, egresos totales,
     // saldo (ingresos − egresos) e ingresos del mes en curso.
-    const now = new Date();
-    const startOfMonthIso = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
-    ).toISOString();
 
     type Slot = { balance: number; thisMonth: number };
     const byAdmin = new Map<string, Slot>();
@@ -152,6 +173,7 @@ export default async function ContadorPage() {
     // rol distinto (un driver no está en `admins`).
     const historyRaw = historyRes.data ?? [];
     const receivedRaw = receivedRes.data ?? [];
+    const cashPaymentsRaw = cashPaymentsRes.data ?? [];
 
     const histAdminIds = historyRaw
       .map((h) => h.admin_id)
@@ -159,12 +181,19 @@ export default async function ContadorPage() {
     const receivedDriverIds = receivedRaw
       .map((r) => r.driver_id)
       .filter((x): x is string => !!x);
+    const cashPaymentAdminIds = cashPaymentsRaw
+      .map((r) => r.admin_id)
+      .filter((x): x is string => !!x);
 
     const nameById = new Map<string, string>();
     for (const a of admins) nameById.set(a.admin_id, a.admin_name);
 
     const missing = Array.from(
-      new Set([...histAdminIds, ...receivedDriverIds]),
+      new Set([
+        ...histAdminIds,
+        ...receivedDriverIds,
+        ...cashPaymentAdminIds,
+      ]),
     ).filter((id) => !nameById.has(id));
     if (missing.length > 0) {
       const { data: extra } = await admin
@@ -175,6 +204,72 @@ export default async function ContadorPage() {
         nameById.set(u.id, u.full_name ?? '(sin nombre)');
       }
     }
+
+    // Cobros en efectivo del mes: para cada fila de admin_cash_register
+    // con source='pago_efectivo', resolver el cliente vía payments →
+    // leads. Dos lookups bulk en serie:
+    //   a) payment_ids únicos → SELECT payments(id, lead_id) → mapa
+    //   b) lead_ids únicos    → SELECT leads(id, client_name) → mapa
+    // Si alguna fila no tiene payment_id (cierre histórico raro)
+    // queda con client_name vacío y la UI muestra '(sin cliente)'.
+    const paymentIds = Array.from(
+      new Set(
+        cashPaymentsRaw
+          .map((r) => r.payment_id)
+          .filter((x): x is string => !!x),
+      ),
+    );
+    const leadIdByPayment = new Map<string, string>();
+    if (paymentIds.length > 0) {
+      const { data: payRows, error: payErr } = await admin
+        .from('payments')
+        .select('id, lead_id')
+        .in('id', paymentIds);
+      if (payErr) {
+        console.error(
+          '[ContadorPage] payments lookup falló (no fatal):',
+          payErr,
+        );
+      }
+      for (const p of payRows ?? []) {
+        if (p.id && p.lead_id) leadIdByPayment.set(p.id, p.lead_id);
+      }
+    }
+    const leadIds = Array.from(new Set(leadIdByPayment.values()));
+    const clientNameByLead = new Map<string, string>();
+    if (leadIds.length > 0) {
+      const { data: leadRows, error: leadErr } = await admin
+        .from('leads')
+        .select('id, client_name')
+        .in('id', leadIds);
+      if (leadErr) {
+        console.error(
+          '[ContadorPage] leads lookup falló (no fatal):',
+          leadErr,
+        );
+      }
+      for (const l of leadRows ?? []) {
+        if (l.id) {
+          clientNameByLead.set(l.id, l.client_name ?? '(sin nombre)');
+        }
+      }
+    }
+
+    const cashPayments: CashPaymentRow[] = cashPaymentsRaw.map((r) => {
+      const leadId = r.payment_id ? leadIdByPayment.get(r.payment_id) : null;
+      const clientName =
+        (leadId ? clientNameByLead.get(leadId) : null) ?? '(sin cliente)';
+      const adminName = r.admin_id
+        ? nameById.get(r.admin_id) ?? '—'
+        : '—';
+      return {
+        id: r.id,
+        client_name: clientName,
+        admin_name: adminName,
+        amount: Number(r.amount ?? 0),
+        created_at: r.created_at ?? null,
+      };
+    });
 
     const history: ValidationHistoryRow[] = historyRaw.map((h) => ({
       id: h.id,
@@ -201,6 +296,7 @@ export default async function ContadorPage() {
         grandTotal={grandTotal}
         history={history}
         receivedHistory={receivedHistory}
+        cashPayments={cashPayments}
       />
     );
   } catch (err) {
