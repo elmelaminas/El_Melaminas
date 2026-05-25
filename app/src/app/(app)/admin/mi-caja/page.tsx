@@ -439,8 +439,8 @@ export default async function MiCajaPage() {
                 <tr>
                   <th>Fecha</th>
                   <th>Tipo</th>
-                  <th>Origen</th>
                   <th>Cliente</th>
+                  <th>Origen</th>
                   <th className="text-right">Monto</th>
                 </tr>
               </thead>
@@ -477,18 +477,18 @@ export default async function MiCajaPage() {
                         )}
                       </td>
                       <td
-                        data-label="Origen"
-                        className="text-sm"
-                        style={{ color: 'var(--text-secondary)' }}
-                      >
-                        {sourceLabel(m.source)}
-                      </td>
-                      <td
                         data-label="Cliente"
                         className="text-sm"
                         style={{ color: 'var(--text-secondary)' }}
                       >
                         <ClientCell movement={m} />
+                      </td>
+                      <td
+                        data-label="Origen"
+                        className="text-sm"
+                        style={{ color: 'var(--text-secondary)' }}
+                      >
+                        {sourceLabel(m.source)}
                       </td>
                       <td
                         data-label="Monto"
