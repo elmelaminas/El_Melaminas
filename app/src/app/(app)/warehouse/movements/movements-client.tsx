@@ -19,6 +19,7 @@ import {
   MOVEMENT_TYPE_LABEL,
   type MovementType,
 } from '../schema';
+import { formatDateTimeCDMX } from '@/lib/format-date';
 
 export type MovementsRow = {
   id: string;
@@ -373,15 +374,4 @@ export function MovementsClient({
   );
 }
 
-function formatDateTime(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('es-MX', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+const formatDateTime = formatDateTimeCDMX;

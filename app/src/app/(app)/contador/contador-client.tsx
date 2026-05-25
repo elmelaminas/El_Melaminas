@@ -16,6 +16,7 @@ import {
   receiveIndividualCashAction,
 } from './actions';
 import { PinConfirmModal } from '@/components/ui/PinConfirmModal';
+import { formatDateTimeCDMX } from '@/lib/format-date';
 
 /**
  * Un admin con su saldo de caja + ingresos del mes. Saldo = sum
@@ -870,15 +871,6 @@ function CashPaymentsSection({
   );
 }
 
-function formatDateTime(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('es-MX', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+// Helper local renombrado al shared `formatDateTimeCDMX` para que toda
+// la app comparta el mismo formato + timezone México.
+const formatDateTime = formatDateTimeCDMX;

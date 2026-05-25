@@ -52,6 +52,7 @@ import {
   reassignDeliveryAction,
   cancelLeadAction,
 } from './actions';
+import { formatDateCDMX, formatDateTimeCDMX } from '@/lib/format-date';
 
 /**
  * Estilo de fila ROJO ALERTA. Sobre-escribe cualquier color manual o
@@ -1402,31 +1403,11 @@ function PostReturnActions({
  * parsea como UTC y al formatear en México (UTC-6) muestra un día
  * atrás. Detectamos el formato YYYY-MM-DD y usamos el ctor local.
  */
-function formatDate(iso: string | null): string {
-  if (!iso) return '—';
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  const d = m
-    ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-    : new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString('es-MX', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  });
-}
-
-function formatDateTime(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('es-MX', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+// Helpers locales renombrados al shared `formatDateCDMX` /
+// `formatDateTimeCDMX` para timezone México explícita y soporte de
+// fechas-puras (YYYY-MM-DD).
+const formatDate = formatDateCDMX;
+const formatDateTime = formatDateTimeCDMX;
 
 /**
  * Drawer lateral con TODA la información del lead. Se monta al

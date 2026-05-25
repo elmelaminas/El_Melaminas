@@ -23,6 +23,7 @@ import {
   type PaymentType,
 } from '@/data/mock';
 import { ImageLightbox } from '@/components/ui/ImageLightbox';
+import { formatDateCDMX } from '@/lib/format-date';
 import {
   getLeadRowStyle,
   LeadRowLegend,
@@ -933,13 +934,6 @@ function SummaryCard({
   );
 }
 
-function formatDate(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString('es-MX', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  });
-}
+// `formatDate` ahora reusa el shared `formatDateCDMX` para fijar TZ
+// México y soportar fechas-puras (YYYY-MM-DD) sin shifts de UTC.
+const formatDate = formatDateCDMX;

@@ -26,6 +26,7 @@ import {
   DRIVER_PAYMENT_METHOD_OPTIONS,
   DRIVER_PAYMENT_METHOD_VALUES,
 } from './schema';
+import { formatTimeCDMX } from '@/lib/format-date';
 
 export type DeliveryCardData = {
   id: string;
@@ -1176,15 +1177,9 @@ function DeliveredTodaySection({
   );
 }
 
-function formatTimeOfDay(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleTimeString('es-MX', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+// Hora local del chofer (CDMX). Reusa el helper shared para fijar
+// timezone y mantener el formato consistente con el resto de la app.
+const formatTimeOfDay = formatTimeCDMX;
 
 /**
  * Bloque expandible "Reportar problema" dentro de cada card de entrega.

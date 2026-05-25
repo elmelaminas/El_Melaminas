@@ -12,6 +12,7 @@ import {
 import { formatMXN } from '@/data/mock';
 import { adminReceivesDriverCashAction } from './actions';
 import { PinConfirmModal } from '@/components/ui/PinConfirmModal';
+import { formatDateTimeCDMX } from '@/lib/format-date';
 
 export type TransferRow = {
   id: string;
@@ -715,15 +716,6 @@ function TabButton({
   );
 }
 
-function formatDate(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('es-MX', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+// Renombre del helper local al shared para forzar timezone CDMX y
+// formato consistente entre módulos.
+const formatDate = formatDateTimeCDMX;

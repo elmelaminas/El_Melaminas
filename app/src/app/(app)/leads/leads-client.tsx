@@ -43,6 +43,7 @@ import {
   markFabricaDeliveredAction,
   deleteLeadAction,
 } from './actions';
+import { formatDateCDMX } from '@/lib/format-date';
 
 export type LeadRow = {
   id: string;
@@ -824,30 +825,9 @@ export function LeadsClient({
   );
 }
 
-/**
- * Formatea una fecha (`YYYY-MM-DD` puro o ISO timestamp con hora) a
- * texto corto en es-MX. Devuelve `—` si null/undefined o inválida.
- *
- * Fix de TZ (2026-05): `sale_date` viene como `YYYY-MM-DD` de Postgres
- * (columna DATE). `new Date("2026-05-18")` parsea como UTC medianoche;
- * al formatear en México (UTC-6) sale "17 may 2026" — un día atrás.
- * Detectamos el formato fecha-pura y lo construimos con el ctor local
- * `new Date(year, month-1, day)`. ISO timestamps con hora se siguen
- * parseando como antes (su TZ ya está bien especificada).
- */
-function formatDate(iso: string | null): string {
-  if (!iso) return '—';
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  const d = m
-    ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-    : new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso; // muestra raw si no parsea
-  return d.toLocaleDateString('es-MX', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  });
-}
+// Helper local renombrado al shared `formatDateCDMX` (timezone México
+// + soporte de fecha-pura YYYY-MM-DD sin shifts).
+const formatDate = formatDateCDMX;
 
 /**
  * Badge "clip + N" que abre un popover con la lista de archivos

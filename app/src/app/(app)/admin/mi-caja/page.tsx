@@ -2,6 +2,7 @@ import { DollarSign, Truck, CircleCheckBig, Wallet } from 'lucide-react';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import { formatMXN } from '@/data/mock';
+import { formatDateTimeCDMX } from '@/lib/format-date';
 
 /**
  * Página /admin/mi-caja — resumen personal de efectivo del admin
@@ -69,7 +70,7 @@ export default async function MiCajaPage() {
       admin
         .from('admin_cash_register')
         .select(
-          'id, amount, operation_type, source, created_at, notes, payment_id, cash_transfer_id',
+          'id, amount, operation_type, source, created_at, notes, payment_id, cash_transfer_id, registered_by',
         )
         .eq('admin_id', adminId)
         .order('created_at', { ascending: false })
@@ -149,6 +150,10 @@ export default async function MiCajaPage() {
        *  cash_transfer_id → cash_transfers.driver_id → profiles.full_name).
        *  null cuando no aplica o no se pudo resolver. */
       driver_name: string | null;
+      /** Nombre del contador que validó el egreso. Solo aplica cuando
+       *  source='validado_contador'; viene de `registered_by` →
+       *  profiles.full_name. */
+      contador_name: string | null;
     };
 
     type RawMovement = {
@@ -160,6 +165,7 @@ export default async function MiCajaPage() {
       notes: string | null;
       payment_id: string | null;
       cash_transfer_id: string | null;
+      registered_by: string | null;
     };
     const recentRows: RawMovement[] = (recentRes.data ?? []) as RawMovement[];
 
@@ -218,13 +224,33 @@ export default async function MiCajaPage() {
     const leadIds = Array.from(new Set(leadIdByPayment.values()));
     const driverIds = Array.from(new Set(driverIdByTransfer.values()));
 
-    // Round-trip 2 (paralelo): leads + profiles (drivers).
-    const [leadsRes, driversRes] = await Promise.all([
+    // IDs de contadores (registered_by) sólo para los egresos
+    // validado_contador. Otros movimientos tienen `registered_by` =
+    // el mismo admin y no necesitamos resolver su nombre aquí.
+    const contadorIds = Array.from(
+      new Set(
+        recentRows
+          .filter(
+            (r) =>
+              r.source === 'validado_contador' &&
+              r.operation_type !== 'ingreso',
+          )
+          .map((r) => r.registered_by)
+          .filter((x): x is string => !!x),
+      ),
+    );
+
+    // Round-trip 2 (paralelo): leads + profiles (drivers) + profiles
+    // (contadores). Tres queries; sin contadorIds saltamos la tercera.
+    const [leadsRes, driversRes, contadoresRes] = await Promise.all([
       leadIds.length > 0
         ? admin.from('leads').select('id, client_name').in('id', leadIds)
         : Promise.resolve({ data: [], error: null }),
       driverIds.length > 0
         ? admin.from('profiles').select('id, full_name').in('id', driverIds)
+        : Promise.resolve({ data: [], error: null }),
+      contadorIds.length > 0
+        ? admin.from('profiles').select('id, full_name').in('id', contadorIds)
         : Promise.resolve({ data: [], error: null }),
     ]);
     if (leadsRes.error) {
@@ -239,6 +265,12 @@ export default async function MiCajaPage() {
         driversRes.error,
       );
     }
+    if (contadoresRes.error) {
+      console.error(
+        '[MiCajaPage] contadores lookup falló (no fatal):',
+        contadoresRes.error,
+      );
+    }
     const clientNameByLead = new Map<string, string>();
     for (const l of leadsRes.data ?? []) {
       if (l.id) clientNameByLead.set(l.id, l.client_name ?? '');
@@ -246,6 +278,10 @@ export default async function MiCajaPage() {
     const driverNameById = new Map<string, string>();
     for (const d of driversRes.data ?? []) {
       if (d.id) driverNameById.set(d.id, d.full_name ?? '');
+    }
+    const contadorNameById = new Map<string, string>();
+    for (const c of contadoresRes.data ?? []) {
+      if (c.id) contadorNameById.set(c.id, c.full_name ?? '');
     }
 
     const movements: Movement[] = recentRows.map((m) => {
@@ -261,6 +297,10 @@ export default async function MiCajaPage() {
       const driverName = driverId
         ? driverNameById.get(driverId) ?? null
         : null;
+      const contadorName =
+        m.source === 'validado_contador' && m.registered_by
+          ? contadorNameById.get(m.registered_by) ?? null
+          : null;
       return {
         id: m.id,
         amount: Number(m.amount ?? 0),
@@ -275,6 +315,8 @@ export default async function MiCajaPage() {
         notes: m.notes ?? null,
         client_name: clientName && clientName.length > 0 ? clientName : null,
         driver_name: driverName && driverName.length > 0 ? driverName : null,
+        contador_name:
+          contadorName && contadorName.length > 0 ? contadorName : null,
       };
     });
 
@@ -421,7 +463,7 @@ export default async function MiCajaPage() {
                         className="text-sm"
                         style={{ color: 'var(--text-secondary)' }}
                       >
-                        {formatDate(m.created_at)}
+                        {formatDateTimeCDMX(m.created_at)}
                       </td>
                       <td data-label="Tipo">
                         {m.operation_type === 'ingreso' ? (
@@ -446,7 +488,7 @@ export default async function MiCajaPage() {
                         className="text-sm"
                         style={{ color: 'var(--text-secondary)' }}
                       >
-                        {clientCellLabel(m)}
+                        <ClientCell movement={m} />
                       </td>
                       <td
                         data-label="Monto"
@@ -557,52 +599,53 @@ function sourceLabel(source: string): string {
 }
 
 /**
- * Etiqueta de la columna "Cliente" para cada movimiento del historial.
- * Combina la fuente con los datos resueltos en bulk:
- *   - pago_efectivo + client_name      → nombre del cliente del lead.
- *   - chofer + driver_name             → "Chofer · {nombre}".
- *   - chofer sin nombre resuelto       → "Recibido de chofer".
- *   - validado_contador                → "Entregado al contador".
- *   - cualquier otra source            → guion (no aplica cliente).
+ * Celda "Cliente" para cada movimiento del historial. Compone label +
+ * subtexto según la fuente:
+ *   - pago_efectivo: nombre del cliente del lead.
+ *   - chofer: "Chofer · {nombre}" (o "Recibido de chofer" si no se
+ *     resolvió el nombre).
+ *   - validado_contador: badge verde "✅ Validado con contador" +
+ *     subtexto "Por: {nombre del contador}".
+ *   - otras: '—'.
  */
-function clientCellLabel(m: {
-  source: string;
-  client_name: string | null;
-  driver_name: string | null;
-}): string {
+function ClientCell({
+  movement: m,
+}: {
+  movement: {
+    source: string;
+    client_name: string | null;
+    driver_name: string | null;
+    contador_name: string | null;
+  };
+}) {
+  if (m.source === 'validado_contador') {
+    return (
+      <div className="flex flex-col gap-0.5">
+        <span className="badge badge-success" style={{ width: 'fit-content' }}>
+          ✅ Validado con contador
+        </span>
+        {m.contador_name && (
+          <span
+            className="text-[11px]"
+            style={{ color: 'var(--text-tertiary)' }}
+          >
+            Por: {m.contador_name}
+          </span>
+        )}
+      </div>
+    );
+  }
   if (m.source === 'pago_efectivo') {
-    return m.client_name ?? '—';
+    return <span>{m.client_name ?? '—'}</span>;
   }
   if (m.source === 'chofer') {
-    return m.driver_name
-      ? `Chofer · ${m.driver_name}`
-      : 'Recibido de chofer';
+    return (
+      <span>
+        {m.driver_name ? `Chofer · ${m.driver_name}` : 'Recibido de chofer'}
+      </span>
+    );
   }
-  if (m.source === 'validado_contador') {
-    return 'Entregado al contador';
-  }
-  return '—';
-}
-
-/**
- * Formatea una fecha (`YYYY-MM-DD` o ISO timestamp). Detecta el
- * formato fecha-pura para parsearlo en zona local — mismo fix de TZ
- * que /leads y /admin/entregas.
- */
-function formatDate(iso: string | null): string {
-  if (!iso) return '—';
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  const d = m
-    ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-    : new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('es-MX', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return <span>—</span>;
 }
 
 function ErrorState({ message }: { message: string }) {

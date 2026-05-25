@@ -22,6 +22,7 @@ import { StockBadge } from '@/components/ui/Badges';
 import { supabaseClient } from '@/lib/supabase/client';
 import { registerEntryAction, markStockExitAction } from './actions';
 import type { MovementType } from './schema';
+import { formatDateTimeCDMX } from '@/lib/format-date';
 
 export type StockRow = {
   inventory_id: string;
@@ -851,14 +852,4 @@ function colorToHex(name: string): string {
   return '#CBD5E1';
 }
 
-function formatDateTime(iso: string | null): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString('es-MX', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+const formatDateTime = formatDateTimeCDMX;
