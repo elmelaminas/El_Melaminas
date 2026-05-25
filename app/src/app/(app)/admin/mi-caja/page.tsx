@@ -604,8 +604,9 @@ function sourceLabel(source: string): string {
  *   - pago_efectivo: nombre del cliente del lead.
  *   - chofer: "Chofer · {nombre}" (o "Recibido de chofer" si no se
  *     resolvió el nombre).
- *   - validado_contador: badge verde "✅ Validado con contador" +
- *     subtexto "Por: {nombre del contador}".
+ *   - validado_contador: badge verde "✅ Validado con contador",
+ *     subtexto "Por: {contador}" y "Cliente: {cliente}" (cuando el
+ *     egreso tiene payment_id resuelto → lead.client_name).
  *   - otras: '—'.
  */
 function ClientCell({
@@ -630,6 +631,14 @@ function ClientCell({
             style={{ color: 'var(--text-tertiary)' }}
           >
             Por: {m.contador_name}
+          </span>
+        )}
+        {m.client_name && (
+          <span
+            className="text-[11px]"
+            style={{ color: 'var(--text-tertiary)' }}
+          >
+            Cliente: {m.client_name}
           </span>
         )}
       </div>
