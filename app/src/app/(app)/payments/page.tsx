@@ -2,6 +2,7 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import { signEvidenceUrls } from '@/lib/supabase/storage';
 import { PaymentsClient, type PaymentRow } from './payments-client';
+import { getDateWindow } from '../dashboard/constants';
 
 /**
  * Página /payments — listado paginado.
@@ -36,6 +37,11 @@ type RawSearchParams = {
   mes?: string | string[];
   /** Año 4-dígitos — pareja inseparable con `mes`. */
   anio?: string | string[];
+  /** Periodo del dashboard ('dia' | 'semana' | 'mes'). Con `fecha` toma
+   *  prioridad sobre `mes`/`anio` y filtra `paid_at` por la ventana. */
+  periodo?: string | string[];
+  /** Fecha YYYY-MM-DD del dashboard. Sin `periodo` se ignora. */
+  fecha?: string | string[];
   page?: string | string[];
   /** Filtro por estado de adeudo del LEAD asociado al pago.
    *  - 'pendiente' → solo pagos cuyo lead tiene payment_status ≠ 'pagado'
@@ -75,24 +81,48 @@ export default async function PaymentsPage({
     const adeudoFilter = whitelist(pickStr(raw.adeudo), ADEUDO_VALUES);
     const pageNumber = Math.max(1, Number(pickStr(raw.page)) || 1);
 
-    // Filtro mes/anio (ambos opcionales pero deben venir JUNTOS).
-    // Drill-down típico desde el card "Cobrado en el mes" del dashboard.
-    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
-    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
-    const mes =
-      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12 ? mesRaw : 0;
-    const anio =
-      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
-        ? anioRaw
-        : 0;
-    const monthFilterActive = mes > 0 && anio > 0;
-    // `paid_at` es timestamptz — comparamos con ISO completo.
-    const startOfMonthIso = monthFilterActive
-      ? new Date(Date.UTC(anio, mes - 1, 1)).toISOString()
-      : null;
-    const startOfNextMonthIso = monthFilterActive
-      ? new Date(Date.UTC(anio, mes, 1)).toISOString()
-      : null;
+    // Filtro de fecha — dos formas (drill-down desde /dashboard):
+    //   1. `periodo` + `fecha` (nuevo): día/semana/mes con ventana exacta.
+    //   2. `mes` + `anio` (legacy): se mantiene por backwards-compat.
+    // Si vienen ambas, `periodo` gana. `filters.mes/anio` siguen
+    // expuestos al cliente para que el chip "Mes: may/2026" funcione
+    // cuando coincide con un mes calendario (en 'dia'/'semana' quedan
+    // en 0 y el chip no aparece, pero el rango sí se aplica al query).
+    const periodoRaw = pickStr(raw.periodo);
+    const fechaRaw = pickStr(raw.fecha);
+    const usePeriodFilter =
+      (periodoRaw === 'dia' || periodoRaw === 'semana' || periodoRaw === 'mes') &&
+      fechaRaw.length > 0;
+
+    let mes = 0;
+    let anio = 0;
+    let startIsoFilter: string | null = null;
+    let endIsoFilter: string | null = null;
+
+    if (usePeriodFilter) {
+      const window = getDateWindow(periodoRaw, fechaRaw);
+      startIsoFilter = window.startIso;
+      endIsoFilter = window.endIso;
+      if (window.periodo === 'mes') {
+        const [yStr, mStr] = window.fecha.split('-');
+        mes = Number(mStr);
+        anio = Number(yStr);
+      }
+    } else {
+      const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
+      const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
+      mes =
+        Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12 ? mesRaw : 0;
+      anio =
+        Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
+          ? anioRaw
+          : 0;
+      if (mes > 0 && anio > 0) {
+        startIsoFilter = new Date(Date.UTC(anio, mes - 1, 1)).toISOString();
+        endIsoFilter = new Date(Date.UTC(anio, mes, 1)).toISOString();
+      }
+    }
+    const monthFilterActive = startIsoFilter !== null && endIsoFilter !== null;
 
     const admin = supabaseAdmin();
 
@@ -114,10 +144,10 @@ export default async function PaymentsPage({
 
     if (method) query = query.eq('payment_method', method);
     if (paymentType) query = query.eq('payment_type', paymentType);
-    if (monthFilterActive && startOfMonthIso && startOfNextMonthIso) {
+    if (monthFilterActive && startIsoFilter && endIsoFilter) {
       query = query
-        .gte('paid_at', startOfMonthIso)
-        .lt('paid_at', startOfNextMonthIso);
+        .gte('paid_at', startIsoFilter)
+        .lt('paid_at', endIsoFilter);
     }
 
     // Filtro por adeudo. Apoyamos en `leads.payment_status` (que

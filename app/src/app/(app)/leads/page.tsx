@@ -6,6 +6,7 @@ import {
   type FiltersState,
 } from './leads-client';
 import type { Channel, DeliveryStatus, PaymentStatus } from '@/data/mock';
+import { getDateWindow } from '../dashboard/constants';
 
 /**
  * Página /leads — listado paginado con filtros bookmarkables vía URL.
@@ -66,6 +67,12 @@ type RawSearchParams = {
   mes?: string | string[];
   /** Año 4-dígitos — pareja de `mes`. Ambos deben venir juntos para filtrar. */
   anio?: string | string[];
+  /** Periodo del dashboard ('dia' | 'semana' | 'mes'). Cuando viene con
+   *  `fecha` toma prioridad sobre `mes`/`anio` y filtra `sale_date` por
+   *  la ventana correspondiente. */
+  periodo?: string | string[];
+  /** Fecha del dashboard YYYY-MM-DD. Sin `periodo` se ignora. */
+  fecha?: string | string[];
   page?: string | string[];
   /** Tab de color (ver COLOR_FILTER_VALUES). 'all' o vacío = sin filtro. */
   color_filter?: string | string[];
@@ -117,24 +124,57 @@ export default async function LeadsPage({
         : (colorFilterRaw as Exclude<typeof colorFilterRaw, 'all' | ''>);
     const pageNumber = Math.max(1, Number(pickStr(raw.page)) || 1);
 
-    // Filtro mes/anio (ambos opcionales pero deben venir JUNTOS para
-    // aplicar). Si solo viene uno, ignoramos los dos — evita comparaciones
-    // contra ventanas inválidas. Drill-down típico desde /dashboard.
-    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
-    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
-    const mes =
-      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12 ? mesRaw : 0;
-    const anio =
-      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
-        ? anioRaw
-        : 0;
-    const monthFilterActive = mes > 0 && anio > 0;
-    const startOfMonthDate = monthFilterActive
-      ? new Date(Date.UTC(anio, mes - 1, 1)).toISOString().slice(0, 10)
-      : null;
-    const startOfNextMonthDate = monthFilterActive
-      ? new Date(Date.UTC(anio, mes, 1)).toISOString().slice(0, 10)
-      : null;
+    // Filtro de fecha — dos formas válidas (drill-down desde /dashboard):
+    //   1. `periodo` + `fecha` (nuevo): día/semana/mes con fecha exacta.
+    //   2. `mes` + `anio` (legacy): se mantiene por backwards-compat con
+    //      links viejos. Si vienen ambas formas, `periodo` gana.
+    //
+    // `filters.mes` / `filters.anio` se siguen exponiendo al cliente
+    // para que el chip "Mes: may/2026" funcione cuando la ventana coincide
+    // con un mes calendario. Para 'dia' / 'semana' el chip queda en 0
+    // (no representable como un solo mes) — el rango sigue aplicándose
+    // al query, pero el chip no aparece y los filtros del cliente
+    // no preservan la ventana si el usuario cambia otro filtro.
+    const periodoRaw = pickStr(raw.periodo);
+    const fechaRaw = pickStr(raw.fecha);
+    const usePeriodFilter =
+      (periodoRaw === 'dia' || periodoRaw === 'semana' || periodoRaw === 'mes') &&
+      fechaRaw.length > 0;
+
+    let mes = 0;
+    let anio = 0;
+    let rangeStartDate: string | null = null;
+    let rangeEndDateInclusive: string | null = null;
+
+    if (usePeriodFilter) {
+      const window = getDateWindow(periodoRaw, fechaRaw);
+      rangeStartDate = window.startDate;
+      rangeEndDateInclusive = window.endDate;
+      if (window.periodo === 'mes') {
+        const [yStr, mStr] = window.fecha.split('-');
+        mes = Number(mStr);
+        anio = Number(yStr);
+      }
+    } else {
+      const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
+      const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
+      mes =
+        Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12 ? mesRaw : 0;
+      anio =
+        Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
+          ? anioRaw
+          : 0;
+      if (mes > 0 && anio > 0) {
+        rangeStartDate = new Date(Date.UTC(anio, mes - 1, 1))
+          .toISOString()
+          .slice(0, 10);
+        // Último día del mes (inclusive) para parear con la nueva
+        // semántica `<= rangeEndDateInclusive`.
+        const lastDay = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+        rangeEndDateInclusive = `${anio}-${String(mes).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      }
+    }
+    const monthFilterActive = rangeStartDate !== null && rangeEndDateInclusive !== null;
 
     const admin = supabaseAdmin();
 
@@ -185,10 +225,10 @@ export default async function LeadsPage({
       query = query.eq('delivery_status', delivery);
     }
     if (payment) query = query.eq('payment_status', payment);
-    if (monthFilterActive && startOfMonthDate && startOfNextMonthDate) {
+    if (monthFilterActive && rangeStartDate && rangeEndDateInclusive) {
       query = query
-        .gte('sale_date', startOfMonthDate)
-        .lt('sale_date', startOfNextMonthDate);
+        .gte('sale_date', rangeStartDate)
+        .lte('sale_date', rangeEndDateInclusive);
     }
 
     if (qInput) {

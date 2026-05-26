@@ -19,39 +19,40 @@ import {
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import { formatMXN, type Channel } from '@/data/mock';
-import { MonthYearFilter } from './dashboard-client';
-import { MES_LABEL } from './constants';
+import { PeriodFilter } from './dashboard-client';
+import { getDateWindow } from './constants';
 
 /**
  * Dashboard /dashboard.
  *
  * Server Component con un Client Component pequeño embebido (el
- * `<MonthYearFilter>`) para los selectores de mes/año. Todas las queries
- * pesadas se ejecutan server-side; el cliente solo construye URLs nuevas
+ * `<PeriodFilter>`) para elegir el periodo. Todas las queries pesadas
+ * se ejecutan server-side; el cliente solo construye URLs nuevas
  * cuando el usuario cambia el filtro.
  *
  * Filtros vía searchParams (bookmarkable):
- *   - `mes`  (1-12, default = mes actual UTC)
- *   - `anio` (año de 4 dígitos, default = año actual UTC)
+ *   - `periodo` ('dia' | 'semana' | 'mes', default = 'mes')
+ *   - `fecha`   ('YYYY-MM-DD', default = hoy en CDMX)
  *
- * Métricas que respetan el rango de mes seleccionado:
- *   - Leads del mes              (`leads.sale_date` ∈ [start, nextStart))
- *   - Cobrado en el mes          (`payments.paid_at` ∈ [start, nextStart))
- *   - Efectivo validado del mes  (`admin_cash_register` egresos
- *     con source='validado_contador', `created_at` ∈ [start, nextStart))
+ * La ventana real (startDate/endDate/startIso/endIso) se calcula con
+ * `getDateWindow()` y se aplica a todas las queries con rango:
+ *   - Leads del periodo           (`leads.sale_date` ∈ [startDate, endDate])
+ *   - Cobrado en el periodo       (`payments.paid_at` ∈ [startIso, endIso))
+ *   - Efectivo validado del periodo (`admin_cash_register` egresos
+ *     con source='validado_contador', `created_at` ∈ [startIso, endIso))
  *
  * Métricas que NO respetan el rango (siempre estado actual):
  *   - Entregas pendientes (operativo: lo que hay AHORA por entregar)
  *   - Stock bajo          (operativo: lo que hay AHORA bajo el mínimo)
  *
- * Chart de canales: últimos 7 días (independiente del filtro mensual,
+ * Chart de canales: últimos 7 días (independiente del filtro,
  * intencionalmente — es una vista de tendencia corta, no histórica).
+ *
+ * Ventanas TZ-aware: las fechas-puras se anclan a medianoche CDMX
+ * (UTC-6 fijo desde 2022) para evitar drift de 6h en el filtro por día.
  *
  * Política de errores: try/catch envolvente + ErrorState con el mensaje
  * preciso, mismo patrón que el resto del proyecto.
- *
- * Ventanas en UTC. Para precisión exacta TZ MX -06:00, parametriza la
- * zona horaria al construir las fechas.
  */
 export const dynamic = 'force-dynamic';
 
@@ -83,8 +84,8 @@ const CHANNEL_BAR_META: Record<string, { label: string; color: string }> = {
 };
 
 type RawSearchParams = {
-  mes?: string | string[];
-  anio?: string | string[];
+  periodo?: string | string[];
+  fecha?: string | string[];
 };
 
 function pickStr(v: string | string[] | undefined): string {
@@ -101,26 +102,14 @@ export default async function DashboardPage({
     const raw = await searchParams;
     const now = new Date();
 
-    // Validación + defaults para mes/anio. Si el usuario manipula la URL
-    // a `?mes=99&anio=abc`, caemos al actual silenciosamente.
-    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
-    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
-    const mes =
-      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12
-        ? mesRaw
-        : now.getUTCMonth() + 1;
-    const anio =
-      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
-        ? anioRaw
-        : now.getUTCFullYear();
-
-    // Rango UTC del mes seleccionado: [start, startNextMonth).
-    // Date.UTC con month=12 normaliza correctamente a Enero del año + 1.
-    const startOfMonthIso = new Date(Date.UTC(anio, mes - 1, 1)).toISOString();
-    const startOfNextMonthIso = new Date(Date.UTC(anio, mes, 1)).toISOString();
-    // Para columnas DATE (sale_date), comparamos como YYYY-MM-DD.
-    const startOfMonthDate = startOfMonthIso.slice(0, 10);
-    const startOfNextMonthDate = startOfNextMonthIso.slice(0, 10);
+    // Ventana de fechas para el periodo activo. `getDateWindow` valida
+    // y normaliza periodo+fecha; entradas inválidas caen a los defaults
+    // ('mes' + hoy CDMX) sin romper la página.
+    const window = getDateWindow(pickStr(raw.periodo), pickStr(raw.fecha));
+    const { startDate, endDate, startIso, endIso, periodo, fecha } = window;
+    // `sale_date` es DATE (YYYY-MM-DD); usamos comparación inclusiva con
+    // el último día del periodo. Para timestamptz, usamos `< endIso`
+    // donde endIso es el primer instante del día siguiente al endDate.
 
     // Ventana de últimos 7 días para el chart (independiente del filtro).
     const sevenDaysAgo = new Date(
@@ -155,42 +144,42 @@ export default async function DashboardPage({
       cubrecantoLeadsResult,
       cubrecantoMetersResult,
     ] = await Promise.all([
-      // 1. Leads del mes (sale_date ∈ [start, nextStart))
+      // 1. Leads del periodo (sale_date ∈ [startDate, endDate])
       admin
         .from('leads')
         .select('id', { count: 'exact', head: true })
-        .gte('sale_date', startOfMonthDate)
-        .lt('sale_date', startOfNextMonthDate)
+        .gte('sale_date', startDate)
+        .lte('sale_date', endDate)
         .is('deleted_at', null),
-      // 2. Pagos exitosos del mes (paid_at ∈ [start, nextStart))
+      // 2. Pagos exitosos del periodo (paid_at ∈ [startIso, endIso))
       admin
         .from('payments')
         .select('amount')
         .eq('status', 'exitoso')
-        .gte('paid_at', startOfMonthIso)
-        .lt('paid_at', startOfNextMonthIso),
-      // 3. Entregas pendientes (NO filtra por mes — operativo actual)
+        .gte('paid_at', startIso)
+        .lt('paid_at', endIso),
+      // 3. Entregas pendientes (NO filtra por periodo — operativo actual)
       admin
         .from('leads')
         .select('id', { count: 'exact', head: true })
         .in('delivery_status', ['pendiente', 'en_transito'])
         .is('deleted_at', null),
-      // 4. Inventory para stock bajo (NO filtra por mes)
+      // 4. Inventory para stock bajo (NO filtra por periodo)
       admin
         .from('inventory')
         .select('stock_total, stock_committed, stock_minimum'),
-      // 5. Efectivo validado del mes — refactor 2026-05: la
+      // 5. Efectivo validado del periodo — refactor 2026-05: la
       //    validación ahora vive en `admin_cash_register` con
       //    source='validado_contador' (el contador valida la caja
-      //    del admin). Sumamos los egresos del mes.
+      //    del admin). Sumamos los egresos del periodo.
       admin
         .from('admin_cash_register')
         .select('amount')
         .eq('operation_type', 'egreso')
         .eq('source', 'validado_contador')
-        .gte('created_at', startOfMonthIso)
-        .lt('created_at', startOfNextMonthIso),
-      // 6. Gasto en materiales del mes — suma de
+        .gte('created_at', startIso)
+        .lt('created_at', endIso),
+      // 6. Gasto en materiales del periodo — suma de
       //    inventory_movements WHERE movement_type='entrada' AND
       //    unit_cost IS NOT NULL AND created_at ∈ rango.
       //    Sumamos quantity * unit_cost en JS porque PostgREST no
@@ -202,8 +191,8 @@ export default async function DashboardPage({
         .select('quantity, unit_cost')
         .eq('movement_type', 'entrada')
         .not('unit_cost', 'is', null)
-        .gte('created_at', startOfMonthIso)
-        .lt('created_at', startOfNextMonthIso),
+        .gte('created_at', startIso)
+        .lt('created_at', endIso),
       // 7. Chart por canal (últimos 7 días — independiente)
       admin
         .from('leads')
@@ -228,9 +217,9 @@ export default async function DashboardPage({
             .eq('id', user.id)
             .maybeSingle()
         : Promise.resolve({ data: null, error: null }),
-      // 10. Caja personal del admin: saldo del mes en
+      // 10. Caja personal del admin: saldo del periodo en
       //     `admin_cash_register`. SUM(ingresos) - SUM(egresos) del
-      //     usuario actual filtrado por mes. Si la tabla no existe
+      //     usuario actual filtrado por periodo. Si la tabla no existe
       //     todavía (migración pendiente), tratamos como error
       //     non-fatal y mostramos $0 en la card.
       user
@@ -238,49 +227,50 @@ export default async function DashboardPage({
             .from('admin_cash_register')
             .select('amount, operation_type')
             .eq('admin_id', user.id)
-            .gte('created_at', startOfMonthIso)
-            .lt('created_at', startOfNextMonthIso)
+            .gte('created_at', startIso)
+            .lt('created_at', endIso)
         : Promise.resolve({ data: [], error: null }),
-      // 11. Hojas vendidas del mes — Σ lead_colors.quantity unida con
-      //     leads del mes con has_hojas=true. PostgREST no soporta SUM
-      //     en queries con join filtradas (necesitaríamos una vista),
-      //     así que traemos las filas y sumamos en memoria. Cota: 1
-      //     fila por color por lead — varios cientos al mes en el
+      // 11. Hojas vendidas del periodo — Σ lead_colors.quantity unida
+      //     con leads del periodo con has_hojas=true. PostgREST no
+      //     soporta SUM en queries con join filtradas (necesitaríamos
+      //     una vista), así que traemos las filas y sumamos en memoria.
+      //     Cota: 1 fila por color por lead — varios cientos en el
       //     peor caso. Aceptable.
       admin
         .from('lead_colors')
         .select('quantity, leads!inner(sale_date, deleted_at, has_hojas)')
         .eq('leads.has_hojas', true)
         .is('leads.deleted_at', null)
-        .gte('leads.sale_date', startOfMonthDate)
-        .lt('leads.sale_date', startOfNextMonthDate),
-      // 12. Cubrecantos del mes — conteo de leads con has_cubrecanto=true
-      //     y suma de edgebanding_manual_cost para la métrica "monto
-      //     facturado". Una sola query: count exact + select de los
-      //     montos para sumar JS-side.
+        .gte('leads.sale_date', startDate)
+        .lte('leads.sale_date', endDate),
+      // 12. Cubrecantos del periodo — conteo de leads con
+      //     has_cubrecanto=true y suma de edgebanding_manual_cost para
+      //     la métrica "monto facturado". Una sola query: count exact
+      //     + select de los montos para sumar JS-side.
       admin
         .from('leads')
         .select('edgebanding_manual_cost', { count: 'exact' })
         .eq('has_cubrecanto', true)
         .is('deleted_at', null)
-        .gte('sale_date', startOfMonthDate)
-        .lt('sale_date', startOfNextMonthDate),
-      // 13. Metros de cubrecanto vendidos — Σ lead_edgebanding_colors.quantity
-      //     unidos con leads del mes. Si la tabla no existe todavía
-      //     (migración pendiente para algunos entornos) trata como 0.
+        .gte('sale_date', startDate)
+        .lte('sale_date', endDate),
+      // 13. Metros de cubrecanto vendidos — Σ
+      //     lead_edgebanding_colors.quantity unidos con leads del
+      //     periodo. Si la tabla no existe todavía (migración pendiente
+      //     para algunos entornos) trata como 0.
       admin
         .from('lead_edgebanding_colors')
         .select('quantity, leads!inner(sale_date, deleted_at)')
         .is('leads.deleted_at', null)
-        .gte('leads.sale_date', startOfMonthDate)
-        .lt('leads.sale_date', startOfNextMonthDate),
+        .gte('leads.sale_date', startDate)
+        .lte('leads.sale_date', endDate),
     ]);
 
     if (leadsMonthResult.error) {
-      return <ErrorState message={`Error leyendo leads del mes: ${leadsMonthResult.error.message}`} />;
+      return <ErrorState message={`Error leyendo leads del periodo: ${leadsMonthResult.error.message}`} />;
     }
     if (paymentsMonthResult.error) {
-      return <ErrorState message={`Error leyendo pagos del mes: ${paymentsMonthResult.error.message}`} />;
+      return <ErrorState message={`Error leyendo pagos del periodo: ${paymentsMonthResult.error.message}`} />;
     }
     if (deliveriesPendingResult.error) {
       return <ErrorState message={`Error leyendo entregas: ${deliveriesPendingResult.error.message}`} />;
@@ -309,8 +299,8 @@ export default async function DashboardPage({
       return <ErrorState message={`Error leyendo recientes: ${recentLeadsResult.error.message}`} />;
     }
 
-    const leadsMonth = leadsMonthResult.count ?? 0;
-    const paidMonth = (paymentsMonthResult.data ?? []).reduce(
+    const leadsPeriod = leadsMonthResult.count ?? 0;
+    const paidPeriod = (paymentsMonthResult.data ?? []).reduce(
       (s, p) => s + Number(p.amount ?? 0),
       0,
     );
@@ -322,19 +312,19 @@ export default async function DashboardPage({
       const available = Math.max(0, total - committed);
       return available <= minimum ? c + 1 : c;
     }, 0);
-    const cashValidatedMonth = (cashValidatedResult.data ?? []).reduce(
+    const cashValidatedPeriod = (cashValidatedResult.data ?? []).reduce(
       (s, t) => s + Number(t.amount ?? 0),
       0,
     );
-    // Σ (quantity * unit_cost) — entradas con costo registrado en el mes.
+    // Σ (quantity * unit_cost) — entradas con costo registrado en el periodo.
     // Si unit_cost es null la query ya lo filtró; igual usamos `?? 0` por
     // defensa.
-    const materialsSpendMonth = (materialsSpendResult.data ?? []).reduce(
+    const materialsSpendPeriod = (materialsSpendResult.data ?? []).reduce(
       (s, m) => s + Number(m.quantity ?? 0) * Number(m.unit_cost ?? 0),
       0,
     );
 
-    // Hojas vendidas (Σ quantity de lead_colors del mes con has_hojas).
+    // Hojas vendidas (Σ quantity de lead_colors del periodo con has_hojas).
     // Si la query falla, mostramos 0 (no fatal — métrica informativa).
     if (hojasSoldResult.error) {
       console.error(
@@ -347,7 +337,7 @@ export default async function DashboardPage({
       0,
     );
 
-    // Cubrecantos del mes: cuántos leads + monto facturado.
+    // Cubrecantos del periodo: cuántos leads + monto facturado.
     if (cubrecantoLeadsResult.error) {
       console.error(
         '[DashboardPage] cubrecanto leads select falló (no fatal):',
@@ -372,7 +362,7 @@ export default async function DashboardPage({
       0,
     );
 
-    // Saldo de la caja personal del admin en el mes:
+    // Saldo de la caja personal del admin en el periodo:
     // SUM(ingresos) - SUM(egresos). 'validacion' contribuye igual que
     // 'egreso' (movimiento de salida hacia el contador).
     if (adminCashResult.error) {
@@ -381,7 +371,7 @@ export default async function DashboardPage({
         adminCashResult.error,
       );
     }
-    const adminCashMonth = (adminCashResult.data ?? []).reduce((s, r) => {
+    const adminCashPeriod = (adminCashResult.data ?? []).reduce((s, r) => {
       const amt = Number(r.amount ?? 0);
       return r.operation_type === 'ingreso' ? s + amt : s - amt;
     }, 0);
@@ -434,7 +424,7 @@ export default async function DashboardPage({
       profileResult.data?.full_name ?? user?.email ?? 'Bienvenido';
     const firstName = fullName.split(' ')[0];
 
-    const monthLabel = MES_LABEL[mes] ?? '—';
+    const periodParams = `periodo=${periodo}&fecha=${fecha}`;
 
     return (
       <div className="flex flex-col gap-6">
@@ -448,54 +438,54 @@ export default async function DashboardPage({
               Buen día, {firstName} 👋
             </h1>
             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-              Métricas de {monthLabel} {anio}
+              {window.subtitleLabel}
             </p>
           </div>
           <div id="dashboard-filter">
-            <MonthYearFilter mes={mes} anio={anio} />
+            <PeriodFilter periodo={periodo} fecha={fecha} />
           </div>
         </div>
 
-        {/* Metric cards — todas clickeables. Cada href incluye los
-            mismos `mes`/`anio` activos para que el drill-down respete el
-            filtro del dashboard, EXCEPTO "Stock bajo" que va a /warehouse
-            sin params (el stock es estado actual, no tiene rango de mes). */}
+        {/* Metric cards — todas clickeables. Cada href incluye periodo+fecha
+            para que el drill-down respete el filtro del dashboard, EXCEPTO
+            "Stock bajo" que va a /warehouse sin params (el stock es estado
+            actual, no tiene rango). */}
         <div id="dashboard-metrics" className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
           <MetricCard
             icon={<ClipboardList size={20} />}
             iconBg="#DBEAFE"
             iconColor="#1E40AF"
-            label="Leads del mes"
-            value={leadsMonth.toString()}
-            unit={leadsMonth === 1 ? 'lead registrado' : 'leads registrados'}
-            href={`/leads?mes=${mes}&anio=${anio}`}
+            label="Leads del periodo"
+            value={leadsPeriod.toString()}
+            unit={leadsPeriod === 1 ? 'lead registrado' : 'leads registrados'}
+            href={`/leads?${periodParams}`}
           />
           <MetricCard
             icon={<DollarSign size={20} />}
             iconBg="#DCFCE7"
             iconColor="#15803D"
-            label="Cobrado en el mes"
-            value={formatMXN(paidMonth)}
-            unit="pagos exitosos del mes"
-            href={`/payments?mes=${mes}&anio=${anio}`}
+            label="Cobrado en el periodo"
+            value={formatMXN(paidPeriod)}
+            unit="pagos exitosos del periodo"
+            href={`/payments?${periodParams}`}
           />
           <MetricCard
             icon={<Wallet size={20} />}
             iconBg="#E0E7FF"
             iconColor="#1E3A8A"
             label="Efectivo validado"
-            value={formatMXN(cashValidatedMonth)}
-            unit="entregado y conciliado en el mes"
-            href={`/admin/caja?tab=validados&mes=${mes}&anio=${anio}`}
+            value={formatMXN(cashValidatedPeriod)}
+            unit="entregado y conciliado en el periodo"
+            href={`/admin/caja?tab=validados&${periodParams}`}
           />
           <MetricCard
             icon={<PackagePlus size={20} />}
             iconBg="#FFEDD5"
             iconColor="#C2410C"
             label="Gasto en materiales"
-            value={formatMXN(materialsSpendMonth)}
-            unit="invertido en entradas del mes"
-            href={`/warehouse/movements?type=entrada&mes=${mes}&anio=${anio}`}
+            value={formatMXN(materialsSpendPeriod)}
+            unit="invertido en entradas del periodo"
+            href={`/warehouse/movements?type=entrada&${periodParams}`}
           />
           <MetricCard
             icon={<Truck size={20} />}
@@ -504,7 +494,7 @@ export default async function DashboardPage({
             label="Entregas pendientes"
             value={deliveriesPending.toString()}
             unit="por entregar o en tránsito (actual)"
-            href={`/leads?delivery=pendiente&mes=${mes}&anio=${anio}`}
+            href={`/leads?delivery=pendiente&${periodParams}`}
           />
           <MetricCard
             icon={<TriangleAlert size={20} />}
@@ -519,8 +509,8 @@ export default async function DashboardPage({
             icon={<Banknote size={20} />}
             iconBg="#DCFCE7"
             iconColor="#14532D"
-            label="Mi efectivo (mes)"
-            value={formatMXN(adminCashMonth)}
+            label="Mi efectivo"
+            value={formatMXN(adminCashPeriod)}
             unit="cobrado en efectivo directo"
           />
           <MetricCard
@@ -529,8 +519,8 @@ export default async function DashboardPage({
             iconColor="#1D4ED8"
             label="Hojas vendidas"
             value={totalHojas.toString()}
-            unit="hojas en pedidos del mes"
-            href={`/leads?mes=${mes}&anio=${anio}&color_filter=azul`}
+            unit="hojas en pedidos del periodo"
+            href={`/leads?${periodParams}&color_filter=azul`}
           />
           <MetricCard
             icon={<Ruler size={20} />}
@@ -541,9 +531,9 @@ export default async function DashboardPage({
             unit={
               totalMetrosCubrecanto > 0
                 ? `${totalMetrosCubrecanto.toLocaleString('es-MX')} m · ${formatMXN(totalCubrecantoMonto)}`
-                : 'pedidos con cubrecanto del mes'
+                : 'pedidos con cubrecanto del periodo'
             }
-            href={`/leads?mes=${mes}&anio=${anio}`}
+            href={`/leads?${periodParams}`}
           />
         </div>
 
