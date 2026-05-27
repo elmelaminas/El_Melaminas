@@ -35,6 +35,10 @@ import {
 export type DeliveryCardData = {
   id: string;
   client_name: string;
+  /** Teléfono del cliente. Vacío si el lead no registra teléfono.
+   *  La card lo muestra como `tel:` clickeable para que el chofer
+   *  pueda llamar/whatsappear sin teclear. */
+  phone: string;
   address: string;
   maps_url: string;
   total_amount: number;
@@ -528,6 +532,29 @@ function DeliveryCard({
           </div>
         </div>
         <DeliveryBadge status={delivery.delivery_status} />
+      </div>
+
+      {/* Teléfono del cliente — clickeable como tel: link para que el
+          chofer pueda marcar directo desde el móvil. Si falta, mostramos
+          un placeholder gris. */}
+      <div className="text-sm mb-2">
+        {delivery.phone ? (
+          <a
+            href={`tel:${delivery.phone}`}
+            style={{
+              color: 'var(--brand-primary)',
+              textDecoration: 'none',
+              fontWeight: 500,
+            }}
+            aria-label={`Llamar a ${delivery.client_name} al ${delivery.phone}`}
+          >
+            📱 {delivery.phone}
+          </a>
+        ) : (
+          <span style={{ color: 'var(--text-tertiary)' }}>
+            Sin teléfono
+          </span>
+        )}
       </div>
 
       {/* Address */}

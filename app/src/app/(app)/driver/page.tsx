@@ -72,7 +72,7 @@ export default async function DriverPage() {
       admin
         .from('leads')
         .select(
-          `id, client_name, address, maps_url, total_amount, payment_status, delivery_status,
+          `id, client_name, phone, address, maps_url, total_amount, payment_status, delivery_status,
            delivery_date, delivery_order, delivery_cost, purchase_type,
            failed_delivery_reason, failed_delivery_photo_url,
            lead_colors (
@@ -182,6 +182,7 @@ export default async function DriverPage() {
     type RawLead = {
       id: string;
       client_name: string;
+      phone: string | null;
       address: string | null;
       maps_url: string | null;
       total_amount: number | string | null;
@@ -221,6 +222,7 @@ export default async function DriverPage() {
         return {
           id: l.id,
           client_name: l.client_name,
+          phone: l.phone ?? '',
           address: l.address ?? '',
           maps_url: l.maps_url ?? '',
           total_amount: total,
