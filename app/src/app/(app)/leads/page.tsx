@@ -45,6 +45,12 @@ const PAYMENT_VALUES = [
   'pagado',
   'cancelado',
 ] as const;
+const SALE_TYPE_VALUES = [
+  'primer_contacto',
+  'recompra',
+  'seguimiento',
+  'venta_empleado',
+] as const;
 
 // Filtro por color de fila (tabs encima de la tabla). Valores cubren
 // los 4 automáticos + 2 manuales. 'all' / vacío = sin filtro.
@@ -63,6 +69,10 @@ type RawSearchParams = {
   channel?: string | string[];
   delivery?: string | string[];
   payment?: string | string[];
+  /** Tipo de venta — primer_contacto | recompra | seguimiento | venta_empleado. */
+  sale_type?: string | string[];
+  /** UUID del vendedor; valor especial 'sin_asignar' = leads con seller_id NULL. */
+  seller_id?: string | string[];
   /** Mes 1-12 — si presente filtra `sale_date` por la ventana del mes. */
   mes?: string | string[];
   /** Año 4-dígitos — pareja de `mes`. Ambos deben venir juntos para filtrar. */
@@ -115,6 +125,16 @@ export default async function LeadsPage({
     const channel = whitelist(pickStr(raw.channel), CHANNEL_VALUES);
     const delivery = whitelist(pickStr(raw.delivery), DELIVERY_VALUES);
     const payment = whitelist(pickStr(raw.payment), PAYMENT_VALUES);
+    const saleType = whitelist(pickStr(raw.sale_type), SALE_TYPE_VALUES);
+    // `seller_id` no tiene whitelist enum: o es un UUID válido, o el valor
+    // especial 'sin_asignar' (= leads con seller_id NULL). Validamos
+    // forma de UUID con regex liviano; cualquier otra cosa cae a '' (sin filtro)
+    // — evita que un valor manipulado reviente el query con error de UUID.
+    const sellerRaw = pickStr(raw.seller_id);
+    const sellerFilter: string =
+      sellerRaw === 'sin_asignar' || /^[0-9a-f-]{36}$/i.test(sellerRaw)
+        ? sellerRaw
+        : '';
     const colorFilterRaw = whitelist(pickStr(raw.color_filter), COLOR_FILTER_VALUES);
     // 'all' y '' son equivalentes (sin filtro). Normalizamos a '' para
     // simplificar el ramo `if (colorFilter)` abajo.
@@ -199,6 +219,28 @@ export default async function LeadsPage({
       console.error('[LeadsPage] role lookup falló (no fatal):', e);
     }
 
+    // Vendedores activos para el filtro del dropdown. Best-effort: si
+    // falla, el select queda con sólo "Todos" y "Sin vendedor". Se
+    // ordena por nombre para que el dropdown sea predecible.
+    let activeSellers: { id: string; name: string }[] = [];
+    try {
+      const { data: sellersData, error: sellersErr } = await admin
+        .from('sellers')
+        .select('id, name')
+        .eq('is_active', true)
+        .order('name', { ascending: true });
+      if (sellersErr) {
+        console.error('[LeadsPage] sellers lookup falló (no fatal):', sellersErr);
+      } else {
+        activeSellers = (sellersData ?? []).map((s) => ({
+          id: String(s.id),
+          name: s.name ?? '—',
+        }));
+      }
+    } catch (e) {
+      console.error('[LeadsPage] sellers excepción (no fatal):', e);
+    }
+
     // Construimos la query con todos los filtros antes del range, para
     // que el `count: 'exact'` cuente solo los rows que cumplen los
     // filtros (no toda la tabla). PostgREST devuelve el count en el header
@@ -225,6 +267,12 @@ export default async function LeadsPage({
       query = query.eq('delivery_status', delivery);
     }
     if (payment) query = query.eq('payment_status', payment);
+    if (saleType) query = query.eq('sale_type', saleType);
+    if (sellerFilter === 'sin_asignar') {
+      query = query.is('seller_id', null);
+    } else if (sellerFilter) {
+      query = query.eq('seller_id', sellerFilter);
+    }
     if (monthFilterActive && rangeStartDate && rangeEndDateInclusive) {
       query = query
         .gte('sale_date', rangeStartDate)
@@ -452,6 +500,8 @@ export default async function LeadsPage({
       channel,
       delivery,
       payment,
+      sale_type: saleType,
+      seller_id: sellerFilter,
       mes: monthFilterActive ? mes : 0,
       anio: monthFilterActive ? anio : 0,
       color_filter: colorFilter,
@@ -467,6 +517,7 @@ export default async function LeadsPage({
         filters={filters}
         contraEntregaLeadIds={contraEntregaLeadIds}
         currentUserRole={currentUserRole}
+        sellers={activeSellers}
       />
     );
   } catch (err) {

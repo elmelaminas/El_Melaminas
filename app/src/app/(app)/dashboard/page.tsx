@@ -143,6 +143,7 @@ export default async function DashboardPage({
       hojasSoldResult,
       cubrecantoLeadsResult,
       cubrecantoMetersResult,
+      sellerSummaryResult,
     ] = await Promise.all([
       // 1. Leads del periodo (sale_date ∈ [startDate, endDate])
       admin
@@ -264,6 +265,16 @@ export default async function DashboardPage({
         .is('leads.deleted_at', null)
         .gte('leads.sale_date', startDate)
         .lte('leads.sale_date', endDate),
+      // 14. Resumen por vendedor del periodo. PostgREST no soporta
+      //     GROUP BY ni SUM directos; traemos los leads del periodo
+      //     (seller_id + métricas) y agrupamos JS-side. Cota: ~cientos
+      //     de leads por mes en el caso típico — aceptable.
+      admin
+        .from('leads')
+        .select('seller_id, sheets_count, total_amount')
+        .is('deleted_at', null)
+        .gte('sale_date', startDate)
+        .lte('sale_date', endDate),
     ]);
 
     if (leadsMonthResult.error) {
@@ -424,6 +435,85 @@ export default async function DashboardPage({
       profileResult.data?.full_name ?? user?.email ?? 'Bienvenido';
     const firstName = fullName.split(' ')[0];
 
+    // Resumen por vendedor — agrupamos los leads del periodo en memoria
+    // (PostgREST no soporta GROUP BY) y enriquecemos con el nombre del
+    // vendedor en un solo SELECT bulk. Best-effort: si la query falla,
+    // la sección se omite del UI (queda como `null`) en lugar de tirar
+    // el dashboard entero.
+    if (sellerSummaryResult.error) {
+      console.error(
+        '[DashboardPage] seller summary select falló (no fatal):',
+        sellerSummaryResult.error,
+      );
+    }
+    type SellerSummaryRow = {
+      seller_id: string | null;
+      seller_name: string;
+      total_leads: number;
+      total_hojas: number;
+      total_monto: number;
+    };
+    const sellerAgg = new Map<
+      string,
+      { total_leads: number; total_hojas: number; total_monto: number }
+    >();
+    for (const row of sellerSummaryResult.data ?? []) {
+      const key = (row.seller_id as string | null) ?? '__none__';
+      const prev = sellerAgg.get(key) ?? {
+        total_leads: 0,
+        total_hojas: 0,
+        total_monto: 0,
+      };
+      prev.total_leads += 1;
+      prev.total_hojas += Number(row.sheets_count ?? 0);
+      prev.total_monto += Number(row.total_amount ?? 0);
+      sellerAgg.set(key, prev);
+    }
+    const sellerIdsNeedingName = Array.from(sellerAgg.keys()).filter(
+      (k) => k !== '__none__',
+    );
+    const sellerNameById = new Map<string, string>();
+    if (sellerIdsNeedingName.length > 0) {
+      try {
+        const { data: sellerNamesData, error: sellerNamesErr } = await admin
+          .from('sellers')
+          .select('id, name')
+          .in('id', sellerIdsNeedingName);
+        if (sellerNamesErr) {
+          console.error(
+            '[DashboardPage] seller names lookup falló (no fatal):',
+            sellerNamesErr,
+          );
+        } else {
+          for (const s of sellerNamesData ?? []) {
+            sellerNameById.set(String(s.id), (s.name as string) ?? '—');
+          }
+        }
+      } catch (e) {
+        console.error('[DashboardPage] seller names excepción (no fatal):', e);
+      }
+    }
+    const sellerSummary: SellerSummaryRow[] = Array.from(sellerAgg.entries())
+      .map(([key, v]) => ({
+        seller_id: key === '__none__' ? null : key,
+        seller_name:
+          key === '__none__'
+            ? 'Sin vendedor'
+            : sellerNameById.get(key) ?? '—',
+        total_leads: v.total_leads,
+        total_hojas: v.total_hojas,
+        total_monto: v.total_monto,
+      }))
+      .sort((a, b) => b.total_monto - a.total_monto);
+    const sellerSummaryTotals = sellerSummary.reduce(
+      (acc, r) => ({
+        leads: acc.leads + r.total_leads,
+        hojas: acc.hojas + r.total_hojas,
+        monto: acc.monto + r.total_monto,
+      }),
+      { leads: 0, hojas: 0, monto: 0 },
+    );
+
     const periodParams = `periodo=${periodo}&fecha=${fecha}`;
 
     return (
@@ -536,6 +626,76 @@ export default async function DashboardPage({
             href={`/leads?${periodParams}`}
           />
         </div>
+
+        {/* Resumen de ventas por vendedor en el periodo. Ordenado por
+            total vendido desc; primera fila se destaca con fondo. Si no
+            hay leads en el rango, la sección no se muestra. */}
+        {sellerSummary.length > 0 && (
+          <div id="dashboard-seller-summary" className="card overflow-hidden">
+            <div
+              className="px-6 py-4 border-b"
+              style={{ borderColor: 'var(--border)' }}
+            >
+              <h3 className="font-semibold">Ventas por vendedor</h3>
+              <p
+                className="text-xs"
+                style={{ color: 'var(--text-tertiary)' }}
+              >
+                Resumen del período seleccionado
+              </p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="tbl">
+                <thead>
+                  <tr>
+                    <th>Vendedor</th>
+                    <th className="text-center">Leads</th>
+                    <th className="text-center">Hojas vendidas</th>
+                    <th className="text-right">Total vendido</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sellerSummary.map((row, idx) => (
+                    <tr
+                      key={row.seller_id ?? '__none__'}
+                      style={
+                        idx === 0
+                          ? { background: '#ECFDF5' }
+                          : undefined
+                      }
+                    >
+                      <td className="font-medium">{row.seller_name}</td>
+                      <td className="text-center">{row.total_leads}</td>
+                      <td className="text-center">
+                        {row.total_hojas.toLocaleString('es-MX')}
+                      </td>
+                      <td className="text-right font-semibold">
+                        {formatMXN(row.total_monto)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr
+                    style={{
+                      background: 'var(--bg-subtle)',
+                      fontWeight: 600,
+                    }}
+                  >
+                    <td>Total</td>
+                    <td className="text-center">{sellerSummaryTotals.leads}</td>
+                    <td className="text-center">
+                      {sellerSummaryTotals.hojas.toLocaleString('es-MX')}
+                    </td>
+                    <td className="text-right">
+                      {formatMXN(sellerSummaryTotals.monto)}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+        )}
 
         {/* Chart de canales (últimos 7 días) */}
         <div id="dashboard-chart" className="card p-6">

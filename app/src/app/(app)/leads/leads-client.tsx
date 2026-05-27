@@ -121,6 +121,15 @@ export type FiltersState = {
   // en_transito) automáticamente.
   delivery: '' | 'pendiente' | 'entregado' | 'cancelado';
   payment: '' | 'pendiente' | 'parcial' | 'pagado' | 'cancelado';
+  /** Tipo de venta del lead. '' = todos. */
+  sale_type:
+    | ''
+    | 'primer_contacto'
+    | 'recompra'
+    | 'seguimiento'
+    | 'venta_empleado';
+  /** UUID del vendedor, o 'sin_asignar' (= seller_id IS NULL), o '' (sin filtro). */
+  seller_id: string;
   /** Mes 1-12; 0 = sin filtro de mes. Pareja inseparable con `anio`. */
   mes: number;
   /** Año 4-dígitos; 0 = sin filtro. */
@@ -153,6 +162,14 @@ const PAYMENT_OPTS: { value: FiltersState['payment']; label: string }[] = [
   { value: 'parcial', label: 'Parcial' },
   { value: 'pagado', label: 'Pagado' },
   { value: 'cancelado', label: 'Cancelado' },
+];
+
+const SALE_TYPE_OPTS: { value: FiltersState['sale_type']; label: string }[] = [
+  { value: '', label: 'Todos los tipos' },
+  { value: 'primer_contacto', label: 'Primer contacto' },
+  { value: 'recompra', label: 'Recompra' },
+  { value: 'seguimiento', label: 'Seguimiento' },
+  { value: 'venta_empleado', label: 'Venta empleado' },
 ];
 
 const DEBOUNCE_MS = 300;
@@ -202,6 +219,7 @@ export function LeadsClient({
   filters,
   contraEntregaLeadIds,
   currentUserRole,
+  sellers,
 }: {
   leads: LeadRow[];
   total: number;
@@ -216,6 +234,9 @@ export function LeadsClient({
   /** Rol del usuario logueado. Se usa para gatear el botón "Eliminar
    *  lead" (solo admin/admin2). Vacío = no autenticado o lookup falló. */
   currentUserRole: string;
+  /** Lista de vendedores activos para el dropdown del filtro. Sin
+   *  esta lista el filtro queda con sólo "Todos" + "Sin vendedor". */
+  sellers: { id: string; name: string }[];
 }) {
   const canDeleteLead =
     currentUserRole === 'admin' || currentUserRole === 'admin2';
@@ -237,6 +258,8 @@ export function LeadsClient({
       filters.channel ||
         filters.delivery ||
         filters.payment ||
+        filters.sale_type ||
+        filters.seller_id ||
         (filters.mes > 0 && filters.anio > 0),
     ),
   );
@@ -266,6 +289,8 @@ export function LeadsClient({
       channel: string;
       delivery: string;
       payment: string;
+      sale_type: string;
+      seller_id: string;
       page: number;
       mes: number;
       anio: number;
@@ -277,6 +302,8 @@ export function LeadsClient({
       channel: next.channel ?? filters.channel,
       delivery: next.delivery ?? filters.delivery,
       payment: next.payment ?? filters.payment,
+      sale_type: next.sale_type ?? filters.sale_type,
+      seller_id: next.seller_id ?? filters.seller_id,
       page: next.page ?? page,
       // `mes`/`anio` se preservan al navegar entre filtros — un usuario
       // que entró desde dashboard?mes=4&anio=2026 puede cambiar el
@@ -293,6 +320,8 @@ export function LeadsClient({
     if (merged.channel) params.set('channel', merged.channel);
     if (merged.delivery) params.set('delivery', merged.delivery);
     if (merged.payment) params.set('payment', merged.payment);
+    if (merged.sale_type) params.set('sale_type', merged.sale_type);
+    if (merged.seller_id) params.set('seller_id', merged.seller_id);
     if (merged.mes > 0 && merged.anio > 0) {
       params.set('mes', String(merged.mes));
       params.set('anio', String(merged.anio));
@@ -312,6 +341,8 @@ export function LeadsClient({
           filters.channel ||
           filters.delivery ||
           filters.payment ||
+          filters.sale_type ||
+          filters.seller_id ||
           (filters.mes > 0 && filters.anio > 0) ||
           filters.color_filter,
       ),
@@ -475,6 +506,38 @@ export function LeadsClient({
                 </option>
               ))}
             </select>
+            <select
+              id="leads-filter-sale-type"
+              className="select"
+              value={filters.sale_type}
+              onChange={(e) =>
+                pushFilters({ sale_type: e.target.value, page: 1 })
+              }
+              aria-label="Filtrar por tipo de venta"
+            >
+              {SALE_TYPE_OPTS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <select
+              id="leads-filter-seller"
+              className="select"
+              value={filters.seller_id}
+              onChange={(e) =>
+                pushFilters({ seller_id: e.target.value, page: 1 })
+              }
+              aria-label="Filtrar por vendedor"
+            >
+              <option value="">Todos los vendedores</option>
+              <option value="sin_asignar">Sin vendedor</option>
+              {sellers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
@@ -503,6 +566,8 @@ export function LeadsClient({
                   channel: '',
                   delivery: '',
                   payment: '',
+                  sale_type: '',
+                  seller_id: '',
                   mes: 0,
                   anio: 0,
                   color_filter: '',
