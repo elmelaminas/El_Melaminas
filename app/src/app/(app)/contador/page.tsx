@@ -39,12 +39,16 @@ export default async function ContadorPage() {
     } = await userClient.auth.getUser();
     const contadorId = user?.id ?? null;
 
-    // ¿El contador autenticado tiene PIN configurado? Lo usamos para
-    // gatear los botones "✓ Recibí" en la UI: sin PIN configurado, el
-    // contador no puede validar y mostramos un banner que pide
-    // contactar al admin. Best-effort: si la columna no existe (DDL
-    // pendiente) o la query falla, asumimos `false` y bloqueamos.
-    let contadorHasPin = false;
+    // ¿El usuario autenticado (contador / admin / admin2) tiene PIN
+    // configurado? Lo usamos para gatear los botones "✓ Recibí" en la
+    // UI: sin PIN configurado no puede validar y el banner amarillo lo
+    // explica con CTA al admin. Best-effort: si la columna no existe o
+    // la query falla, asumimos `false` y bloqueamos.
+    //
+    // Requerimos EXACTAMENTE 4 dígitos (no solo "no vacío") porque la
+    // server action exige `^\d{4}$` y un PIN no-numérico igual fallaría
+    // al validar. Evita habilitar el botón con un valor inválido.
+    let hasPin = false;
     if (contadorId) {
       try {
         const { data: profile, error: profileErr } = await supabaseAdmin()
@@ -62,7 +66,7 @@ export default async function ContadorPage() {
             typeof profile?.confirmation_pin === 'string'
               ? profile.confirmation_pin.trim()
               : '';
-          contadorHasPin = pin.length > 0;
+          hasPin = /^\d{4}$/.test(pin);
         }
       } catch (e) {
         console.error(
@@ -509,7 +513,7 @@ export default async function ContadorPage() {
         history={history}
         receivedHistory={receivedHistory}
         cashPayments={cashPayments}
-        contadorHasPin={contadorHasPin}
+        hasPin={hasPin}
         viewerRole={viewerRole}
         contadorBalances={contadorBalances}
         myContadorBalance={myContadorBalance}

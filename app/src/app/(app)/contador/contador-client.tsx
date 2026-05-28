@@ -116,7 +116,7 @@ export function ContadorClient({
   history,
   receivedHistory,
   cashPayments,
-  contadorHasPin,
+  hasPin,
   viewerRole,
   contadorBalances,
   myContadorBalance,
@@ -128,10 +128,12 @@ export function ContadorClient({
   /** Cobros en efectivo del mes actual registrados por admins, con
    *  nombre del cliente y del admin ya resueltos en el server. */
   cashPayments: CashPaymentRow[];
-  /** El contador autenticado tiene PIN configurado en su perfil.
-   *  Cuando es `false`, el banner pide contactar al admin y los
-   *  botones "✓ Recibí" quedan disabled. */
-  contadorHasPin: boolean;
+  /** El usuario autenticado (contador, admin o admin2) tiene PIN
+   *  válido de 4 dígitos configurado en su perfil. Cuando es `false`,
+   *  el banner amarillo pide contactar al admin y los botones
+   *  "✓ Recibí" quedan disabled. Comprobado server-side en page.tsx
+   *  con `^\d{4}$` — el valor también es el que la action exige. */
+  hasPin: boolean;
   /** Rol del usuario que ve esta pantalla. La sección "Efectivo
    *  disponible del contador" solo aparece cuando viewerRole='admin'. */
   viewerRole: '' | 'admin' | 'admin2' | 'contador';
@@ -175,7 +177,7 @@ export function ContadorClient({
           está flotando en el sistema antes de cualquier validación. */}
       <CashPaymentsSection
         cashPayments={cashPayments}
-        contadorHasPin={contadorHasPin}
+        hasPin={hasPin}
       />
 
       {/* Card de total pendiente. */}
@@ -631,10 +633,10 @@ function ValidationHistory({
  */
 function CashPaymentsSection({
   cashPayments,
-  contadorHasPin,
+  hasPin,
 }: {
   cashPayments: CashPaymentRow[];
-  contadorHasPin: boolean;
+  hasPin: boolean;
 }) {
   const router = useRouter();
   const total = cashPayments.reduce((s, p) => s + p.amount, 0);
@@ -656,7 +658,7 @@ function CashPaymentsSection({
 
       {/* Banner cuando el contador no tiene PIN configurado: bloquea
           la validación con mensaje claro y deja la lista visible. */}
-      {!contadorHasPin && count > 0 && (
+      {!hasPin && count > 0 && (
         <div
           role="alert"
           className="card p-4 flex items-start gap-3"
@@ -829,28 +831,28 @@ function CashPaymentsSection({
                         <button
                           type="button"
                           onClick={() => setPendingRow(p)}
-                          disabled={!contadorHasPin}
+                          disabled={!hasPin}
                           className="btn"
                           style={{
                             padding: '4px 10px',
                             fontSize: '0.75rem',
                             fontWeight: 600,
-                            background: contadorHasPin
+                            background: hasPin
                               ? '#16A34A'
                               : 'var(--bg-muted)',
-                            color: contadorHasPin
+                            color: hasPin
                               ? '#fff'
                               : 'var(--text-tertiary)',
                             display: 'inline-flex',
                             alignItems: 'center',
                             gap: 4,
-                            cursor: contadorHasPin
+                            cursor: hasPin
                               ? 'pointer'
                               : 'not-allowed',
                           }}
                           aria-label={`Validar cobro de ${p.client_name}`}
                           title={
-                            contadorHasPin
+                            hasPin
                               ? `Validar cobro de ${p.client_name}`
                               : 'Necesitas un PIN configurado para validar'
                           }
