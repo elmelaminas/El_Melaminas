@@ -18,6 +18,7 @@ import {
   ChevronDown,
   ChevronUp,
   Factory,
+  X,
 } from 'lucide-react';
 import { isPdfUrl } from './new/schema';
 import {
@@ -172,7 +173,6 @@ const SALE_TYPE_OPTS: { value: FiltersState['sale_type']; label: string }[] = [
   { value: 'venta_empleado', label: 'Venta empleado' },
 ];
 
-const DEBOUNCE_MS = 300;
 
 /**
  * Mapa mes-número → label corto para el chip "Mes: ene/2026" cuando hay
@@ -201,14 +201,17 @@ const MES_SHORT: Readonly<Record<number, string>> = {
  * Estado importante: TODO el filtro vive en la URL (`?q=…&channel=…`),
  * el Server Component lee searchParams y manda `leads` ya filtrados.
  * Este componente sólo:
- *  - mantiene `qInput` local para el campo de búsqueda (para que cada
- *    keystroke no dispare un round-trip — debounce 300ms).
+ *  - mantiene `qInput` local para el campo de búsqueda. El push a la URL
+ *    se dispara EXPLÍCITAMENTE (botón "Buscar", Enter o "Limpiar"), no
+ *    en cada keystroke — el debounce automático generaba navegaciones
+ *    innecesarias y, en tablas grandes, una tabla parpadeante mientras
+ *    el usuario escribía.
  *  - construye nuevas URLs y navega con `router.push`.
  *  - usa `useTransition` para atenuar la tabla mientras llega la nueva data.
  *
- * `qInput` se sincroniza con `filters.q` cuando éste cambia (ej. el
- * usuario apretó "back" o usó un link externo) — sin esto, el input
- * pintaría stale-text después de una navegación externa.
+ * `qInput` se sincroniza con `filters.q` cuando éste cambia desde fuera
+ * (back, link externo) — sin esto, el input pintaría stale-text después
+ * de una navegación externa.
  */
 export function LeadsClient({
   leads,
@@ -265,23 +268,17 @@ export function LeadsClient({
   );
 
   // Sync: si filters.q cambia desde fuera (back, link externo), refleja
-  // en el input local. Importante hacerlo ANTES del effect de debounce
-  // para que ese effect vea qInput === filters.q y no dispare un push.
+  // en el input local para no mostrar texto stale.
   useEffect(() => {
     setQInput(filters.q);
   }, [filters.q]);
 
-  // Debounce: 300ms después del último keystroke en `qInput`, navegamos.
-  // Si filters.q ya coincide con qInput (sync de arriba acaba de correr),
-  // no hacemos nada.
-  useEffect(() => {
-    if (qInput === filters.q) return;
-    const t = setTimeout(() => {
-      pushFilters({ q: qInput, page: 1 });
-    }, DEBOUNCE_MS);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qInput, filters.q]);
+  // Búsqueda explícita: dispara navegación al botón / Enter / clear.
+  // Definida como callback para que el input, el botón y el ícono X
+  // compartan la misma lógica sin duplicar el shape del payload.
+  function commitSearch(nextQ: string) {
+    pushFilters({ q: nextQ, page: 1 });
+  }
 
   function pushFilters(
     next: Partial<{
@@ -422,21 +419,82 @@ export function LeadsClient({
       <div className="card p-4">
         <div className="flex flex-col gap-3">
           <div className="flex gap-2 items-stretch">
-            <div className="relative" style={{ flex: 1 }}>
-              <Search
-                size={16}
-                className="absolute left-3 top-1/2 -translate-y-1/2"
-                style={{ color: 'var(--text-tertiary)' }}
-              />
-              <input
-                id="leads-search"
-                placeholder="Buscar por nombre o teléfono…"
-                className="input"
-                style={{ paddingLeft: 36 }}
-                value={qInput}
-                onChange={(e) => setQInput(e.target.value)}
-                aria-label="Buscar leads"
-              />
+            {/* Input + botón Buscar pegados como un input-group. El
+                wrapper relativo soporta el ícono de lupa y la X de
+                limpiar; el botón "Buscar" pertenece al mismo flex item
+                para que la búsqueda quede visualmente atómica. */}
+            <div className="flex items-stretch" style={{ flex: 1, minWidth: 0 }}>
+              <div className="relative" style={{ flex: 1, minWidth: 0 }}>
+                <Search
+                  size={16}
+                  className="absolute left-3 top-1/2 -translate-y-1/2"
+                  style={{ color: 'var(--text-tertiary)' }}
+                />
+                <input
+                  id="leads-search"
+                  placeholder="Buscar por nombre o teléfono…"
+                  className="input"
+                  style={{
+                    paddingLeft: 36,
+                    paddingRight: qInput ? 36 : undefined,
+                    borderTopRightRadius: 0,
+                    borderBottomRightRadius: 0,
+                  }}
+                  value={qInput}
+                  onChange={(e) => setQInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      commitSearch(qInput);
+                    }
+                  }}
+                  aria-label="Buscar leads"
+                />
+                {qInput && (
+                  <button
+                    type="button"
+                    className="absolute top-1/2 -translate-y-1/2"
+                    style={{
+                      right: 8,
+                      background: 'transparent',
+                      border: 'none',
+                      padding: 4,
+                      cursor: 'pointer',
+                      color: 'var(--text-tertiary)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    onClick={() => {
+                      setQInput('');
+                      commitSearch('');
+                    }}
+                    aria-label="Limpiar búsqueda"
+                    title="Limpiar búsqueda"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => commitSearch(qInput)}
+                style={{
+                  flexShrink: 0,
+                  padding: '0 14px',
+                  gap: 6,
+                  background: 'var(--brand-primary, #1B3A5C)',
+                  color: '#fff',
+                  borderTopLeftRadius: 0,
+                  borderBottomLeftRadius: 0,
+                  fontWeight: 600,
+                }}
+                aria-label="Buscar"
+              >
+                <Search size={16} />
+                <span className="hidden sm:inline">Buscar</span>
+              </button>
             </div>
             {/* Toggle solo visible en móvil. md:hidden lo oculta en
                 desktop donde los selects siempre se ven. */}
