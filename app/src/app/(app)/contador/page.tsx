@@ -342,20 +342,63 @@ export default async function ContadorPage() {
       }
     }
 
-    // Resolver nombres de los validadores que no estén ya en
-    // `nameById` (caso típico: el validador es un contador que no
-    // aparece en la lista de admins). Bulk lookup, best-effort.
-    const validatorIds = Array.from(new Set(validatorByPayment.values()));
-    const missingValidatorIds = validatorIds.filter((id) => !nameById.has(id));
-    if (missingValidatorIds.length > 0) {
+    // Bulk lookup adicional: ingresos `source='recibido_contador'` por
+    // payment_id. Sirve para saber qué filas ya fueron recibidas por
+    // algún admin desde el contador (paso 3 de la cadena
+    // driver → admin → contador → admin). El admin viewer usa esto
+    // para ocultar el botón "Recibí del contador" cuando alguien más
+    // ya recibió ese cobro.
+    const receivedByAdminPaymentIds = new Set<string>();
+    const adminReceiverByPayment = new Map<string, string>();
+    if (paymentIds.length > 0) {
+      try {
+        const { data: receivedRows, error: receivedErr } = await admin
+          .from('admin_cash_register')
+          .select('payment_id, registered_by')
+          .eq('operation_type', 'ingreso')
+          .eq('source', 'recibido_contador')
+          .in('payment_id', paymentIds);
+        if (receivedErr) {
+          console.error(
+            '[ContadorPage] recibido_contador lookup falló (no fatal):',
+            receivedErr,
+          );
+        }
+        for (const r of receivedRows ?? []) {
+          if (!r.payment_id) continue;
+          receivedByAdminPaymentIds.add(r.payment_id);
+          if (typeof r.registered_by === 'string' && r.registered_by) {
+            adminReceiverByPayment.set(r.payment_id, r.registered_by);
+          }
+        }
+      } catch (e) {
+        console.error(
+          '[ContadorPage] recibido_contador excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
+    // Resolver nombres de validators (contador que validó) Y de
+    // receivers admin (quien recibió del contador). Una sola query
+    // bulk para ambos sets, deduplicados contra el `nameById` ya
+    // poblado por la lista de admins inicial.
+    const allLookupIds = Array.from(
+      new Set([
+        ...validatorByPayment.values(),
+        ...adminReceiverByPayment.values(),
+      ]),
+    );
+    const missingNameIds = allLookupIds.filter((id) => !nameById.has(id));
+    if (missingNameIds.length > 0) {
       try {
         const { data: extra, error: extraErr } = await admin
           .from('profiles')
           .select('id, full_name')
-          .in('id', missingValidatorIds);
+          .in('id', missingNameIds);
         if (extraErr) {
           console.error(
-            '[ContadorPage] validator names lookup falló (no fatal):',
+            '[ContadorPage] validator/receiver names lookup falló (no fatal):',
             extraErr,
           );
         } else {
@@ -365,7 +408,7 @@ export default async function ContadorPage() {
         }
       } catch (e) {
         console.error(
-          '[ContadorPage] validator names excepción (no fatal):',
+          '[ContadorPage] validator/receiver names excepción (no fatal):',
           e,
         );
       }
@@ -381,6 +424,9 @@ export default async function ContadorPage() {
       const validatorId = r.payment_id
         ? validatorByPayment.get(r.payment_id) ?? null
         : null;
+      const adminReceiverId = r.payment_id
+        ? adminReceiverByPayment.get(r.payment_id) ?? null
+        : null;
       return {
         id: r.id,
         payment_id: r.payment_id ?? null,
@@ -392,6 +438,12 @@ export default async function ContadorPage() {
           ? validatedPaymentIds.has(r.payment_id)
           : false,
         validator_name: validatorId ? nameById.get(validatorId) ?? null : null,
+        received_by_admin: r.payment_id
+          ? receivedByAdminPaymentIds.has(r.payment_id)
+          : false,
+        receiver_name: adminReceiverId
+          ? nameById.get(adminReceiverId) ?? null
+          : null,
       };
     });
 

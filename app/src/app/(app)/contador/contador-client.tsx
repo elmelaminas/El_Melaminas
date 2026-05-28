@@ -15,6 +15,7 @@ import {
   receiveAdminCashAction,
   receiveIndividualCashAction,
   receiveFromContadorAction,
+  receiveIndividualFromContadorAction,
 } from './actions';
 import { PinConfirmModal } from '@/components/ui/PinConfirmModal';
 import { formatDateTimeCDMX } from '@/lib/format-date';
@@ -97,6 +98,14 @@ export type CashPaymentRow = {
    *  (`admin_cash_register.registered_by`). null si la fila aún no
    *  está validada o si no se pudo resolver el nombre. */
   validator_name: string | null;
+  /** `true` cuando algún admin ya recibió esta fila del contador
+   *  (existe un ingreso `source='recibido_contador'` con el mismo
+   *  payment_id). El admin viewer usa esto para ocultar el botón
+   *  "Recibí del contador" tras la transferencia. */
+  received_by_admin: boolean;
+  /** Nombre del admin que recibió del contador; null si aún no
+   *  recibido. Se muestra como "Por jefe: X" en la columna Estado. */
+  receiver_name: string | null;
 };
 
 /**
@@ -181,10 +190,13 @@ export function ContadorClient({
       {/* SECCIÓN 0: Cobros en efectivo registrados por admins este mes.
           Va arriba porque es la novedad principal de esta vista — el
           contador entra y lo primero que ve es cuánto efectivo "real"
-          está flotando en el sistema antes de cualquier validación. */}
+          está flotando en el sistema antes de cualquier validación.
+          El viewerRole cambia las acciones por fila: el contador valida
+          al admin, el admin recibe del contador. */}
       <CashPaymentsSection
         cashPayments={cashPayments}
         hasPin={hasPin}
+        viewerRole={viewerRole}
       />
 
       {/* Card de total pendiente. */}
@@ -641,17 +653,28 @@ function ValidationHistory({
 function CashPaymentsSection({
   cashPayments,
   hasPin,
+  viewerRole,
 }: {
   cashPayments: CashPaymentRow[];
   hasPin: boolean;
+  /** El rol decide qué acciones por fila aparecen:
+   *    contador → "✓ Recibí" (valida al admin)
+   *    admin / admin2 → "✓ Recibí del contador" (recibe del contador)
+   *  Si el rol no encaja en ninguno (caso defensivo) no se muestran
+   *  botones de acción — la tabla queda informativa. */
+  viewerRole: '' | 'admin' | 'admin2' | 'contador';
 }) {
   const router = useRouter();
   const total = cashPayments.reduce((s, p) => s + p.amount, 0);
   const count = cashPayments.length;
   // Fila seleccionada para el flujo de confirmación. null = modal
   // cerrado. Cuando hay una fila seleccionada, el componente
-  // `<PinConfirmModal>` se monta en overlay.
+  // `<PinConfirmModal>` se monta en overlay. Distinguimos qué tipo de
+  // flujo abrir por el viewerRole — el contador valida, el admin
+  // recibe del contador.
   const [pendingRow, setPendingRow] = useState<CashPaymentRow | null>(null);
+  const isAdminViewer = viewerRole === 'admin' || viewerRole === 'admin2';
+  const isContadorViewer = viewerRole === 'contador';
   return (
     <div className="flex flex-col gap-3">
       <div>
@@ -812,7 +835,36 @@ function CashPaymentsSection({
                       {formatDateTime(p.created_at)}
                     </td>
                     <td data-label="Estado">
-                      {p.validated ? (
+                      {/* Tres estados, en orden de "más avanzado a menos":
+                          received_by_admin > validated > pendiente. El
+                          badge superior siempre refleja el estado más
+                          avanzado, y debajo se acumula la línea "Por: X"
+                          de cada paso conocido. */}
+                      {p.received_by_admin ? (
+                        <div className="flex flex-col items-start gap-0.5">
+                          <span className="badge badge-success">
+                            ✅ Recibido por jefe
+                          </span>
+                          {p.receiver_name && (
+                            <span
+                              className="text-[10px]"
+                              style={{ color: 'var(--text-tertiary)' }}
+                              title={`Recibido por ${p.receiver_name}`}
+                            >
+                              Por jefe: {p.receiver_name}
+                            </span>
+                          )}
+                          {p.validator_name && (
+                            <span
+                              className="text-[10px]"
+                              style={{ color: 'var(--text-tertiary)' }}
+                              title={`Validado por ${p.validator_name}`}
+                            >
+                              Validado: {p.validator_name}
+                            </span>
+                          )}
+                        </div>
+                      ) : p.validated ? (
                         <div className="flex flex-col items-start gap-0.5">
                           <span className="badge badge-success">
                             ✅ Validado
@@ -834,39 +886,88 @@ function CashPaymentsSection({
                       )}
                     </td>
                     <td data-label="Acción" className="text-right">
-                      {!p.validated && p.payment_id && (
-                        <button
-                          type="button"
-                          onClick={() => setPendingRow(p)}
-                          disabled={!hasPin}
-                          className="btn"
-                          style={{
-                            padding: '4px 10px',
-                            fontSize: '0.75rem',
-                            fontWeight: 600,
-                            background: hasPin
-                              ? '#16A34A'
-                              : 'var(--bg-muted)',
-                            color: hasPin
-                              ? '#fff'
-                              : 'var(--text-tertiary)',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            cursor: hasPin
-                              ? 'pointer'
-                              : 'not-allowed',
-                          }}
-                          aria-label={`Validar cobro de ${p.client_name}`}
-                          title={
-                            hasPin
-                              ? `Validar cobro de ${p.client_name}`
-                              : 'Necesitas un PIN configurado para validar'
-                          }
-                        >
-                          <CircleCheckBig size={12} /> Recibí
-                        </button>
-                      )}
+                      {/* Ramas según rol:
+                          - admin/admin2 + ya recibido → nada.
+                          - admin/admin2 + validado pero no recibido → botón
+                            "✓ Recibí del contador" (PIN del admin).
+                          - admin/admin2 + no validado → texto "Esperando
+                            validación del contador" (gris pequeño).
+                          - contador + no validado → botón "✓ Recibí"
+                            (PIN del contador) — flujo existente.
+                          - contador + validado → nada (ya hizo lo suyo).
+                          - rol desconocido → nada. */}
+                      {isAdminViewer && p.payment_id ? (
+                        p.received_by_admin ? null : p.validated ? (
+                          <button
+                            type="button"
+                            onClick={() => setPendingRow(p)}
+                            disabled={!hasPin}
+                            className="btn"
+                            style={{
+                              padding: '4px 10px',
+                              fontSize: '0.75rem',
+                              fontWeight: 600,
+                              background: hasPin
+                                ? '#16A34A'
+                                : 'var(--bg-muted)',
+                              color: hasPin
+                                ? '#fff'
+                                : 'var(--text-tertiary)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              cursor: hasPin ? 'pointer' : 'not-allowed',
+                            }}
+                            aria-label={`Recibir del contador el cobro de ${p.client_name}`}
+                            title={
+                              hasPin
+                                ? `Recibir del contador el cobro de ${p.client_name}`
+                                : 'Necesitas un PIN configurado para recibir'
+                            }
+                          >
+                            <CircleCheckBig size={12} /> Recibí del contador
+                          </button>
+                        ) : (
+                          <span
+                            className="text-[11px]"
+                            style={{ color: 'var(--text-tertiary)' }}
+                          >
+                            Esperando validación del contador
+                          </span>
+                        )
+                      ) : isContadorViewer && p.payment_id ? (
+                        !p.validated ? (
+                          <button
+                            type="button"
+                            onClick={() => setPendingRow(p)}
+                            disabled={!hasPin}
+                            className="btn"
+                            style={{
+                              padding: '4px 10px',
+                              fontSize: '0.75rem',
+                              fontWeight: 600,
+                              background: hasPin
+                                ? '#16A34A'
+                                : 'var(--bg-muted)',
+                              color: hasPin
+                                ? '#fff'
+                                : 'var(--text-tertiary)',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4,
+                              cursor: hasPin ? 'pointer' : 'not-allowed',
+                            }}
+                            aria-label={`Validar cobro de ${p.client_name}`}
+                            title={
+                              hasPin
+                                ? `Validar cobro de ${p.client_name}`
+                                : 'Necesitas un PIN configurado para validar'
+                            }
+                          >
+                            <CircleCheckBig size={12} /> Recibí
+                          </button>
+                        ) : null
+                      ) : null}
                     </td>
                   </tr>
                 ))
@@ -890,56 +991,127 @@ function CashPaymentsSection({
         )}
       </div>
 
-      <PinConfirmModal
-        isOpen={pendingRow != null}
-        onClose={() => setPendingRow(null)}
-        title="Confirmar recepción de efectivo"
-        details={
-          pendingRow
-            ? [
-                { label: 'Cliente', value: pendingRow.client_name },
-                {
-                  label: 'Monto',
-                  value: (
-                    <strong style={{ color: '#15803D' }}>
-                      {formatMXN(pendingRow.amount)}
-                    </strong>
-                  ),
-                },
-                { label: 'Admin', value: pendingRow.admin_name },
-              ]
-            : []
-        }
-        onConfirm={async (pin) => {
-          if (!pendingRow?.payment_id) {
-            return {
-              success: false,
-              error: 'Este cobro no tiene un pago asociado.',
-            };
+      {/* El modal de PIN se monta una vez por rama. El admin viewer ve
+          el flujo "Recibir del contador" (paso 3 de la cadena); el
+          contador viewer ve el flujo "Validar del admin" (paso 2).
+          Cada rama llama a una server action distinta y muestra
+          detalles diferentes en el paso 1. */}
+      {isAdminViewer && (
+        <PinConfirmModal
+          isOpen={pendingRow != null}
+          onClose={() => setPendingRow(null)}
+          title="Recibir efectivo del contador"
+          intro="¿Confirmas recibir este efectivo del contador?"
+          confirmText="Confirmar recepción"
+          details={
+            pendingRow
+              ? [
+                  { label: 'Cliente', value: pendingRow.client_name },
+                  {
+                    label: 'Monto',
+                    value: (
+                      <strong style={{ color: '#15803D' }}>
+                        {formatMXN(pendingRow.amount)}
+                      </strong>
+                    ),
+                  },
+                  {
+                    label: 'Validado por',
+                    value: pendingRow.validator_name ?? '—',
+                  },
+                ]
+              : []
           }
-          const result = await receiveIndividualCashAction(
-            pendingRow.payment_id,
-            pin,
-          );
-          if (result.status === 'success') {
-            router.refresh();
-            return { success: true };
-          }
-          if (result.status === 'error') {
-            // `already_validated` también refresca para que la UI
-            // sincronice el badge — luego mostramos el error.
-            if (result.reason === 'already_validated') {
-              router.refresh();
+          onConfirm={async (pin) => {
+            if (!pendingRow?.payment_id) {
+              return {
+                success: false,
+                error: 'Este cobro no tiene un pago asociado.',
+              };
             }
-            return {
-              success: false,
-              error: result.message,
-              reason: result.reason,
-            };
+            const result = await receiveIndividualFromContadorAction(
+              pendingRow.payment_id,
+              pin,
+            );
+            if (result.status === 'success') {
+              router.refresh();
+              return { success: true };
+            }
+            if (result.status === 'error') {
+              // already_received y not_validated igual refrescan para
+              // que la UI sincronice el badge tras un cambio externo.
+              if (
+                result.reason === 'already_received' ||
+                result.reason === 'not_validated'
+              ) {
+                router.refresh();
+              }
+              // PinConfirmResult.reason no acepta 'not_validated' /
+              // 'already_received' fuera de su union; los mapeamos a
+              // 'other' (modal muestra el mensaje sin reintento).
+              const r = result.reason;
+              const mapped: 'pin_incorrect' | 'pin_missing' | 'other' =
+                r === 'pin_incorrect' || r === 'pin_missing' ? r : 'other';
+              return {
+                success: false,
+                error: result.message,
+                reason: mapped,
+              };
+            }
+            return { success: false, error: 'Estado inesperado.' };
+          }}
+        />
+      )}
+      {isContadorViewer && (
+        <PinConfirmModal
+          isOpen={pendingRow != null}
+          onClose={() => setPendingRow(null)}
+          title="Confirmar recepción de efectivo"
+          details={
+            pendingRow
+              ? [
+                  { label: 'Cliente', value: pendingRow.client_name },
+                  {
+                    label: 'Monto',
+                    value: (
+                      <strong style={{ color: '#15803D' }}>
+                        {formatMXN(pendingRow.amount)}
+                      </strong>
+                    ),
+                  },
+                  { label: 'Admin', value: pendingRow.admin_name },
+                ]
+              : []
           }
-          return { success: false, error: 'Estado inesperado.' };
-        }}
-      />
+          onConfirm={async (pin) => {
+            if (!pendingRow?.payment_id) {
+              return {
+                success: false,
+                error: 'Este cobro no tiene un pago asociado.',
+              };
+            }
+            const result = await receiveIndividualCashAction(
+              pendingRow.payment_id,
+              pin,
+            );
+            if (result.status === 'success') {
+              router.refresh();
+              return { success: true };
+            }
+            if (result.status === 'error') {
+              if (result.reason === 'already_validated') {
+                router.refresh();
+              }
+              return {
+                success: false,
+                error: result.message,
+                reason: result.reason,
+              };
+            }
+            return { success: false, error: 'Estado inesperado.' };
+          }}
+        />
+      )}
     </div>
   );
 }

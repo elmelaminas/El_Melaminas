@@ -111,3 +111,42 @@ export type ReceiveFromContadorState =
 export const initialReceiveFromContadorState: ReceiveFromContadorState = {
   status: 'idle',
 };
+
+/**
+ * `receiveIndividualFromContadorAction(payment_id, pin)` — un admin
+ * recibe del contador UN cobro específico (a nivel cliente) que el
+ * contador ya validó previamente. El admin valida con su propio PIN.
+ *
+ * Pre-condición: el contador debe haber validado este cobro antes
+ * (existe un egreso `source='validado_contador'` con el mismo
+ * `payment_id`). Sin esa fila el admin no puede recibir nada — el
+ * dinero todavía está físicamente en manos del admin original, no del
+ * contador.
+ */
+export const ReceiveIndividualFromContadorSchema = z.object({
+  payment_id: z.string().uuid('payment_id inválido'),
+  pin: z
+    .string()
+    .regex(/^\d{4}$/, 'PIN debe tener exactamente 4 dígitos'),
+});
+
+export type ReceiveIndividualFromContadorInput = z.infer<
+  typeof ReceiveIndividualFromContadorSchema
+>;
+
+export type ReceiveIndividualFromContadorState =
+  | { status: 'idle' }
+  | { status: 'success'; received: number }
+  | {
+      status: 'error';
+      message: string;
+      reason?:
+        | 'pin_incorrect'
+        | 'pin_missing'
+        | 'not_validated'
+        | 'already_received'
+        | 'other';
+    };
+
+export const initialReceiveIndividualFromContadorState: ReceiveIndividualFromContadorState =
+  { status: 'idle' };

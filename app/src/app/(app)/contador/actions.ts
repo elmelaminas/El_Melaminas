@@ -7,9 +7,11 @@ import {
   ReceiveAdminCashSchema,
   ReceiveIndividualCashSchema,
   ReceiveFromContadorSchema,
+  ReceiveIndividualFromContadorSchema,
   type ReceiveAdminCashState,
   type ReceiveIndividualCashState,
   type ReceiveFromContadorState,
+  type ReceiveIndividualFromContadorState,
 } from './schema';
 
 // NB: 'use server' file — solo async functions.
@@ -719,6 +721,302 @@ export async function receiveFromContadorAction(
         : 'Error desconocido al recibir efectivo del contador';
     console.error(
       '[receiveFromContadorAction] excepción no controlada:',
+      err,
+    );
+    return { status: 'error', message, reason: 'other' };
+  }
+}
+
+/**
+ * `receiveIndividualFromContadorAction(payment_id, pin)` — un admin
+ * recibe del contador UN cobro específico (a nivel cliente). Es la
+ * versión por-fila de `receiveFromContadorAction`: en lugar de
+ * agarrar todo el saldo del contador, el admin valida pago por pago
+ * desde la tabla "Cobros en efectivo registrados".
+ *
+ * Flujo (cadena del efectivo):
+ *   driver → admin (pago_efectivo)        ← step 1 (ya hecho)
+ *   admin  → contador (validado_contador) ← step 2 (contador valida)
+ *   contador → admin (recibido_contador)  ← step 3 (este action)
+ *
+ * Pre-condiciones obligatorias:
+ *   - Existe egreso `validado_contador` con el mismo payment_id (el
+ *     contador ya validó; el dinero está en su caja).
+ *   - NO existe ya un ingreso `recibido_contador` con ese payment_id
+ *     (idempotencia: cada fila se recibe una vez).
+ *
+ * Side effects:
+ *   - INSERT admin_cash_register {ingreso, source='recibido_contador'}
+ *     en la caja del admin que recibe.
+ *   - INSERT contador_to_admin_transfers para que el balance del
+ *     contador se decremente correctamente en /contador.
+ *   - Notif al contador.
+ *
+ * Acceso: admin o admin2. PIN se valida contra
+ * `profiles.confirmation_pin` del que ejecuta.
+ */
+export async function receiveIndividualFromContadorAction(
+  paymentIdInput: string,
+  pinInput: string,
+): Promise<ReceiveIndividualFromContadorState> {
+  try {
+    const parsed = ReceiveIndividualFromContadorSchema.safeParse({
+      payment_id: paymentIdInput,
+      pin: pinInput,
+    });
+    if (!parsed.success) {
+      return {
+        status: 'error',
+        message:
+          parsed.error.flatten().formErrors.join(' ') ||
+          'Datos inválidos para recibir el cobro.',
+        reason: 'other',
+      };
+    }
+    const { payment_id: paymentId, pin: providedPin } = parsed.data;
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return {
+        status: 'error',
+        message: 'Sesión no válida. Vuelve a iniciar sesión.',
+        reason: 'other',
+      };
+    }
+    const adminId = user.id;
+
+    const admin = supabaseAdmin();
+
+    // Role + PIN check del admin.
+    const { data: callerProfile, error: callerErr } = await admin
+      .from('profiles')
+      .select('role, confirmation_pin, full_name')
+      .eq('id', adminId)
+      .maybeSingle();
+    if (callerErr) {
+      return {
+        status: 'error',
+        message: `No se pudo verificar tu rol: ${callerErr.message}`,
+        reason: 'other',
+      };
+    }
+    if (
+      callerProfile?.role !== 'admin' &&
+      callerProfile?.role !== 'admin2'
+    ) {
+      return {
+        status: 'error',
+        message:
+          'Solo un administrador (admin o admin2) puede recibir cobros del contador.',
+        reason: 'other',
+      };
+    }
+    const storedPin =
+      typeof callerProfile.confirmation_pin === 'string'
+        ? callerProfile.confirmation_pin.trim()
+        : '';
+    if (storedPin === '') {
+      return {
+        status: 'error',
+        message:
+          'No tienes PIN configurado. Contacta al administrador para que te lo asigne.',
+        reason: 'pin_missing',
+      };
+    }
+    if (storedPin !== providedPin) {
+      return {
+        status: 'error',
+        message: 'PIN incorrecto. Intenta de nuevo.',
+        reason: 'pin_incorrect',
+      };
+    }
+
+    // Buscar el egreso 'validado_contador' que corresponde a este
+    // payment_id. Si no existe, el contador aún no ha validado y el
+    // admin no puede recibir (el dinero sigue físicamente en manos del
+    // admin original). Tomamos el más reciente por defecto.
+    const { data: egresoRows, error: egresoErr } = await admin
+      .from('admin_cash_register')
+      .select('id, amount, registered_by')
+      .eq('payment_id', paymentId)
+      .eq('operation_type', 'egreso')
+      .eq('source', 'validado_contador')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (egresoErr) {
+      return {
+        status: 'error',
+        message: `No se pudo leer el cobro: ${egresoErr.message}`,
+        reason: 'other',
+      };
+    }
+    const egreso = egresoRows?.[0];
+    if (!egreso) {
+      return {
+        status: 'error',
+        message:
+          'El contador aún no ha validado este cobro. Pídele que lo valide antes de recibirlo.',
+        reason: 'not_validated',
+      };
+    }
+    const contadorId =
+      typeof egreso.registered_by === 'string' ? egreso.registered_by : null;
+    const amount = Number(egreso.amount ?? 0);
+
+    // Idempotencia: si ya hay un ingreso 'recibido_contador' para este
+    // payment_id, no creamos otro (sea quien sea el receptor).
+    const { data: priorIngreso } = await admin
+      .from('admin_cash_register')
+      .select('id')
+      .eq('payment_id', paymentId)
+      .eq('operation_type', 'ingreso')
+      .eq('source', 'recibido_contador')
+      .limit(1);
+    if (priorIngreso && priorIngreso.length > 0) {
+      return {
+        status: 'error',
+        message: 'Este cobro ya fue recibido por un admin anteriormente.',
+        reason: 'already_received',
+      };
+    }
+
+    // Resolver nombres para notas/notifs. Best-effort.
+    let contadorName = 'Contador';
+    let clientName = '(sin cliente)';
+    try {
+      if (contadorId) {
+        const { data: cp } = await admin
+          .from('profiles')
+          .select('full_name')
+          .eq('id', contadorId)
+          .maybeSingle();
+        if (cp?.full_name) contadorName = cp.full_name;
+      }
+      const { data: pmt } = await admin
+        .from('payments')
+        .select('lead_id')
+        .eq('id', paymentId)
+        .maybeSingle();
+      if (pmt?.lead_id) {
+        const { data: lead } = await admin
+          .from('leads')
+          .select('client_name')
+          .eq('id', pmt.lead_id)
+          .maybeSingle();
+        if (lead?.client_name) clientName = lead.client_name;
+      }
+    } catch (e) {
+      console.error(
+        '[receiveIndividualFromContadorAction] name lookups fallaron (no fatal):',
+        e,
+      );
+    }
+    const adminName = callerProfile.full_name ?? 'Administrador';
+    const notes = `Recibido del contador ${contadorName} (cliente ${clientName})`;
+
+    // INSERT ingreso en la caja del admin. Fuente de verdad de que el
+    // admin ya tiene el dinero en su caja. Si falla, abortamos sin
+    // tocar transfers.
+    const { error: ingresoErr } = await admin
+      .from('admin_cash_register')
+      .insert({
+        admin_id: adminId,
+        amount,
+        operation_type: 'ingreso',
+        source: 'recibido_contador',
+        payment_id: paymentId,
+        registered_by: adminId,
+        notes,
+      });
+    if (ingresoErr) {
+      console.error(
+        '[receiveIndividualFromContadorAction] insert ingreso falló:',
+        ingresoErr,
+      );
+      return {
+        status: 'error',
+        message: `No se pudo registrar en tu caja: ${ingresoErr.message}`,
+        reason: 'other',
+      };
+    }
+
+    // INSERT contador_to_admin_transfers — para que el balance vivo
+    // del contador en la sección "Recibir efectivo del contador" baje
+    // por el mismo monto. Non-fatal: si la tabla aún no existe
+    // (migración pendiente), el balance del contador no se ajusta
+    // pero la transferencia en admin_cash_register sí queda, así que
+    // el ingreso del admin no se pierde. Se loguea para auditoría.
+    if (contadorId) {
+      try {
+        const { error: transferErr } = await admin
+          .from('contador_to_admin_transfers')
+          .insert({
+            contador_id: contadorId,
+            admin_id: adminId,
+            amount,
+            pin_validated: true,
+            validated_at: new Date().toISOString(),
+            notes,
+          });
+        if (transferErr) {
+          console.error(
+            '[receiveIndividualFromContadorAction] transfer insert falló (no fatal):',
+            transferErr,
+          );
+        }
+      } catch (e) {
+        console.error(
+          '[receiveIndividualFromContadorAction] transfer excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
+    // Notif al contador (non-fatal).
+    try {
+      if (contadorId) {
+        const amountFmt = new Intl.NumberFormat('es-MX', {
+          style: 'currency',
+          currency: 'MXN',
+          minimumFractionDigits: 0,
+        }).format(amount);
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert({
+            recipient_id: contadorId,
+            type: 'efectivo_transferido_admin',
+            message: `✅ ${adminName} recibió ${amountFmt} de ${clientName} de tu caja.`,
+          });
+        if (notifErr) {
+          console.error(
+            '[receiveIndividualFromContadorAction] notif falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[receiveIndividualFromContadorAction] notif excepción (no fatal):',
+        e,
+      );
+    }
+
+    revalidatePath('/contador');
+    revalidatePath('/admin/mi-caja');
+    revalidatePath('/admin/caja');
+    revalidatePath('/dashboard');
+    return { status: 'success', received: amount };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al recibir cobro del contador';
+    console.error(
+      '[receiveIndividualFromContadorAction] excepción no controlada:',
       err,
     );
     return { status: 'error', message, reason: 'other' };
