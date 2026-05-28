@@ -12,7 +12,6 @@ import {
 } from 'lucide-react';
 import { formatMXN } from '@/data/mock';
 import {
-  receiveAdminCashAction,
   receiveIndividualCashAction,
   receiveBulkFromContadorAction,
 } from './actions';
@@ -198,68 +197,16 @@ export function ContadorClient({
         viewerRole={viewerRole}
       />
 
-      {/* Card de total pendiente. */}
-      <div
-        className="card p-6 flex items-center gap-4"
-        style={{
-          background:
-            grandTotal > 0
-              ? 'linear-gradient(135deg, #FEF3C7 0%, #FFFBEB 100%)'
-              : 'var(--bg-subtle)',
-          border:
-            grandTotal > 0
-              ? '1px solid rgba(217,119,6,0.25)'
-              : '1px solid var(--border)',
-        }}
-      >
-        <div
-          className="flex items-center justify-center"
-          style={{
-            width: 56,
-            height: 56,
-            borderRadius: 14,
-            background: grandTotal > 0 ? '#D97706' : 'var(--text-tertiary)',
-            color: '#fff',
-            flexShrink: 0,
-          }}
-        >
-          <Wallet size={28} />
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div
-            className="text-xs uppercase tracking-wide"
-            style={{
-              color: grandTotal > 0 ? '#92400E' : 'var(--text-tertiary)',
-              fontWeight: 600,
-            }}
-          >
-            Pendiente de validar
-          </div>
-          <div
-            className="text-3xl font-bold leading-tight mt-1"
-            style={{
-              color: grandTotal > 0 ? '#92400E' : 'var(--text-tertiary)',
-            }}
-          >
-            {formatMXN(grandTotal)}
-          </div>
-          <div
-            className="text-xs mt-1"
-            style={{ color: 'var(--text-tertiary)' }}
-          >
-            {admins.filter((a) => a.balance > 0).length}{' '}
-            {admins.filter((a) => a.balance > 0).length === 1
-              ? 'admin con efectivo'
-              : 'admins con efectivo'}
-          </div>
-        </div>
-      </div>
-
-      {/* SECCIÓN 1: Efectivo del administrador (reporte). */}
-      <AdminCashReport admins={admins} />
-
-      {/* SECCIÓN 2: Validar efectivo (acción). */}
-      <AdminCashValidator admins={admins} />
+      {/* Las secciones "Pendiente de validar" + "Efectivo del
+          administrador" + "Validar efectivo" (con el botón
+          `$ Recibí efectivo de {admin}`) fueron eliminadas. Ese
+          flujo bulk ya no aplica:
+            - El contador valida cliente por cliente (con PIN) desde
+              "Cobros en efectivo registrados" arriba.
+            - El admin recibe del contador con checkboxes desde la
+              misma tabla.
+          La data sigue computándose en page.tsx (admins / grandTotal)
+          y se pasa por compat pero no se renderiza acá. */}
 
       {/* SECCIÓN 3: Historial de efectivo recibido directamente de
           choferes (legacy / pre-refactor). Solo se renderiza si hay
@@ -275,217 +222,6 @@ export function ContadorClient({
   );
 }
 
-function AdminCashReport({ admins }: { admins: AdminWithCash[] }) {
-  const totalThisMonth = admins.reduce((s, a) => s + a.this_month, 0);
-  return (
-    <div className="flex flex-col gap-3">
-      <div>
-        <h2 className="text-lg font-semibold">Efectivo del administrador</h2>
-        <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-          Ingresos en efectivo de cada admin este mes y su saldo actual.
-        </p>
-      </div>
-
-      <div className="tbl-wrap">
-        <div
-          className="px-6 py-3 border-b text-xs"
-          style={{
-            borderColor: 'var(--border)',
-            color: 'var(--text-secondary)',
-          }}
-        >
-          Total ingresado este mes:{' '}
-          <strong style={{ color: '#3730A3' }}>
-            {formatMXN(totalThisMonth)}
-          </strong>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="tbl table-to-cards">
-            <thead>
-              <tr>
-                <th>Administrador</th>
-                <th className="text-right">Ingresos del mes</th>
-                <th className="text-right">Saldo actual</th>
-              </tr>
-            </thead>
-            <tbody>
-              {admins.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={3}
-                    className="text-center py-6 text-sm"
-                    style={{ color: 'var(--text-tertiary)' }}
-                  >
-                    Sin administradores activos.
-                  </td>
-                </tr>
-              ) : (
-                admins.map((a) => (
-                  <tr key={a.admin_id}>
-                    <td data-label="Admin" className="font-medium">
-                      {a.admin_name}
-                    </td>
-                    <td
-                      data-label="Ingresos mes"
-                      className="text-right font-bold"
-                      style={{
-                        color:
-                          a.this_month > 0 ? '#3730A3' : 'var(--text-tertiary)',
-                      }}
-                    >
-                      {formatMXN(a.this_month)}
-                    </td>
-                    <td
-                      data-label="Saldo"
-                      className="text-right font-bold"
-                      style={{
-                        color: a.balance > 0 ? '#15803D' : 'var(--text-tertiary)',
-                      }}
-                    >
-                      {formatMXN(a.balance)}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function AdminCashValidator({ admins }: { admins: AdminWithCash[] }) {
-  // Solo admins con balance > 0 son válidos para validar.
-  const eligible = admins.filter((a) => a.balance > 0);
-  return (
-    <div className="flex flex-col gap-3">
-      <div>
-        <h2 className="text-lg font-semibold">Validar efectivo</h2>
-        <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-          El monto se recalcula en el servidor al confirmar (anti-race).
-        </p>
-      </div>
-      {eligible.length === 0 ? (
-        <div
-          className="card p-6 text-center text-sm"
-          style={{ color: 'var(--text-tertiary)' }}
-        >
-          Ningún admin tiene efectivo pendiente de validar.
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          {eligible.map((a) => (
-            <AdminCashRow key={a.admin_id} admin={a} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AdminCashRow({ admin: a }: { admin: AdminWithCash }) {
-  const router = useRouter();
-  const [pending, startTransition] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-
-  const handleReceive = () => {
-    setError(null);
-    setSuccess(null);
-    const fd = new FormData();
-    fd.set('admin_id', a.admin_id);
-
-    startTransition(async () => {
-      try {
-        const result = await receiveAdminCashAction({ status: 'idle' }, fd);
-        if (result.status === 'success') {
-          setSuccess(
-            `Recibiste ${formatMXN(result.received)} de ${a.admin_name}.`,
-          );
-          router.refresh();
-        } else if (result.status === 'error') {
-          setError(result.message);
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Error de red';
-        setError(message);
-      }
-    });
-  };
-
-  return (
-    <div
-      className="card p-4 flex items-center gap-4 flex-wrap"
-      style={{ border: '1px solid var(--border)' }}
-    >
-      <div
-        className="flex items-center justify-center"
-        style={{
-          width: 40,
-          height: 40,
-          borderRadius: 9999,
-          background: '#4338CA',
-          color: '#fff',
-          fontWeight: 700,
-          fontSize: '0.875rem',
-          flexShrink: 0,
-        }}
-      >
-        {a.admin_name.charAt(0).toUpperCase()}
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="font-semibold">{a.admin_name}</div>
-        <div
-          className="text-xs"
-          style={{ color: 'var(--text-tertiary)' }}
-        >
-          Saldo:{' '}
-          <strong style={{ color: '#15803D' }}>{formatMXN(a.balance)}</strong>
-        </div>
-        {error && (
-          <div
-            role="alert"
-            className="text-xs mt-1"
-            style={{ color: 'var(--danger, #dc2626)' }}
-          >
-            {error}
-          </div>
-        )}
-        {success && (
-          <div
-            role="status"
-            className="text-xs mt-1 flex items-center gap-1"
-            style={{ color: 'var(--success, #15803D)' }}
-          >
-            <CircleCheckBig size={12} />
-            <span>{success}</span>
-          </div>
-        )}
-      </div>
-      <button
-        type="button"
-        onClick={handleReceive}
-        disabled={pending}
-        className="btn btn-primary"
-        style={{ padding: '10px 16px', fontSize: '0.875rem' }}
-        aria-busy={pending}
-      >
-        {pending ? (
-          <>
-            <Loader size={14} className="animate-spin" />
-            <span style={{ marginLeft: 6 }}>Registrando…</span>
-          </>
-        ) : (
-          <>
-            <DollarSign size={14} /> Recibí efectivo de{' '}
-            {a.admin_name.split(' ')[0]} — {formatMXN(a.balance)}
-          </>
-        )}
-      </button>
-    </div>
-  );
-}
 
 /**
  * Tabla "Historial de efectivo recibido" — cash_transfers donde el
