@@ -151,7 +151,7 @@ export default async function EntregasPage({
          cost_per_sheet, has_hojas, has_cubrecanto, has_catalogo,
          cuts_count, cuts_total, edge_banding_type, edge_banding_meters,
          edge_banding_total, edgebanding_manual_cost, catalog_price,
-         delivery_cost, document_url, document_urls,
+         delivery_cost, extra_costs, document_url, document_urls,
          sellers ( name ),
          lead_colors ( quantity, cost_per_sheet, unit_cost, colors ( name ) ),
          lead_edgebanding_colors ( quantity, colors ( name ) )`,
@@ -309,6 +309,9 @@ export default async function EntregasPage({
       edgebanding_manual_cost: number | string | null;
       catalog_price: number | string | null;
       delivery_cost: number | string | null;
+      /** Cargos extra del pedido (jsonb). Cada item: { description, amount }.
+       *  Rows con descripción vacía o amount=0 se descartan al mapear. */
+      extra_costs: unknown | null;
       document_url: string | null;
       document_urls: string[] | null;
       sellers: { name: string } | { name: string }[] | null;
@@ -394,6 +397,27 @@ export default async function EntregasPage({
         })
         .filter((c) => c.quantity > 0);
 
+      // Cargos extras del pedido. Filtramos rows con descripción no
+      // vacía y amount > 0 — el resto son fantasmas de leads legacy
+      // (lo mismo que hace /leads y /driver al consumir la columna).
+      const extraCosts = Array.isArray(l.extra_costs)
+        ? (l.extra_costs as unknown[])
+            .map((e) => {
+              if (!e || typeof e !== 'object') return null;
+              const obj = e as { description?: unknown; amount?: unknown };
+              const description =
+                typeof obj.description === 'string'
+                  ? obj.description.trim()
+                  : '';
+              const amount = Number(obj.amount ?? 0);
+              if (description.length === 0 || !(amount > 0)) return null;
+              return { description, amount };
+            })
+            .filter(
+              (x): x is { description: string; amount: number } => x !== null,
+            )
+        : [];
+
       leadDetails[l.id] = {
         phone: l.phone ?? '',
         channel: l.channel ?? '',
@@ -416,6 +440,7 @@ export default async function EntregasPage({
           l.catalog_price == null ? null : Number(l.catalog_price),
         delivery_cost:
           l.delivery_cost == null ? null : Number(l.delivery_cost),
+        extra_costs: extraCosts,
         document_urls: mergedDocs,
         colors_with_unit: colorsWithUnit,
         payments: [],

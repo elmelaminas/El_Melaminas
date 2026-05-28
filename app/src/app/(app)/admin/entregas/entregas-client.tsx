@@ -152,6 +152,10 @@ export type LeadDetail = {
   edgebanding_manual_cost: number | null;
   catalog_price: number | null;
   delivery_cost: number | null;
+  /** Cargos extras del pedido (filtrados a description+amount válidos).
+   *  Sumados ya están en `total_amount`; se desglosan en el modal para
+   *  que el admin vea el origen de cada cargo. */
+  extra_costs: { description: string; amount: number }[];
   document_urls: string[];
   /** Colores con unit_cost real (lectura desde lead_colors.unit_cost
    *  con fallback a cost_per_sheet). El array que vive dentro de
@@ -1668,6 +1672,53 @@ function LeadDetailModal({
             <KV label="Envío" value={formatMXN(detail.delivery_cost)} />
           )}
 
+          {/* Costos extras — bloque dedicado con lista item por item y
+              subtotal. Aparece sólo si hay al menos un cargo válido. El
+              monto ya está incluido en `total_amount`; se desglosa para
+              auditoría visual. */}
+          {detail && detail.extra_costs.length > 0 && (
+            <div className="mt-3">
+              <div
+                className="text-xs uppercase tracking-wide mb-2"
+                style={{ color: 'var(--text-tertiary)' }}
+              >
+                Costos extras
+              </div>
+              <div
+                className="flex flex-col gap-1 p-3 rounded-lg"
+                style={{ background: 'var(--bg-subtle)' }}
+              >
+                {detail.extra_costs.map((e, idx) => (
+                  <div
+                    key={`${e.description}-${idx}`}
+                    className="flex items-center justify-between gap-2 text-sm"
+                  >
+                    <span style={{ color: 'var(--text-primary)' }}>
+                      {e.description}
+                    </span>
+                    <span className="font-semibold">
+                      {formatMXN(e.amount)}
+                    </span>
+                  </div>
+                ))}
+                <div
+                  className="flex items-center justify-between gap-2 pt-2 mt-1 text-sm"
+                  style={{
+                    borderTop: '1px solid var(--border)',
+                    color: 'var(--text-secondary)',
+                  }}
+                >
+                  <span className="font-semibold">Total extras</span>
+                  <span className="font-bold">
+                    {formatMXN(
+                      detail.extra_costs.reduce((s, e) => s + e.amount, 0),
+                    )}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Desglose total */}
           <div
             className="mt-3 pt-3 flex justify-between items-baseline"
@@ -1685,6 +1736,38 @@ function LeadDetailModal({
             >
               <span>Subtotal hojas</span>
               <span>{formatMXN(subtotalHojas)}</span>
+            </div>
+          )}
+          {detail?.cuts_total != null && detail.cuts_total > 0 && (
+            <div
+              className="text-xs mt-1 flex justify-between"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              <span>Cortes</span>
+              <span>{formatMXN(detail.cuts_total)}</span>
+            </div>
+          )}
+          {detail?.edge_banding_total != null &&
+            detail.edge_banding_total > 0 && (
+              <div
+                className="text-xs mt-1 flex justify-between"
+                style={{ color: 'var(--text-tertiary)' }}
+              >
+                <span>Cubrecanto</span>
+                <span>{formatMXN(detail.edge_banding_total)}</span>
+              </div>
+            )}
+          {detail && detail.extra_costs.length > 0 && (
+            <div
+              className="text-xs mt-1 flex justify-between"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              <span>Costos extras</span>
+              <span>
+                {formatMXN(
+                  detail.extra_costs.reduce((s, e) => s + e.amount, 0),
+                )}
+              </span>
             </div>
           )}
         </DetailSection>
