@@ -8,10 +8,12 @@ import {
   ReceiveIndividualCashSchema,
   ReceiveFromContadorSchema,
   ReceiveIndividualFromContadorSchema,
+  ReceiveBulkFromContadorSchema,
   type ReceiveAdminCashState,
   type ReceiveIndividualCashState,
   type ReceiveFromContadorState,
   type ReceiveIndividualFromContadorState,
+  type ReceiveBulkFromContadorState,
 } from './schema';
 
 // NB: 'use server' file — solo async functions.
@@ -1019,6 +1021,355 @@ export async function receiveIndividualFromContadorAction(
       '[receiveIndividualFromContadorAction] excepción no controlada:',
       err,
     );
+    return { status: 'error', message, reason: 'other' };
+  }
+}
+
+/**
+ * `receiveBulkFromContadorAction(payment_ids, pin)` — versión bulk de
+ * la recepción individual. El admin selecciona varias filas en la
+ * tabla "Cobros en efectivo registrados" y las confirma una sola vez
+ * con su PIN.
+ *
+ * Comportamiento atómico: si cualquier payment_id falla las
+ * pre-condiciones (no validado por contador, ya recibido por otro
+ * admin, falla de DB), abortamos y revertimos los inserts ya hechos
+ * para no dejar la cadena del efectivo en estado parcial. El rollback
+ * es best-effort — loggeamos los fallos individuales sin reintentar.
+ *
+ * Notif al contador: una sola notificación agregada con el total y la
+ * cantidad de cobros (no spam de N notificaciones).
+ */
+export async function receiveBulkFromContadorAction(
+  paymentIdsInput: string[],
+  pinInput: string,
+): Promise<ReceiveBulkFromContadorState> {
+  // Inserts ya realizados; usados para rollback si algo falla más
+  // adelante en el bucle. Cada entry guarda lo necesario para
+  // borrar la fila correspondiente.
+  const inserted: {
+    ingresoId: string;
+    transferId: string | null;
+  }[] = [];
+
+  async function rollbackInserts(
+    admin: ReturnType<typeof supabaseAdmin>,
+  ): Promise<void> {
+    for (const e of inserted) {
+      try {
+        await admin
+          .from('admin_cash_register')
+          .delete()
+          .eq('id', e.ingresoId);
+      } catch (rollErr) {
+        console.error(
+          '[receiveBulkFromContadorAction] rollback ingreso falló:',
+          rollErr,
+        );
+      }
+      if (e.transferId) {
+        try {
+          await admin
+            .from('contador_to_admin_transfers')
+            .delete()
+            .eq('id', e.transferId);
+        } catch (rollErr) {
+          console.error(
+            '[receiveBulkFromContadorAction] rollback transfer falló:',
+            rollErr,
+          );
+        }
+      }
+    }
+  }
+
+  try {
+    const parsed = ReceiveBulkFromContadorSchema.safeParse({
+      payment_ids: paymentIdsInput,
+      pin: pinInput,
+    });
+    if (!parsed.success) {
+      return {
+        status: 'error',
+        message:
+          parsed.error.flatten().formErrors.join(' ') ||
+          'Datos inválidos para recibir cobros del contador.',
+        reason: 'other',
+      };
+    }
+    const { payment_ids: paymentIds, pin: providedPin } = parsed.data;
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return {
+        status: 'error',
+        message: 'Sesión no válida. Vuelve a iniciar sesión.',
+        reason: 'other',
+      };
+    }
+    const adminId = user.id;
+
+    const admin = supabaseAdmin();
+
+    // Role + PIN check del admin.
+    const { data: callerProfile, error: callerErr } = await admin
+      .from('profiles')
+      .select('role, confirmation_pin, full_name')
+      .eq('id', adminId)
+      .maybeSingle();
+    if (callerErr) {
+      return {
+        status: 'error',
+        message: `No se pudo verificar tu rol: ${callerErr.message}`,
+        reason: 'other',
+      };
+    }
+    if (
+      callerProfile?.role !== 'admin' &&
+      callerProfile?.role !== 'admin2'
+    ) {
+      return {
+        status: 'error',
+        message:
+          'Solo un administrador (admin o admin2) puede recibir cobros del contador.',
+        reason: 'other',
+      };
+    }
+    const storedPin =
+      typeof callerProfile.confirmation_pin === 'string'
+        ? callerProfile.confirmation_pin.trim()
+        : '';
+    if (storedPin === '') {
+      return {
+        status: 'error',
+        message:
+          'No tienes PIN configurado. Contacta al administrador para que te lo asigne.',
+        reason: 'pin_missing',
+      };
+    }
+    if (storedPin !== providedPin) {
+      return {
+        status: 'error',
+        message: 'PIN incorrecto. Intenta de nuevo.',
+        reason: 'pin_incorrect',
+      };
+    }
+
+    const adminName = callerProfile.full_name ?? 'Administrador';
+    // Acumulamos por contador para la notif final agregada.
+    const totalsByContador = new Map<string, number>();
+    let totalReceived = 0;
+
+    for (const paymentId of paymentIds) {
+      // 1. Egreso source='validado_contador' para este payment_id.
+      const { data: egresoRows, error: egresoErr } = await admin
+        .from('admin_cash_register')
+        .select('id, amount, registered_by')
+        .eq('payment_id', paymentId)
+        .eq('operation_type', 'egreso')
+        .eq('source', 'validado_contador')
+        .order('created_at', { ascending: false })
+        .limit(1);
+      if (egresoErr) {
+        await rollbackInserts(admin);
+        return {
+          status: 'error',
+          message: `No se pudo leer un cobro: ${egresoErr.message}`,
+          reason: 'other',
+        };
+      }
+      const egreso = egresoRows?.[0];
+      if (!egreso) {
+        await rollbackInserts(admin);
+        return {
+          status: 'error',
+          message:
+            'Uno de los cobros seleccionados aún no fue validado por el contador.',
+          reason: 'not_validated',
+        };
+      }
+      const contadorId =
+        typeof egreso.registered_by === 'string'
+          ? egreso.registered_by
+          : null;
+      const amount = Number(egreso.amount ?? 0);
+
+      // 2. Idempotencia: nadie recibió ya este cobro del contador.
+      const { data: priorIngreso, error: priorErr } = await admin
+        .from('admin_cash_register')
+        .select('id')
+        .eq('payment_id', paymentId)
+        .eq('operation_type', 'ingreso')
+        .eq('source', 'recibido_contador')
+        .limit(1);
+      if (priorErr) {
+        await rollbackInserts(admin);
+        return {
+          status: 'error',
+          message: `No se pudo verificar duplicados: ${priorErr.message}`,
+          reason: 'other',
+        };
+      }
+      if (priorIngreso && priorIngreso.length > 0) {
+        await rollbackInserts(admin);
+        return {
+          status: 'error',
+          message:
+            'Uno de los cobros seleccionados ya fue recibido por un admin.',
+          reason: 'already_received',
+        };
+      }
+
+      // 3. INSERT ingreso en la caja del admin.
+      const { data: ingresoRow, error: ingresoErr } = await admin
+        .from('admin_cash_register')
+        .insert({
+          admin_id: adminId,
+          amount,
+          operation_type: 'ingreso',
+          source: 'recibido_contador',
+          payment_id: paymentId,
+          registered_by: adminId,
+          notes: 'Recibido del contador (bulk)',
+        })
+        .select('id')
+        .single();
+      if (ingresoErr || !ingresoRow) {
+        console.error(
+          '[receiveBulkFromContadorAction] insert ingreso falló:',
+          ingresoErr,
+        );
+        await rollbackInserts(admin);
+        return {
+          status: 'error',
+          message: `No se pudo registrar en tu caja: ${
+            ingresoErr?.message ?? 'sin datos'
+          }`,
+          reason: 'other',
+        };
+      }
+      const ingresoId: string = ingresoRow.id;
+
+      // 4. INSERT contador_to_admin_transfers (non-fatal aislado:
+      //    si falla solo este, NO abortamos todo el bulk — el
+      //    ingreso del admin ya quedó registrado y eso es lo crítico).
+      let transferId: string | null = null;
+      if (contadorId) {
+        try {
+          const { data: transferRow, error: transferErr } = await admin
+            .from('contador_to_admin_transfers')
+            .insert({
+              contador_id: contadorId,
+              admin_id: adminId,
+              amount,
+              pin_validated: true,
+              validated_at: new Date().toISOString(),
+              notes: 'Recepción bulk',
+            })
+            .select('id')
+            .single();
+          if (transferErr) {
+            console.error(
+              '[receiveBulkFromContadorAction] transfer insert falló (no fatal):',
+              transferErr,
+            );
+          } else if (transferRow) {
+            transferId = transferRow.id;
+          }
+        } catch (e) {
+          console.error(
+            '[receiveBulkFromContadorAction] transfer excepción (no fatal):',
+            e,
+          );
+        }
+      }
+
+      inserted.push({ ingresoId, transferId });
+      totalReceived += amount;
+      if (contadorId) {
+        totalsByContador.set(
+          contadorId,
+          (totalsByContador.get(contadorId) ?? 0) + amount,
+        );
+      }
+    }
+
+    // Notif al/los contador(es). Una notif agregada por contador con
+    // total y cantidad. Best-effort.
+    try {
+      const amountFmt = (n: number) =>
+        new Intl.NumberFormat('es-MX', {
+          style: 'currency',
+          currency: 'MXN',
+          minimumFractionDigits: 0,
+        }).format(n);
+      const count = paymentIds.length;
+      const inserts: {
+        recipient_id: string;
+        type: string;
+        message: string;
+      }[] = [];
+      for (const [contadorId, total] of totalsByContador.entries()) {
+        inserts.push({
+          recipient_id: contadorId,
+          type: 'efectivo_transferido_admin',
+          message: `✅ ${adminName} recibió ${amountFmt(total)} de ${
+            count === 1 ? '1 cliente' : `${count} clientes`
+          } de tu caja.`,
+        });
+      }
+      if (inserts.length > 0) {
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifErr) {
+          console.error(
+            '[receiveBulkFromContadorAction] notif falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[receiveBulkFromContadorAction] notif excepción (no fatal):',
+        e,
+      );
+    }
+
+    revalidatePath('/contador');
+    revalidatePath('/admin/mi-caja');
+    revalidatePath('/admin/caja');
+    revalidatePath('/dashboard');
+    return {
+      status: 'success',
+      received: totalReceived,
+      count: paymentIds.length,
+    };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al recibir cobros del contador';
+    console.error(
+      '[receiveBulkFromContadorAction] excepción no controlada:',
+      err,
+    );
+    // Intento de rollback: el admin admin se inicializa una vez antes
+    // del try; recreamos para el rollback en este catch externo. Si
+    // ya fue inicializado dentro del try, los inserts ya fueron
+    // revertidos en sus puntos respectivos. Acá es safety-net.
+    try {
+      await rollbackInserts(supabaseAdmin());
+    } catch (rollErr) {
+      console.error(
+        '[receiveBulkFromContadorAction] rollback final falló:',
+        rollErr,
+      );
+    }
     return { status: 'error', message, reason: 'other' };
   }
 }

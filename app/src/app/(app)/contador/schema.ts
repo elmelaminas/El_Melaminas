@@ -150,3 +150,58 @@ export type ReceiveIndividualFromContadorState =
 
 export const initialReceiveIndividualFromContadorState: ReceiveIndividualFromContadorState =
   { status: 'idle' };
+
+/**
+ * `receiveBulkFromContadorAction(payment_ids, pin)` — el admin recibe
+ * del contador VARIOS cobros en un solo gesto, validando una sola vez
+ * con su PIN. Implementa el flujo de checkboxes en la tabla "Cobros en
+ * efectivo registrados".
+ *
+ * Pre-condición por cada payment_id: igual que la versión individual
+ * (existe egreso `validado_contador`, no existe ya un ingreso
+ * `recibido_contador`).
+ *
+ * Semántica de fallos: si cualquier payment_id no cumple las
+ * pre-condiciones, abortamos toda la operación y hacemos rollback de
+ * los inserts ya realizados (best-effort). Esto evita estados
+ * parciales donde una parte del bulk se aplicó y la otra no.
+ *
+ * Cota razonable: max 100 payment_ids por bulk para evitar
+ * abuso/timeout.
+ */
+export const ReceiveBulkFromContadorSchema = z.object({
+  payment_ids: z
+    .array(z.string().uuid('payment_id inválido'))
+    .min(1, 'Selecciona al menos un cobro')
+    .max(100, 'Demasiados cobros seleccionados'),
+  pin: z
+    .string()
+    .regex(/^\d{4}$/, 'PIN debe tener exactamente 4 dígitos'),
+});
+
+export type ReceiveBulkFromContadorInput = z.infer<
+  typeof ReceiveBulkFromContadorSchema
+>;
+
+export type ReceiveBulkFromContadorState =
+  | { status: 'idle' }
+  | {
+      status: 'success';
+      /** Suma de montos recibidos en este bulk. */
+      received: number;
+      /** Cantidad de cobros recibidos en este bulk. */
+      count: number;
+    }
+  | {
+      status: 'error';
+      message: string;
+      reason?:
+        | 'pin_incorrect'
+        | 'pin_missing'
+        | 'not_validated'
+        | 'already_received'
+        | 'other';
+    };
+
+export const initialReceiveBulkFromContadorState: ReceiveBulkFromContadorState =
+  { status: 'idle' };

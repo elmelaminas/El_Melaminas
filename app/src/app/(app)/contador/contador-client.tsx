@@ -14,7 +14,7 @@ import { formatMXN } from '@/data/mock';
 import {
   receiveAdminCashAction,
   receiveIndividualCashAction,
-  receiveIndividualFromContadorAction,
+  receiveBulkFromContadorAction,
 } from './actions';
 import { PinConfirmModal } from '@/components/ui/PinConfirmModal';
 import { formatDateTimeCDMX } from '@/lib/format-date';
@@ -666,14 +666,82 @@ function CashPaymentsSection({
   const router = useRouter();
   const total = cashPayments.reduce((s, p) => s + p.amount, 0);
   const count = cashPayments.length;
-  // Fila seleccionada para el flujo de confirmación. null = modal
-  // cerrado. Cuando hay una fila seleccionada, el componente
-  // `<PinConfirmModal>` se monta en overlay. Distinguimos qué tipo de
-  // flujo abrir por el viewerRole — el contador valida, el admin
-  // recibe del contador.
-  const [pendingRow, setPendingRow] = useState<CashPaymentRow | null>(null);
   const isAdminViewer = viewerRole === 'admin' || viewerRole === 'admin2';
   const isContadorViewer = viewerRole === 'contador';
+
+  // Contador viewer: una sola fila a la vez para el flujo individual
+  // existente (validar admin→contador). Es independiente del bulk
+  // selection del admin.
+  const [pendingRow, setPendingRow] = useState<CashPaymentRow | null>(null);
+
+  // Admin viewer: selección bulk con checkboxes. Set de payment_ids
+  // marcados + bandera para abrir el modal único de PIN. Las filas no
+  // seleccionables (no validadas o ya recibidas) no entran al set.
+  const [selectedPaymentIds, setSelectedPaymentIds] = useState<Set<string>>(
+    new Set(),
+  );
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+
+  const selectableRows = isAdminViewer
+    ? cashPayments.filter(
+        (p) =>
+          typeof p.payment_id === 'string' &&
+          p.validated &&
+          !p.received_by_admin,
+      )
+    : [];
+  const selectedRows = cashPayments.filter(
+    (p) =>
+      typeof p.payment_id === 'string' &&
+      selectedPaymentIds.has(p.payment_id),
+  );
+  const selectedTotal = selectedRows.reduce((s, p) => s + p.amount, 0);
+  const allSelected =
+    selectableRows.length > 0 &&
+    selectableRows.every(
+      (r) =>
+        typeof r.payment_id === 'string' &&
+        selectedPaymentIds.has(r.payment_id),
+    );
+  // Si todas las seleccionables están marcadas → desmarca todo. Si no
+  // → marca todas las seleccionables. Reglas estándar de "master
+  // checkbox" sin estado indeterminate explícito (cubierto por la
+  // suma textual de la barra sticky).
+  function toggleAllSelectable() {
+    if (allSelected) {
+      setSelectedPaymentIds(new Set());
+    } else {
+      setSelectedPaymentIds(
+        new Set(
+          selectableRows.map((r) => r.payment_id as string).filter(Boolean),
+        ),
+      );
+    }
+  }
+  function toggleRow(paymentId: string) {
+    setSelectedPaymentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(paymentId)) next.delete(paymentId);
+      else next.add(paymentId);
+      return next;
+    });
+  }
+  // Nombre del contador que validó las filas seleccionadas — útil para
+  // el modal "Del contador: X". Si todas las seleccionadas vienen del
+  // mismo contador, mostramos su nombre; si vienen de varios mostramos
+  // "(varios)".
+  const selectedValidatorNames = new Set(
+    selectedRows
+      .map((r) => r.validator_name)
+      .filter((n): n is string => typeof n === 'string' && n.length > 0),
+  );
+  const contadorLabel =
+    selectedValidatorNames.size === 1
+      ? Array.from(selectedValidatorNames)[0]
+      : selectedValidatorNames.size > 1
+        ? '(varios)'
+        : '—';
+
   return (
     <div className="flex flex-col gap-3">
       <div>
@@ -772,25 +840,42 @@ function CashPaymentsSection({
         </div>
       </div>
 
-      {/* Tabla de detalle */}
+      {/* Tabla de detalle. Para admin viewer agregamos columna de
+          checkbox al inicio (master + por fila); el contador viewer
+          mantiene la tabla original. La columna "Acción" queda
+          solo para el flujo del contador (per-row). */}
       <div className="tbl-wrap">
         <div className="overflow-x-auto">
           <table className="tbl table-to-cards">
             <thead>
               <tr>
+                {isAdminViewer && (
+                  <th style={{ width: 36 }}>
+                    <input
+                      type="checkbox"
+                      aria-label="Seleccionar todos los cobros recibibles"
+                      title="Seleccionar todos los cobros recibibles"
+                      checked={allSelected}
+                      disabled={selectableRows.length === 0 || !hasPin}
+                      onChange={toggleAllSelectable}
+                    />
+                  </th>
+                )}
                 <th>Cliente</th>
                 <th>Admin</th>
                 <th className="text-right">Monto</th>
                 <th>Fecha</th>
                 <th>Estado</th>
-                <th className="text-right">Acción</th>
+                {isContadorViewer && <th className="text-right">Acción</th>}
               </tr>
             </thead>
             <tbody>
               {cashPayments.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={
+                      (isAdminViewer ? 1 : 0) + (isContadorViewer ? 6 : 5)
+                    }
                     className="text-center py-6 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -798,8 +883,33 @@ function CashPaymentsSection({
                   </td>
                 </tr>
               ) : (
-                cashPayments.map((p) => (
+                cashPayments.map((p) => {
+                  const selectable =
+                    isAdminViewer &&
+                    typeof p.payment_id === 'string' &&
+                    p.validated &&
+                    !p.received_by_admin;
+                  const checked =
+                    selectable &&
+                    typeof p.payment_id === 'string' &&
+                    selectedPaymentIds.has(p.payment_id);
+                  return (
                   <tr key={p.id}>
+                    {isAdminViewer && (
+                      <td data-label="Sel.">
+                        {selectable && p.payment_id ? (
+                          <input
+                            type="checkbox"
+                            aria-label={`Seleccionar cobro de ${p.client_name}`}
+                            disabled={!hasPin}
+                            checked={!!checked}
+                            onChange={() => toggleRow(p.payment_id as string)}
+                          />
+                        ) : (
+                          <span aria-hidden="true">&nbsp;</span>
+                        )}
+                      </td>
+                    )}
                     <td data-label="Cliente" className="font-medium">
                       {p.client_name}
                     </td>
@@ -884,58 +994,11 @@ function CashPaymentsSection({
                         </span>
                       )}
                     </td>
-                    <td data-label="Acción" className="text-right">
-                      {/* Ramas según rol:
-                          - admin/admin2 + ya recibido → nada.
-                          - admin/admin2 + validado pero no recibido → botón
-                            "✓ Recibí del contador" (PIN del admin).
-                          - admin/admin2 + no validado → texto "Esperando
-                            validación del contador" (gris pequeño).
-                          - contador + no validado → botón "✓ Recibí"
-                            (PIN del contador) — flujo existente.
-                          - contador + validado → nada (ya hizo lo suyo).
-                          - rol desconocido → nada. */}
-                      {isAdminViewer && p.payment_id ? (
-                        p.received_by_admin ? null : p.validated ? (
-                          <button
-                            type="button"
-                            onClick={() => setPendingRow(p)}
-                            disabled={!hasPin}
-                            className="btn"
-                            style={{
-                              padding: '4px 10px',
-                              fontSize: '0.75rem',
-                              fontWeight: 600,
-                              background: hasPin
-                                ? '#16A34A'
-                                : 'var(--bg-muted)',
-                              color: hasPin
-                                ? '#fff'
-                                : 'var(--text-tertiary)',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4,
-                              cursor: hasPin ? 'pointer' : 'not-allowed',
-                            }}
-                            aria-label={`Recibir del contador el cobro de ${p.client_name}`}
-                            title={
-                              hasPin
-                                ? `Recibir del contador el cobro de ${p.client_name}`
-                                : 'Necesitas un PIN configurado para recibir'
-                            }
-                          >
-                            <CircleCheckBig size={12} /> Recibí del contador
-                          </button>
-                        ) : (
-                          <span
-                            className="text-[11px]"
-                            style={{ color: 'var(--text-tertiary)' }}
-                          >
-                            Esperando validación del contador
-                          </span>
-                        )
-                      ) : isContadorViewer && p.payment_id ? (
-                        !p.validated ? (
+                    {/* Columna "Acción" solo para contador viewer: el
+                        admin opera por checkboxes + barra sticky. */}
+                    {isContadorViewer && (
+                      <td data-label="Acción" className="text-right">
+                        {p.payment_id && !p.validated ? (
                           <button
                             type="button"
                             onClick={() => setPendingRow(p)}
@@ -965,11 +1028,12 @@ function CashPaymentsSection({
                           >
                             <CircleCheckBig size={12} /> Recibí
                           </button>
-                        ) : null
-                      ) : null}
-                    </td>
+                        ) : null}
+                      </td>
+                    )}
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -990,64 +1054,122 @@ function CashPaymentsSection({
         )}
       </div>
 
-      {/* El modal de PIN se monta una vez por rama. El admin viewer ve
-          el flujo "Recibir del contador" (paso 3 de la cadena); el
-          contador viewer ve el flujo "Validar del admin" (paso 2).
-          Cada rama llama a una server action distinta y muestra
-          detalles diferentes en el paso 1. */}
+      {/* Admin viewer: barra sticky al fondo + modal único bulk.
+          Aparecen solo cuando hay selección y rol admin/admin2. */}
+      {isAdminViewer && selectedPaymentIds.size > 0 && (
+        <div
+          role="region"
+          aria-label="Confirmación de recepción de cobros del contador"
+          className="fixed left-0 right-0 z-40"
+          style={{ bottom: 0 }}
+        >
+          <div
+            className="card mx-auto"
+            style={{
+              maxWidth: 920,
+              margin: '0 auto 16px auto',
+              padding: '12px 16px',
+              borderRadius: 12,
+              boxShadow: '0 -4px 16px rgba(15,23,42,0.15)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+              justifyContent: 'space-between',
+              background: 'var(--bg-base, #fff)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            <div
+              className="text-sm"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              <span style={{ fontWeight: 600 }}>
+                ☑ {selectedPaymentIds.size}{' '}
+                {selectedPaymentIds.size === 1
+                  ? 'cliente seleccionado'
+                  : 'clientes seleccionados'}
+              </span>
+              <span
+                style={{ marginLeft: 12, color: 'var(--text-secondary)' }}
+              >
+                Total:{' '}
+                <strong style={{ color: '#15803D' }}>
+                  {formatMXN(selectedTotal)}
+                </strong>
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => setSelectedPaymentIds(new Set())}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setBulkModalOpen(true)}
+                disabled={!hasPin || selectedPaymentIds.size === 0}
+                title={
+                  hasPin
+                    ? 'Confirmar recepción con PIN'
+                    : 'Necesitas un PIN configurado'
+                }
+              >
+                <CircleCheckBig size={16} /> Confirmar recepción
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isAdminViewer && (
         <PinConfirmModal
-          isOpen={pendingRow != null}
-          onClose={() => setPendingRow(null)}
-          title="Recibir efectivo del contador"
-          intro="¿Confirmas recibir este efectivo del contador?"
+          isOpen={bulkModalOpen}
+          onClose={() => setBulkModalOpen(false)}
+          title="Confirmar recepción del contador"
+          intro="¿Confirmas recibir efectivo del contador?"
           confirmText="Confirmar recepción"
-          details={
-            pendingRow
-              ? [
-                  { label: 'Cliente', value: pendingRow.client_name },
-                  {
-                    label: 'Monto',
-                    value: (
-                      <strong style={{ color: '#15803D' }}>
-                        {formatMXN(pendingRow.amount)}
-                      </strong>
-                    ),
-                  },
-                  {
-                    label: 'Validado por',
-                    value: pendingRow.validator_name ?? '—',
-                  },
-                ]
-              : []
-          }
+          details={[
+            ...selectedRows.map((r) => ({
+              label: r.client_name,
+              value: formatMXN(r.amount),
+            })),
+            {
+              label: 'TOTAL A RECIBIR',
+              value: (
+                <strong style={{ color: '#15803D' }}>
+                  {formatMXN(selectedTotal)}
+                </strong>
+              ),
+            },
+            { label: 'Del contador', value: contadorLabel },
+          ]}
           onConfirm={async (pin) => {
-            if (!pendingRow?.payment_id) {
+            const ids = Array.from(selectedPaymentIds);
+            if (ids.length === 0) {
               return {
                 success: false,
-                error: 'Este cobro no tiene un pago asociado.',
+                error: 'Selecciona al menos un cobro.',
               };
             }
-            const result = await receiveIndividualFromContadorAction(
-              pendingRow.payment_id,
-              pin,
-            );
+            const result = await receiveBulkFromContadorAction(ids, pin);
             if (result.status === 'success') {
+              setSelectedPaymentIds(new Set());
               router.refresh();
               return { success: true };
             }
             if (result.status === 'error') {
-              // already_received y not_validated igual refrescan para
-              // que la UI sincronice el badge tras un cambio externo.
               if (
                 result.reason === 'already_received' ||
                 result.reason === 'not_validated'
               ) {
+                // Re-sync para que el admin vea por qué falló (alguien
+                // recibió o el contador des-validó entre ticks).
                 router.refresh();
               }
-              // PinConfirmResult.reason no acepta 'not_validated' /
-              // 'already_received' fuera de su union; los mapeamos a
-              // 'other' (modal muestra el mensaje sin reintento).
               const r = result.reason;
               const mapped: 'pin_incorrect' | 'pin_missing' | 'other' =
                 r === 'pin_incorrect' || r === 'pin_missing' ? r : 'other';
