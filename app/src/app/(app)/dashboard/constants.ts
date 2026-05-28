@@ -34,6 +34,43 @@ export const MES_LABEL: Readonly<Record<number, string>> = Object.freeze(
   Object.fromEntries(MES_OPTIONS.map((m) => [m.value, m.label])),
 );
 
+export type SaleType =
+  | ''
+  | 'primer_contacto'
+  | 'recompra'
+  | 'seguimiento'
+  | 'venta_empleado';
+
+/** Opciones del filtro de tipo de venta (dashboard + /leads). El primer
+ *  valor con `value=''` representa "todos" — el server no aplica
+ *  `.eq('sale_type', …)` en ese caso. */
+export const SALE_TYPE_OPTIONS: readonly { value: SaleType; label: string }[] = [
+  { value: '', label: 'Todos los tipos' },
+  { value: 'primer_contacto', label: 'Primer contacto' },
+  { value: 'recompra', label: 'Recompra' },
+  { value: 'seguimiento', label: 'Seguimiento' },
+  { value: 'venta_empleado', label: 'Venta empleado' },
+];
+
+/** Sufijo para el subtitle cuando hay tipo de venta activo. Plural/
+ *  contextual donde aplica para que lea natural junto al periodo
+ *  ("Métricas de Mayo 2026 — Recompras"). */
+export const SALE_TYPE_SUBTITLE: Readonly<Record<string, string>> = Object.freeze({
+  primer_contacto: 'Primer contacto',
+  recompra: 'Recompras',
+  seguimiento: 'Seguimientos',
+  venta_empleado: 'Ventas a empleados',
+});
+
+const SALE_TYPE_VALUE_SET: readonly string[] = SALE_TYPE_OPTIONS
+  .map((o) => o.value)
+  .filter((v) => v !== '');
+
+export function normalizeSaleType(input: string | undefined | null): SaleType {
+  if (!input) return '';
+  return SALE_TYPE_VALUE_SET.includes(input) ? (input as SaleType) : '';
+}
+
 const MES_SHORT_LABEL: Readonly<Record<number, string>> = Object.freeze({
   1: 'ene', 2: 'feb', 3: 'mar', 4: 'abr', 5: 'may', 6: 'jun',
   7: 'jul', 8: 'ago', 9: 'sep', 10: 'oct', 11: 'nov', 12: 'dic',

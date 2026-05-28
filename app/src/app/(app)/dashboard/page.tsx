@@ -20,7 +20,11 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import { formatMXN, type Channel } from '@/data/mock';
 import { PeriodFilter } from './dashboard-client';
-import { getDateWindow } from './constants';
+import {
+  getDateWindow,
+  normalizeSaleType,
+  SALE_TYPE_SUBTITLE,
+} from './constants';
 
 /**
  * Dashboard /dashboard.
@@ -86,6 +90,9 @@ const CHANNEL_BAR_META: Record<string, { label: string; color: string }> = {
 type RawSearchParams = {
   periodo?: string | string[];
   fecha?: string | string[];
+  /** Tipo de venta — primer_contacto | recompra | seguimiento |
+   *  venta_empleado. Vacío/inválido = todos. */
+  sale_type?: string | string[];
 };
 
 function pickStr(v: string | string[] | undefined): string {
@@ -107,6 +114,7 @@ export default async function DashboardPage({
     // ('mes' + hoy CDMX) sin romper la página.
     const window = getDateWindow(pickStr(raw.periodo), pickStr(raw.fecha));
     const { startDate, endDate, startIso, endIso, periodo, fecha } = window;
+    const saleType = normalizeSaleType(pickStr(raw.sale_type));
     // `sale_date` es DATE (YYYY-MM-DD); usamos comparación inclusiva con
     // el último día del periodo. Para timestamptz, usamos `< endIso`
     // donde endIso es el primer instante del día siguiente al endDate.
@@ -146,19 +154,39 @@ export default async function DashboardPage({
       sellerSummaryResult,
     ] = await Promise.all([
       // 1. Leads del periodo (sale_date ∈ [startDate, endDate])
-      admin
-        .from('leads')
-        .select('id', { count: 'exact', head: true })
-        .gte('sale_date', startDate)
-        .lte('sale_date', endDate)
-        .is('deleted_at', null),
+      (() => {
+        let q = admin
+          .from('leads')
+          .select('id', { count: 'exact', head: true })
+          .gte('sale_date', startDate)
+          .lte('sale_date', endDate)
+          .is('deleted_at', null);
+        if (saleType) q = q.eq('sale_type', saleType);
+        return q;
+      })(),
       // 2. Pagos exitosos del periodo (paid_at ∈ [startIso, endIso))
-      admin
-        .from('payments')
-        .select('amount')
-        .eq('status', 'exitoso')
-        .gte('paid_at', startIso)
-        .lt('paid_at', endIso),
+      //    Cuando hay filtro de sale_type, hacemos JOIN inner con leads
+      //    y filtramos por la columna del lead asociado al pago.
+      (() => {
+        let q;
+        if (saleType) {
+          q = admin
+            .from('payments')
+            .select('amount, leads!inner(sale_type)')
+            .eq('status', 'exitoso')
+            .eq('leads.sale_type', saleType)
+            .gte('paid_at', startIso)
+            .lt('paid_at', endIso);
+        } else {
+          q = admin
+            .from('payments')
+            .select('amount')
+            .eq('status', 'exitoso')
+            .gte('paid_at', startIso)
+            .lt('paid_at', endIso);
+        }
+        return q;
+      })(),
       // 3. Entregas pendientes (NO filtra por periodo — operativo actual)
       admin
         .from('leads')
@@ -237,44 +265,60 @@ export default async function DashboardPage({
       //     una vista), así que traemos las filas y sumamos en memoria.
       //     Cota: 1 fila por color por lead — varios cientos en el
       //     peor caso. Aceptable.
-      admin
-        .from('lead_colors')
-        .select('quantity, leads!inner(sale_date, deleted_at, has_hojas)')
-        .eq('leads.has_hojas', true)
-        .is('leads.deleted_at', null)
-        .gte('leads.sale_date', startDate)
-        .lte('leads.sale_date', endDate),
+      (() => {
+        let q = admin
+          .from('lead_colors')
+          .select('quantity, leads!inner(sale_date, deleted_at, has_hojas, sale_type)')
+          .eq('leads.has_hojas', true)
+          .is('leads.deleted_at', null)
+          .gte('leads.sale_date', startDate)
+          .lte('leads.sale_date', endDate);
+        if (saleType) q = q.eq('leads.sale_type', saleType);
+        return q;
+      })(),
       // 12. Cubrecantos del periodo — conteo de leads con
       //     has_cubrecanto=true y suma de edgebanding_manual_cost para
       //     la métrica "monto facturado". Una sola query: count exact
       //     + select de los montos para sumar JS-side.
-      admin
-        .from('leads')
-        .select('edgebanding_manual_cost', { count: 'exact' })
-        .eq('has_cubrecanto', true)
-        .is('deleted_at', null)
-        .gte('sale_date', startDate)
-        .lte('sale_date', endDate),
+      (() => {
+        let q = admin
+          .from('leads')
+          .select('edgebanding_manual_cost', { count: 'exact' })
+          .eq('has_cubrecanto', true)
+          .is('deleted_at', null)
+          .gte('sale_date', startDate)
+          .lte('sale_date', endDate);
+        if (saleType) q = q.eq('sale_type', saleType);
+        return q;
+      })(),
       // 13. Metros de cubrecanto vendidos — Σ
       //     lead_edgebanding_colors.quantity unidos con leads del
       //     periodo. Si la tabla no existe todavía (migración pendiente
       //     para algunos entornos) trata como 0.
-      admin
-        .from('lead_edgebanding_colors')
-        .select('quantity, leads!inner(sale_date, deleted_at)')
-        .is('leads.deleted_at', null)
-        .gte('leads.sale_date', startDate)
-        .lte('leads.sale_date', endDate),
+      (() => {
+        let q = admin
+          .from('lead_edgebanding_colors')
+          .select('quantity, leads!inner(sale_date, deleted_at, sale_type)')
+          .is('leads.deleted_at', null)
+          .gte('leads.sale_date', startDate)
+          .lte('leads.sale_date', endDate);
+        if (saleType) q = q.eq('leads.sale_type', saleType);
+        return q;
+      })(),
       // 14. Resumen por vendedor del periodo. PostgREST no soporta
       //     GROUP BY ni SUM directos; traemos los leads del periodo
       //     (seller_id + métricas) y agrupamos JS-side. Cota: ~cientos
       //     de leads por mes en el caso típico — aceptable.
-      admin
-        .from('leads')
-        .select('seller_id, sheets_count, total_amount')
-        .is('deleted_at', null)
-        .gte('sale_date', startDate)
-        .lte('sale_date', endDate),
+      (() => {
+        let q = admin
+          .from('leads')
+          .select('seller_id, sheets_count, total_amount')
+          .is('deleted_at', null)
+          .gte('sale_date', startDate)
+          .lte('sale_date', endDate);
+        if (saleType) q = q.eq('sale_type', saleType);
+        return q;
+      })(),
     ]);
 
     if (leadsMonthResult.error) {
@@ -514,7 +558,14 @@ export default async function DashboardPage({
       { leads: 0, hojas: 0, monto: 0 },
     );
 
-    const periodParams = `periodo=${periodo}&fecha=${fecha}`;
+    // Sufijo del subtitle cuando hay tipo de venta activo
+    //   "Métricas de Mayo 2026 — Recompras"
+    const saleTypeSuffix = saleType ? ` — ${SALE_TYPE_SUBTITLE[saleType] ?? ''}` : '';
+    // Los hrefs de drill-down incluyen sale_type cuando está activo
+    // para que /leads abra ya filtrado.
+    const periodParams = saleType
+      ? `periodo=${periodo}&fecha=${fecha}&sale_type=${saleType}`
+      : `periodo=${periodo}&fecha=${fecha}`;
 
     return (
       <div className="flex flex-col gap-6">
@@ -529,10 +580,11 @@ export default async function DashboardPage({
             </h1>
             <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
               {window.subtitleLabel}
+              {saleTypeSuffix}
             </p>
           </div>
           <div id="dashboard-filter">
-            <PeriodFilter periodo={periodo} fecha={fecha} />
+            <PeriodFilter periodo={periodo} fecha={fecha} saleType={saleType} />
           </div>
         </div>
 

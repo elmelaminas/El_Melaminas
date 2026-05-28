@@ -6,6 +6,8 @@ import { ChevronLeft, ChevronRight, Loader } from 'lucide-react';
 import {
   MES_OPTIONS,
   type Periodo,
+  type SaleType,
+  SALE_TYPE_OPTIONS,
   addDays,
   addMonths,
   getDateWindow,
@@ -38,9 +40,13 @@ const historyYears = 2;
 export function PeriodFilter({
   periodo,
   fecha,
+  saleType,
 }: {
   periodo: Periodo;
   fecha: string;
+  /** Tipo de venta activo (vacío = todos). Se preserva al cambiar
+   *  cualquier control del periodo y viceversa. */
+  saleType: SaleType;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -48,10 +54,11 @@ export function PeriodFilter({
 
   const window = getDateWindow(periodo, fecha);
 
-  function push(nextPeriodo: Periodo, nextFecha: string) {
+  function push(nextPeriodo: Periodo, nextFecha: string, nextSaleType: SaleType = saleType) {
     const params = new URLSearchParams();
     params.set('periodo', nextPeriodo);
     params.set('fecha', nextFecha);
+    if (nextSaleType) params.set('sale_type', nextSaleType);
     startTransition(() => {
       router.push(`${pathname}?${params.toString()}`);
     });
@@ -84,6 +91,10 @@ export function PeriodFilter({
 
   function jumpToCurrent() {
     push(periodo, todayInCDMX());
+  }
+
+  function changeSaleType(next: SaleType) {
+    push(periodo, fecha, next);
   }
 
   const jumpLabel =
@@ -179,6 +190,23 @@ export function PeriodFilter({
         >
           {jumpLabel}
         </button>
+
+        {/* Filtro por tipo de venta — vive en la misma barra para que el
+            dashboard se segmente con un solo gesto (periodo + tipo). */}
+        <select
+          className="select"
+          style={{ width: 'auto', minWidth: 150 }}
+          value={saleType}
+          onChange={(e) => changeSaleType(e.target.value as SaleType)}
+          disabled={pending}
+          aria-label="Filtrar por tipo de venta"
+        >
+          {SALE_TYPE_OPTIONS.map((o) => (
+            <option key={o.value || 'all'} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
 
         {pending && (
           <span
