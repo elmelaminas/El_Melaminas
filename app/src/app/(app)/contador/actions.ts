@@ -6,8 +6,10 @@ import { supabaseServer } from '@/lib/supabase/server';
 import {
   ReceiveAdminCashSchema,
   ReceiveIndividualCashSchema,
+  ReceiveFromContadorSchema,
   type ReceiveAdminCashState,
   type ReceiveIndividualCashState,
+  type ReceiveFromContadorState,
 } from './schema';
 
 // NB: 'use server' file — solo async functions.
@@ -399,6 +401,320 @@ export async function receiveIndividualCashAction(
         : 'Error desconocido al validar cobro individual';
     console.error(
       '[receiveIndividualCashAction] excepción no controlada:',
+      err,
+    );
+    return { status: 'error', message, reason: 'other' };
+  }
+}
+
+/**
+ * `receiveFromContadorAction(contador_id, amount, pin)` — un admin
+ * recibe efectivo físico que el contador acumuló en su caja (sumas
+ * de validaciones previas). Inserta una fila en
+ * `contador_to_admin_transfers` + una INGRESO en `admin_cash_register`
+ * con `source='recibido_contador'`.
+ *
+ * Nota sobre el `source`: la spec original sugirió 'validado_contador'
+ * pero ese valor ya significa "el contador validó la caja del admin"
+ * cuando aparece como EGRESO. Usar la misma string para una INGRESO
+ * confundiría el label de /admin/mi-caja (`sourceLabel` mapea esa
+ * string a "Entregado al contador"). Usamos un valor distinto
+ * (`recibido_contador`) para preservar la semántica unidireccional.
+ *
+ * Política contra race conditions: el balance del contador se
+ * recalcula server-side justo antes del INSERT. Si entre el cliente
+ * pide $X y la action corre el contador hizo más validaciones (subió
+ * su saldo) o ya transfirió (bajó su saldo), validamos al instante.
+ *
+ * Acceso: solo rol 'admin' (no admin2 ni contador). El PIN va contra
+ * `profiles.confirmation_pin` del admin que ejecuta la acción.
+ */
+export async function receiveFromContadorAction(
+  contadorIdInput: string,
+  amountInput: number,
+  pinInput: string,
+): Promise<ReceiveFromContadorState> {
+  try {
+    const parsed = ReceiveFromContadorSchema.safeParse({
+      contador_id: contadorIdInput,
+      amount: amountInput,
+      pin: pinInput,
+    });
+    if (!parsed.success) {
+      return {
+        status: 'error',
+        message:
+          parsed.error.flatten().formErrors.join(' ') ||
+          'Datos inválidos para recibir efectivo.',
+        reason: 'other',
+      };
+    }
+    const { contador_id: contadorId, amount, pin: providedPin } = parsed.data;
+
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return {
+        status: 'error',
+        message: 'Sesión no válida. Vuelve a iniciar sesión.',
+        reason: 'other',
+      };
+    }
+    const adminId = user.id;
+
+    const admin = supabaseAdmin();
+
+    // Defense-in-depth: solo rol 'admin' (no admin2 ni contador). El PIN
+    // se valida contra el perfil del admin que ejecuta.
+    const { data: callerProfile, error: callerErr } = await admin
+      .from('profiles')
+      .select('role, confirmation_pin, full_name')
+      .eq('id', adminId)
+      .maybeSingle();
+    if (callerErr) {
+      return {
+        status: 'error',
+        message: `No se pudo verificar tu rol: ${callerErr.message}`,
+        reason: 'other',
+      };
+    }
+    if (callerProfile?.role !== 'admin') {
+      return {
+        status: 'error',
+        message: 'Solo un administrador puede recibir efectivo del contador.',
+        reason: 'other',
+      };
+    }
+    const storedPin =
+      typeof callerProfile.confirmation_pin === 'string'
+        ? callerProfile.confirmation_pin.trim()
+        : '';
+    if (storedPin === '') {
+      return {
+        status: 'error',
+        message:
+          'No tienes PIN configurado. Contacta al administrador para que te lo asigne.',
+        reason: 'pin_missing',
+      };
+    }
+    if (storedPin !== providedPin) {
+      return {
+        status: 'error',
+        message: 'PIN incorrecto. Intenta de nuevo.',
+        reason: 'pin_incorrect',
+      };
+    }
+
+    // Balance del contador = SUM(egresos source='validado_contador'
+    // registered_by=contadorId) - SUM(transferencias previas). Dos
+    // queries paralelas; el server-side recalc evita over-spending.
+    const [validatedRes, transfersRes] = await Promise.all([
+      admin
+        .from('admin_cash_register')
+        .select('amount')
+        .eq('operation_type', 'egreso')
+        .eq('source', 'validado_contador')
+        .eq('registered_by', contadorId),
+      admin
+        .from('contador_to_admin_transfers')
+        .select('amount')
+        .eq('contador_id', contadorId),
+    ]);
+    if (validatedRes.error) {
+      return {
+        status: 'error',
+        message: `No se pudo leer el saldo del contador: ${validatedRes.error.message}`,
+        reason: 'other',
+      };
+    }
+    if (transfersRes.error) {
+      return {
+        status: 'error',
+        message: `No se pudo leer las transferencias previas: ${transfersRes.error.message}`,
+        reason: 'other',
+      };
+    }
+    const validated = (validatedRes.data ?? []).reduce(
+      (s, r) => s + Number(r.amount ?? 0),
+      0,
+    );
+    const transferred = (transfersRes.data ?? []).reduce(
+      (s, r) => s + Number(r.amount ?? 0),
+      0,
+    );
+    const availableBalance = Math.max(0, validated - transferred);
+    if (amount > availableBalance) {
+      const fmt = new Intl.NumberFormat('es-MX', {
+        style: 'currency',
+        currency: 'MXN',
+        minimumFractionDigits: 0,
+      });
+      return {
+        status: 'error',
+        message: `El contador solo tiene ${fmt.format(
+          availableBalance,
+        )} disponibles.`,
+        reason: 'insufficient_balance',
+      };
+    }
+
+    // Lookup nombre del contador (para notas + notifs).
+    let contadorName = 'Contador';
+    try {
+      const { data: cp } = await admin
+        .from('profiles')
+        .select('full_name')
+        .eq('id', contadorId)
+        .maybeSingle();
+      if (cp?.full_name) contadorName = cp.full_name;
+    } catch {
+      // Best-effort: el flujo no depende de esto.
+    }
+    const adminName = callerProfile.full_name ?? 'Administrador';
+    const notes = `Recibido del contador ${contadorName}`;
+
+    // INSERT en contador_to_admin_transfers — fuente de verdad del
+    // flujo. Si falla acá, abortamos sin tocar admin_cash_register.
+    const { data: transferRow, error: transferErr } = await admin
+      .from('contador_to_admin_transfers')
+      .insert({
+        contador_id: contadorId,
+        admin_id: adminId,
+        amount,
+        pin_validated: true,
+        validated_at: new Date().toISOString(),
+        notes,
+      })
+      .select('id')
+      .single();
+    if (transferErr || !transferRow) {
+      console.error(
+        '[receiveFromContadorAction] insert transfer falló:',
+        transferErr,
+      );
+      return {
+        status: 'error',
+        message: `No se pudo registrar la transferencia: ${
+          transferErr?.message ?? 'sin datos'
+        }`,
+        reason: 'other',
+      };
+    }
+    const transferId: string = transferRow.id;
+
+    // INSERT INGRESO en admin_cash_register para la caja del admin.
+    // Si falla, rollback de la transferencia recién creada.
+    const { error: cashErr } = await admin
+      .from('admin_cash_register')
+      .insert({
+        admin_id: adminId,
+        amount,
+        operation_type: 'ingreso',
+        source: 'recibido_contador',
+        registered_by: adminId,
+        notes,
+      });
+    if (cashErr) {
+      console.error(
+        '[receiveFromContadorAction] insert ingreso admin_cash_register falló:',
+        cashErr,
+      );
+      // Rollback de la transferencia para no dejar saldo "fantasma".
+      try {
+        await admin
+          .from('contador_to_admin_transfers')
+          .delete()
+          .eq('id', transferId);
+      } catch (rollbackErr) {
+        console.error(
+          '[receiveFromContadorAction] rollback transfer falló:',
+          rollbackErr,
+        );
+      }
+      return {
+        status: 'error',
+        message: `No se pudo registrar en tu caja: ${cashErr.message}`,
+        reason: 'other',
+      };
+    }
+
+    // Notif al contador (non-fatal).
+    try {
+      const amountFmt = new Intl.NumberFormat('es-MX', {
+        style: 'currency',
+        currency: 'MXN',
+        minimumFractionDigits: 0,
+      }).format(amount);
+      const { error: notifContErr } = await admin
+        .from('notifications')
+        .insert({
+          recipient_id: contadorId,
+          type: 'efectivo_transferido_admin',
+          message: `✅ El admin ${adminName} recibió ${amountFmt} de tu caja.`,
+        });
+      if (notifContErr) {
+        console.error(
+          '[receiveFromContadorAction] notif contador falló (no fatal):',
+          notifContErr,
+        );
+      }
+    } catch (e) {
+      console.error(
+        '[receiveFromContadorAction] notif contador excepción (no fatal):',
+        e,
+      );
+    }
+
+    // Notif a todos los admins (broadcast, non-fatal).
+    try {
+      const { data: admins } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('role', 'admin')
+        .eq('is_active', true);
+      if (admins && admins.length > 0) {
+        const amountFmt = new Intl.NumberFormat('es-MX', {
+          style: 'currency',
+          currency: 'MXN',
+          minimumFractionDigits: 0,
+        }).format(amount);
+        const inserts = admins.map((a) => ({
+          recipient_id: a.id,
+          type: 'efectivo_recibido_contador',
+          message: `💰 ${adminName} recibió ${amountFmt} del contador ${contadorName}.`,
+        }));
+        const { error: notifAdminErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifAdminErr) {
+          console.error(
+            '[receiveFromContadorAction] notif admins falló (no fatal):',
+            notifAdminErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[receiveFromContadorAction] notif admins excepción (no fatal):',
+        e,
+      );
+    }
+
+    revalidatePath('/contador');
+    revalidatePath('/admin/mi-caja');
+    revalidatePath('/admin/caja');
+    revalidatePath('/dashboard');
+    return { status: 'success', received: amount };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al recibir efectivo del contador';
+    console.error(
+      '[receiveFromContadorAction] excepción no controlada:',
       err,
     );
     return { status: 'error', message, reason: 'other' };

@@ -14,9 +14,22 @@ import { formatMXN } from '@/data/mock';
 import {
   receiveAdminCashAction,
   receiveIndividualCashAction,
+  receiveFromContadorAction,
 } from './actions';
 import { PinConfirmModal } from '@/components/ui/PinConfirmModal';
 import { formatDateTimeCDMX } from '@/lib/format-date';
+
+/**
+ * Saldo vivo de un contador: cuánto efectivo físico tiene en mano
+ * (validaciones a admins − transferencias previas al admin).
+ * Lo consume la sección "Efectivo disponible del contador" que solo ve
+ * el rol 'admin'.
+ */
+export type ContadorBalanceRow = {
+  id: string;
+  name: string;
+  balance: number;
+};
 
 /**
  * Un admin con su saldo de caja + ingresos del mes. Saldo = sum
@@ -104,6 +117,9 @@ export function ContadorClient({
   receivedHistory,
   cashPayments,
   contadorHasPin,
+  viewerRole,
+  contadorBalances,
+  myContadorBalance,
 }: {
   admins: AdminWithCash[];
   grandTotal: number;
@@ -116,15 +132,42 @@ export function ContadorClient({
    *  Cuando es `false`, el banner pide contactar al admin y los
    *  botones "✓ Recibí" quedan disabled. */
   contadorHasPin: boolean;
+  /** Rol del usuario que ve esta pantalla. La sección "Efectivo
+   *  disponible del contador" solo aparece cuando viewerRole='admin'. */
+  viewerRole: '' | 'admin' | 'admin2' | 'contador';
+  /** Lista de contadores activos con su saldo en mano. Solo se usa
+   *  cuando viewerRole='admin'. */
+  contadorBalances: ContadorBalanceRow[];
+  /** Saldo vivo del contador autenticado. Solo positivo si
+   *  viewerRole='contador'; para admin/admin2 viene en 0. */
+  myContadorBalance: number;
 }) {
+  const isAdminViewer = viewerRole === 'admin';
+  const totalAvailable = contadorBalances.reduce((s, c) => s + c.balance, 0);
   return (
     <div className="flex flex-col gap-6 max-w-3xl">
       <div>
         <h1 className="text-2xl font-bold">Caja</h1>
         <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-          Valida el efectivo acumulado en la caja de cada administrador.
+          {isAdminViewer
+            ? 'Recibe el efectivo acumulado en la caja del contador y valida el efectivo del resto del equipo.'
+            : 'Valida el efectivo acumulado en la caja de cada administrador.'}
         </p>
       </div>
+
+      {/* SECCIÓN ADMIN ONLY: efectivo disponible del contador. Va al
+          inicio para que el admin la vea primero al entrar. */}
+      {isAdminViewer && (
+        <ContadorAvailableSection
+          totalAvailable={totalAvailable}
+          contadorBalances={contadorBalances}
+        />
+      )}
+
+      {/* SECCIÓN CONTADOR ONLY: card pequeña con mi saldo vivo. */}
+      {viewerRole === 'contador' && (
+        <MyContadorBalanceCard balance={myContadorBalance} />
+      )}
 
       {/* SECCIÓN 0: Cobros en efectivo registrados por admins este mes.
           Va arriba porque es la novedad principal de esta vista — el
@@ -895,3 +938,434 @@ function CashPaymentsSection({
 // Helper local renombrado al shared `formatDateTimeCDMX` para que toda
 // la app comparta el mismo formato + timezone México.
 const formatDateTime = formatDateTimeCDMX;
+
+/**
+ * Sección admin-only: card grande con el total disponible en el sistema
+ * + tabla de contadores con su saldo y botón "Recibir efectivo".
+ * Si el rol del viewer no es 'admin', el padre la oculta antes de
+ * renderizarla.
+ */
+function ContadorAvailableSection({
+  totalAvailable,
+  contadorBalances,
+}: {
+  totalAvailable: number;
+  contadorBalances: ContadorBalanceRow[];
+}) {
+  const router = useRouter();
+  // El modal de recepción opera con una sola fila a la vez. `pickedRow`
+  // null = modal cerrado. Al confirmar exitosamente refrescamos los
+  // datos del server.
+  const [pickedRow, setPickedRow] = useState<ContadorBalanceRow | null>(null);
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-lg font-semibold">
+          💰 Efectivo disponible del contador
+        </h2>
+        <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
+          Saldo físico que cada contador tiene en su caja, listo para
+          transferir al admin.
+        </p>
+      </div>
+
+      <div
+        className="card p-5 flex items-center gap-4"
+        style={{
+          background:
+            totalAvailable > 0
+              ? 'linear-gradient(135deg, #DCFCE7 0%, #F0FDF4 100%)'
+              : 'var(--bg-subtle)',
+          border:
+            totalAvailable > 0
+              ? '1px solid rgba(22,163,74,0.25)'
+              : '1px solid var(--border)',
+        }}
+      >
+        <div
+          className="flex items-center justify-center"
+          style={{
+            width: 48,
+            height: 48,
+            borderRadius: 12,
+            background: totalAvailable > 0 ? '#16A34A' : 'var(--text-tertiary)',
+            color: '#fff',
+            flexShrink: 0,
+          }}
+        >
+          <Banknote size={24} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            className="text-xs uppercase tracking-wide"
+            style={{
+              color: totalAvailable > 0 ? '#15803D' : 'var(--text-tertiary)',
+              fontWeight: 600,
+            }}
+          >
+            Efectivo disponible en caja contador
+          </div>
+          <div
+            className="text-2xl font-bold leading-tight mt-1"
+            style={{
+              color: totalAvailable > 0 ? '#15803D' : 'var(--text-tertiary)',
+            }}
+          >
+            {formatMXN(totalAvailable)}
+          </div>
+          <div
+            className="text-xs mt-1"
+            style={{ color: 'var(--text-tertiary)' }}
+          >
+            {contadorBalances.filter((c) => c.balance > 0).length}{' '}
+            {contadorBalances.filter((c) => c.balance > 0).length === 1
+              ? 'contador con saldo'
+              : 'contadores con saldo'}
+          </div>
+        </div>
+      </div>
+
+      {/* Tabla por contador */}
+      <div className="tbl-wrap">
+        <div className="overflow-x-auto">
+          <table className="tbl table-to-cards">
+            <thead>
+              <tr>
+                <th>Contador</th>
+                <th className="text-right">Saldo disponible</th>
+                <th className="text-right">Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {contadorBalances.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={3}
+                    className="text-center py-6 text-sm"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Sin contadores activos.
+                  </td>
+                </tr>
+              ) : (
+                contadorBalances.map((c) => (
+                  <tr key={c.id}>
+                    <td data-label="Contador" className="font-medium">
+                      {c.name}
+                    </td>
+                    <td
+                      data-label="Saldo"
+                      className="text-right font-bold"
+                      style={{
+                        color:
+                          c.balance > 0 ? '#15803D' : 'var(--text-tertiary)',
+                      }}
+                    >
+                      {formatMXN(c.balance)}
+                    </td>
+                    <td data-label="Acción" className="text-right">
+                      {c.balance > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => setPickedRow(c)}
+                          className="btn"
+                          style={{
+                            padding: '6px 12px',
+                            fontSize: '0.8125rem',
+                            fontWeight: 600,
+                            background: '#16A34A',
+                            color: '#fff',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                          }}
+                          aria-label={`Recibir efectivo de ${c.name}`}
+                        >
+                          <DollarSign size={14} /> Recibir efectivo
+                        </button>
+                      ) : (
+                        <span
+                          className="text-xs"
+                          style={{ color: 'var(--text-tertiary)' }}
+                        >
+                          Sin saldo
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {pickedRow && (
+        <ReceiveFromContadorModal
+          contador={pickedRow}
+          onClose={() => setPickedRow(null)}
+          onSuccess={() => {
+            setPickedRow(null);
+            router.refresh();
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Modal de dos pasos para recibir efectivo del contador.
+ *
+ * Paso 1 (custom): muestra el contador + saldo disponible + un input
+ * editable para el monto a recibir (default = saldo total). El usuario
+ * confirma "Sí, continuar →".
+ * Paso 2: delega en `<PinConfirmModal>` con `intro` y `details` que
+ * incluyen el monto seleccionado; `onConfirm` invoca
+ * `receiveFromContadorAction`.
+ *
+ * Por qué un wrapper en vez de extender PinConfirmModal: ese componente
+ * está optimizado para resumen estático (key/value); inyectar un input
+ * editable complicaría su API. Mantenerlo simple aquí y darle al
+ * PinConfirmModal sólo el detalle ya elegido.
+ */
+function ReceiveFromContadorModal({
+  contador,
+  onClose,
+  onSuccess,
+}: {
+  contador: ContadorBalanceRow;
+  onClose: () => void;
+  onSuccess: () => void;
+}) {
+  const [amount, setAmount] = useState<number>(contador.balance);
+  const [step, setStep] = useState<'amount' | 'pin'>('amount');
+
+  // Sólo aceptamos amounts > 0 y ≤ saldo. Si el usuario edita a 0 o
+  // sobrepasa, deshabilitamos "Continuar" en lugar de auto-clampear
+  // para que el campo se mantenga predecible mientras escribe.
+  const amountValid = amount > 0 && amount <= contador.balance;
+
+  if (step === 'pin') {
+    return (
+      <PinConfirmModal
+        isOpen
+        onClose={onClose}
+        title={`Recibir efectivo de ${contador.name}`}
+        intro="Vas a registrar la recepción de:"
+        confirmText="Confirmar recepción"
+        details={[
+          { label: 'Contador', value: contador.name },
+          { label: 'Saldo disponible', value: formatMXN(contador.balance) },
+          {
+            label: 'Monto a recibir',
+            value: <strong>{formatMXN(amount)}</strong>,
+          },
+        ]}
+        onConfirm={async (pin) => {
+          const result = await receiveFromContadorAction(
+            contador.id,
+            amount,
+            pin,
+          );
+          if (result.status === 'success') {
+            onSuccess();
+            return { success: true };
+          }
+          if (result.status === 'error') {
+            // PinConfirmResult.reason no incluye 'insufficient_balance';
+            // lo mapeamos a 'other' para que el modal lo muestre como
+            // mensaje sin reintento (el admin debe cerrar y ajustar el
+            // monto).
+            const r = result.reason;
+            const mapped: 'pin_incorrect' | 'pin_missing' | 'other' =
+              r === 'pin_incorrect' || r === 'pin_missing' ? r : 'other';
+            return {
+              success: false,
+              error: result.message,
+              reason: mapped,
+            };
+          }
+          return { success: false, error: 'Estado inesperado.' };
+        }}
+      />
+    );
+  }
+
+  // Paso 1: amount picker. Lo renderizamos como un modal custom liviano
+  // (mismo overlay que PinConfirmModal para coherencia visual).
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(15,23,42,0.55)' }}
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="receive-contador-title"
+    >
+      <div
+        className="card w-full max-w-md p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3
+          id="receive-contador-title"
+          className="font-semibold text-lg flex items-center gap-2 mb-4"
+        >
+          <ShieldAlert size={18} style={{ color: '#D97706' }} />
+          Recibir efectivo del contador
+        </h3>
+        <p
+          className="text-sm mb-3"
+          style={{ color: 'var(--text-secondary)' }}
+        >
+          ¿Estás recibiendo efectivo de:
+        </p>
+        <div
+          className="card p-4 mb-4"
+          style={{
+            background: 'var(--bg-subtle)',
+            border: '1px solid var(--border)',
+          }}
+        >
+          <div className="flex justify-between text-sm py-1">
+            <span style={{ color: 'var(--text-tertiary)' }}>Contador:</span>
+            <span style={{ color: 'var(--text-primary)' }}>
+              {contador.name}
+            </span>
+          </div>
+          <div className="flex justify-between text-sm py-1">
+            <span style={{ color: 'var(--text-tertiary)' }}>
+              Monto disponible:
+            </span>
+            <span
+              style={{ color: 'var(--text-primary)', fontWeight: 600 }}
+            >
+              {formatMXN(contador.balance)}
+            </span>
+          </div>
+        </div>
+
+        <label
+          className="text-xs font-medium mb-1 block"
+          style={{ color: 'var(--text-secondary)' }}
+          htmlFor="receive-amount-input"
+        >
+          Monto a recibir
+        </label>
+        <input
+          id="receive-amount-input"
+          type="number"
+          className="input mb-1"
+          value={amount}
+          onChange={(e) => setAmount(Number(e.target.value))}
+          min={0}
+          max={contador.balance}
+          step="0.01"
+          style={{ fontSize: '1rem', height: 48 }}
+        />
+        <p
+          className="text-xs mb-4"
+          style={{ color: 'var(--text-tertiary)' }}
+        >
+          Default = saldo total. Editable si decides recibir solo una
+          parte.
+        </p>
+
+        {!amountValid && amount > contador.balance && (
+          <div
+            role="alert"
+            className="text-sm mb-3"
+            style={{
+              color: 'var(--danger, #dc2626)',
+              background: 'var(--danger-bg, rgba(220,38,38,0.08))',
+              border: '1px solid rgba(220,38,38,0.25)',
+              padding: '8px 12px',
+              borderRadius: 6,
+            }}
+          >
+            El monto no puede exceder el saldo disponible.
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="btn btn-outline flex-1"
+            onClick={onClose}
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary flex-1"
+            disabled={!amountValid}
+            onClick={() => setStep('pin')}
+          >
+            Sí, continuar →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Card pequeña para el contador autenticado: cuánto efectivo físico
+ * tiene en mano ahora mismo. No interactiva; sólo informativa.
+ */
+function MyContadorBalanceCard({ balance }: { balance: number }) {
+  return (
+    <div
+      className="card p-5 flex items-center gap-4"
+      style={{
+        background:
+          balance > 0
+            ? 'linear-gradient(135deg, #E0E7FF 0%, #EEF2FF 100%)'
+            : 'var(--bg-subtle)',
+        border:
+          balance > 0
+            ? '1px solid rgba(67,56,202,0.25)'
+            : '1px solid var(--border)',
+      }}
+    >
+      <div
+        className="flex items-center justify-center"
+        style={{
+          width: 48,
+          height: 48,
+          borderRadius: 12,
+          background: balance > 0 ? '#4338CA' : 'var(--text-tertiary)',
+          color: '#fff',
+          flexShrink: 0,
+        }}
+      >
+        <Wallet size={24} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          className="text-xs uppercase tracking-wide"
+          style={{
+            color: balance > 0 ? '#3730A3' : 'var(--text-tertiary)',
+            fontWeight: 600,
+          }}
+        >
+          Mi saldo disponible
+        </div>
+        <div
+          className="text-2xl font-bold leading-tight mt-1"
+          style={{
+            color: balance > 0 ? '#3730A3' : 'var(--text-tertiary)',
+          }}
+        >
+          {formatMXN(balance)}
+        </div>
+        <div
+          className="text-xs mt-1"
+          style={{ color: 'var(--text-tertiary)' }}
+        >
+          Efectivo físico que has acumulado de validaciones al admin.
+        </div>
+      </div>
+    </div>
+  );
+}

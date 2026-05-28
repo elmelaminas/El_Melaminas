@@ -1,4 +1,10 @@
-import { DollarSign, Truck, CircleCheckBig, Wallet } from 'lucide-react';
+import {
+  DollarSign,
+  Truck,
+  CircleCheckBig,
+  Wallet,
+  Banknote,
+} from 'lucide-react';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import { formatMXN } from '@/data/mock';
@@ -107,12 +113,14 @@ export default async function MiCajaPage() {
     );
     const saldo = totalIngresos - totalEgresos;
 
-    // Desglose del mes por fuente. Las 3 categorías solicitadas:
-    //   pago_efectivo → cobros directos (admin recibió cash de cliente)
-    //   chofer        → efectivo recibido de un chofer en entrega
-    //   egreso (any)  → entregado al contador (lo que SALIÓ de la caja)
+    // Desglose del mes por fuente:
+    //   pago_efectivo     → cobros directos (admin recibió cash de cliente)
+    //   chofer            → efectivo recibido de un chofer en entrega
+    //   recibido_contador → admin recibió efectivo de la caja del contador
+    //   egreso (any)      → entregado al contador (lo que SALIÓ de la caja)
     let monthCobrosDirectos = 0;
     let monthCobrosChofer = 0;
+    let monthRecibidoContador = 0;
     let monthEgresos = 0;
     for (const r of allRows) {
       const createdAt = r.created_at;
@@ -127,6 +135,7 @@ export default async function MiCajaPage() {
       if (r.operation_type === 'ingreso') {
         if (r.source === 'pago_efectivo') monthCobrosDirectos += amt;
         else if (r.source === 'chofer') monthCobrosChofer += amt;
+        else if (r.source === 'recibido_contador') monthRecibidoContador += amt;
         // ingresos de otra source (edge) los ignoramos en el desglose
         // pero sí contaron en totalIngresos.
       } else {
@@ -394,7 +403,7 @@ export default async function MiCajaPage() {
           <h2 className="text-lg font-semibold mb-3">
             Movimientos del mes
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
             <BreakdownCard
               icon={<DollarSign size={22} />}
               label="Cobros directos"
@@ -407,6 +416,13 @@ export default async function MiCajaPage() {
               label="Recibido de choferes"
               value={monthCobrosChofer}
               color="#1E40AF"
+              sign="+"
+            />
+            <BreakdownCard
+              icon={<Banknote size={22} />}
+              label="Recibido del contador"
+              value={monthRecibidoContador}
+              color="#4338CA"
               sign="+"
             />
             <BreakdownCard
@@ -583,6 +599,7 @@ function BreakdownCard({
  *   - 'pago_efectivo'       → cobros directos
  *   - 'chofer'              → recibido de un chofer en entrega
  *   - 'validado_contador'   → entregado al contador (egreso)
+ *   - 'recibido_contador'   → recibido del contador (ingreso del admin)
  * Otros se muestran tal cual (defensivo).
  */
 function sourceLabel(source: string): string {
@@ -593,6 +610,8 @@ function sourceLabel(source: string): string {
       return 'Recibido de chofer';
     case 'validado_contador':
       return 'Entregado al contador';
+    case 'recibido_contador':
+      return 'Recibido del contador';
     default:
       return source || '—';
   }

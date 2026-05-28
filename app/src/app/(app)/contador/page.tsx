@@ -6,6 +6,7 @@ import {
   type ValidationHistoryRow,
   type ReceivedCashHistoryRow,
   type CashPaymentRow,
+  type ContadorBalanceRow,
 } from './contador-client';
 
 /**
@@ -409,6 +410,98 @@ export default async function ContadorPage() {
       created_at: r.created_at ?? null,
     }));
 
+    // ── Saldo vivo del/los contadores: cuánto efectivo físico tienen
+    //    en mano = SUM(egresos source='validado_contador' registered_by
+    //    = contadorId) − SUM(contador_to_admin_transfers WHERE
+    //    contador_id = contadorId). Bulk queries para no hacer un
+    //    round-trip por contador.
+    //
+    //    Para el admin: usamos la lista de contadores activos.
+    //    Para el contador autenticado: usamos su propio id.
+    const [validadosBulkRes, transfersBulkRes, contadorsRes, viewerProfileRes] = await Promise.all([
+      admin
+        .from('admin_cash_register')
+        .select('amount, registered_by')
+        .eq('operation_type', 'egreso')
+        .eq('source', 'validado_contador'),
+      admin
+        .from('contador_to_admin_transfers')
+        .select('contador_id, amount'),
+      admin
+        .from('profiles')
+        .select('id, full_name')
+        .eq('role', 'contador')
+        .eq('is_active', true)
+        .order('full_name', { ascending: true }),
+      contadorId
+        ? admin
+            .from('profiles')
+            .select('role')
+            .eq('id', contadorId)
+            .maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+    ]);
+    if (validadosBulkRes.error) {
+      console.error(
+        '[ContadorPage] validados bulk select falló (no fatal):',
+        validadosBulkRes.error,
+      );
+    }
+    // contador_to_admin_transfers puede no existir aún en DB cuando la
+    // migración manual está pendiente. La tratamos como non-fatal y
+    // asumimos cero transferencias previas (balance = total validado).
+    if (transfersBulkRes.error) {
+      console.error(
+        '[ContadorPage] transfers bulk select falló (no fatal):',
+        transfersBulkRes.error,
+      );
+    }
+    if (contadorsRes.error) {
+      console.error(
+        '[ContadorPage] contadors lookup falló (no fatal):',
+        contadorsRes.error,
+      );
+    }
+    const validatedByContador = new Map<string, number>();
+    for (const r of validadosBulkRes.data ?? []) {
+      const cid = r.registered_by;
+      if (typeof cid !== 'string' || !cid) continue;
+      validatedByContador.set(
+        cid,
+        (validatedByContador.get(cid) ?? 0) + Number(r.amount ?? 0),
+      );
+    }
+    const transferredByContador = new Map<string, number>();
+    for (const r of transfersBulkRes.data ?? []) {
+      const cid = r.contador_id;
+      if (typeof cid !== 'string' || !cid) continue;
+      transferredByContador.set(
+        cid,
+        (transferredByContador.get(cid) ?? 0) + Number(r.amount ?? 0),
+      );
+    }
+    function balanceOf(id: string): number {
+      return Math.max(
+        0,
+        (validatedByContador.get(id) ?? 0) -
+          (transferredByContador.get(id) ?? 0),
+      );
+    }
+    const contadorBalances: ContadorBalanceRow[] = (
+      contadorsRes.data ?? []
+    ).map((c) => ({
+      id: c.id,
+      name: c.full_name ?? '(sin nombre)',
+      balance: balanceOf(c.id),
+    }));
+    const viewerRole = ((viewerProfileRes.data?.role as string) ?? '') as
+      | ''
+      | 'admin'
+      | 'admin2'
+      | 'contador';
+    const myContadorBalance =
+      viewerRole === 'contador' && contadorId ? balanceOf(contadorId) : 0;
+
     return (
       <ContadorClient
         admins={admins}
@@ -417,6 +510,9 @@ export default async function ContadorPage() {
         receivedHistory={receivedHistory}
         cashPayments={cashPayments}
         contadorHasPin={contadorHasPin}
+        viewerRole={viewerRole}
+        contadorBalances={contadorBalances}
+        myContadorBalance={myContadorBalance}
       />
     );
   } catch (err) {

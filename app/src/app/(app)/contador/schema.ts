@@ -67,3 +67,47 @@ export type ReceiveIndividualCashState =
 export const initialReceiveIndividualCashState: ReceiveIndividualCashState = {
   status: 'idle',
 };
+
+/**
+ * `receiveFromContadorAction(contador_id, amount, pin)` — un admin
+ * recibe efectivo que el contador tiene en su caja (acumulado de
+ * validaciones previas a las cajas de admins). El PIN se valida contra
+ * `profiles.confirmation_pin` del admin.
+ *
+ * El monto SÍ viaja desde el cliente porque el admin elige cuánto
+ * recibir (no necesariamente todo el saldo). El server valida que el
+ * monto solicitado no exceda el balance vivo del contador
+ * (egresos validado_contador − transfers previos) para evitar
+ * sobreentregas.
+ */
+export const ReceiveFromContadorSchema = z.object({
+  contador_id: z.string().uuid('contador_id inválido'),
+  amount: z
+    .number({ invalid_type_error: 'Monto inválido' })
+    .positive('El monto debe ser mayor a 0')
+    .max(10_000_000, 'Monto demasiado grande'),
+  pin: z
+    .string()
+    .regex(/^\d{4}$/, 'PIN debe tener exactamente 4 dígitos'),
+});
+
+export type ReceiveFromContadorInput = z.infer<
+  typeof ReceiveFromContadorSchema
+>;
+
+export type ReceiveFromContadorState =
+  | { status: 'idle' }
+  | { status: 'success'; received: number }
+  | {
+      status: 'error';
+      message: string;
+      reason?:
+        | 'pin_incorrect'
+        | 'pin_missing'
+        | 'insufficient_balance'
+        | 'other';
+    };
+
+export const initialReceiveFromContadorState: ReceiveFromContadorState = {
+  status: 'idle',
+};
