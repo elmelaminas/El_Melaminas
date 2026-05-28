@@ -9,6 +9,8 @@ import {
   Wallet,
   Banknote,
   ShieldAlert,
+  Search,
+  X,
 } from 'lucide-react';
 import { formatMXN } from '@/data/mock';
 import {
@@ -418,41 +420,71 @@ function CashPaymentsSection({
   );
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
 
-  const selectableRows = isAdminViewer
-    ? cashPayments.filter(
+  // Búsqueda local por nombre del cliente. `qInput` se va actualizando
+  // mientras se escribe; `q` solo se commita al apretar Enter o el
+  // botón "Buscar" (mismo patrón que /leads). Filtro local sobre los
+  // datos ya cargados — no toca Supabase. Importante: el filtro NO
+  // afecta la selección bulk: si un cliente quedó marcado y el filtro
+  // lo oculta, sigue contando para el total y se incluirá al
+  // confirmar.
+  const [qInput, setQInput] = useState('');
+  const [q, setQ] = useState('');
+  function commitSearch(next: string) {
+    setQ(next);
+  }
+  function clearSearch() {
+    setQInput('');
+    setQ('');
+  }
+  const filteredCashPayments = q
+    ? cashPayments.filter((p) =>
+        (p.client_name ?? '').toLowerCase().includes(q.toLowerCase()),
+      )
+    : cashPayments;
+
+  // El "master checkbox" opera sobre las filas VISIBLES (filtradas).
+  // UX estándar de tablas: "seleccionar todo" actúa sobre lo que la
+  // vista actual muestra. Las selecciones previas no-visibles
+  // permanecen tal cual.
+  const selectableVisibleRows = isAdminViewer
+    ? filteredCashPayments.filter(
         (p) =>
           typeof p.payment_id === 'string' &&
           p.validated &&
           !p.received_by_admin,
       )
     : [];
+  // `selectedRows` recorre el listado COMPLETO (no filtrado) para que
+  // las selecciones que el filtro oculta sigan contribuyendo al total.
   const selectedRows = cashPayments.filter(
     (p) =>
       typeof p.payment_id === 'string' &&
       selectedPaymentIds.has(p.payment_id),
   );
   const selectedTotal = selectedRows.reduce((s, p) => s + p.amount, 0);
-  const allSelected =
-    selectableRows.length > 0 &&
-    selectableRows.every(
+  const allVisibleSelected =
+    selectableVisibleRows.length > 0 &&
+    selectableVisibleRows.every(
       (r) =>
         typeof r.payment_id === 'string' &&
         selectedPaymentIds.has(r.payment_id),
     );
-  // Si todas las seleccionables están marcadas → desmarca todo. Si no
-  // → marca todas las seleccionables. Reglas estándar de "master
-  // checkbox" sin estado indeterminate explícito (cubierto por la
-  // suma textual de la barra sticky).
-  function toggleAllSelectable() {
-    if (allSelected) {
-      setSelectedPaymentIds(new Set());
-    } else {
-      setSelectedPaymentIds(
-        new Set(
-          selectableRows.map((r) => r.payment_id as string).filter(Boolean),
-        ),
-      );
-    }
+  // Toggle limitado al subset visible: marca/desmarca solo las
+  // seleccionables actualmente en pantalla, sin tocar el resto.
+  function toggleAllVisible() {
+    setSelectedPaymentIds((prev) => {
+      const next = new Set(prev);
+      if (allVisibleSelected) {
+        for (const r of selectableVisibleRows) {
+          if (typeof r.payment_id === 'string') next.delete(r.payment_id);
+        }
+      } else {
+        for (const r of selectableVisibleRows) {
+          if (typeof r.payment_id === 'string') next.add(r.payment_id);
+        }
+      }
+      return next;
+    });
   }
   function toggleRow(paymentId: string) {
     setSelectedPaymentIds((prev) => {
@@ -576,6 +608,80 @@ function CashPaymentsSection({
         </div>
       </div>
 
+      {/* Buscador por nombre del cliente — filtro local sobre la
+          tabla, no toca Supabase. Mismo patrón que /leads: la
+          navegación solo se commita al Enter / botón / botón X. */}
+      <div className="flex gap-2 items-stretch">
+        <div className="relative" style={{ flex: 1, minWidth: 0 }}>
+          <Search
+            size={16}
+            className="absolute left-3 top-1/2 -translate-y-1/2"
+            style={{ color: 'var(--text-tertiary)' }}
+          />
+          <input
+            type="text"
+            placeholder="Buscar por nombre del cliente…"
+            className="input"
+            style={{
+              paddingLeft: 36,
+              paddingRight: qInput ? 36 : undefined,
+              borderTopRightRadius: 0,
+              borderBottomRightRadius: 0,
+            }}
+            value={qInput}
+            onChange={(e) => setQInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitSearch(qInput);
+              }
+            }}
+            aria-label="Buscar cobros por cliente"
+          />
+          {qInput && (
+            <button
+              type="button"
+              className="absolute top-1/2 -translate-y-1/2"
+              style={{
+                right: 8,
+                background: 'transparent',
+                border: 'none',
+                padding: 4,
+                cursor: 'pointer',
+                color: 'var(--text-tertiary)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              onClick={clearSearch}
+              aria-label="Limpiar búsqueda"
+              title="Limpiar búsqueda"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => commitSearch(qInput)}
+          style={{
+            flexShrink: 0,
+            padding: '0 14px',
+            gap: 6,
+            background: 'var(--brand-primary, #1B3A5C)',
+            color: '#fff',
+            borderTopLeftRadius: 0,
+            borderBottomLeftRadius: 0,
+            fontWeight: 600,
+          }}
+          aria-label="Buscar"
+        >
+          <Search size={16} />
+          <span className="hidden sm:inline">Buscar</span>
+        </button>
+      </div>
+
       {/* Tabla de detalle. Para admin viewer agregamos columna de
           checkbox al inicio (master + por fila); el contador viewer
           mantiene la tabla original. La columna "Acción" queda
@@ -589,11 +695,13 @@ function CashPaymentsSection({
                   <th style={{ width: 36 }}>
                     <input
                       type="checkbox"
-                      aria-label="Seleccionar todos los cobros recibibles"
-                      title="Seleccionar todos los cobros recibibles"
-                      checked={allSelected}
-                      disabled={selectableRows.length === 0 || !hasPin}
-                      onChange={toggleAllSelectable}
+                      aria-label="Seleccionar todos los cobros visibles recibibles"
+                      title="Seleccionar todos los cobros visibles recibibles"
+                      checked={allVisibleSelected}
+                      disabled={
+                        selectableVisibleRows.length === 0 || !hasPin
+                      }
+                      onChange={toggleAllVisible}
                     />
                   </th>
                 )}
@@ -618,8 +726,20 @@ function CashPaymentsSection({
                     No hay cobros en efectivo este mes.
                   </td>
                 </tr>
+              ) : filteredCashPayments.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={
+                      (isAdminViewer ? 1 : 0) + (isContadorViewer ? 6 : 5)
+                    }
+                    className="text-center py-6 text-sm"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    No se encontraron cobros para &ldquo;{q}&rdquo;.
+                  </td>
+                </tr>
               ) : (
-                cashPayments.map((p) => {
+                filteredCashPayments.map((p) => {
                   const selectable =
                     isAdminViewer &&
                     typeof p.payment_id === 'string' &&
