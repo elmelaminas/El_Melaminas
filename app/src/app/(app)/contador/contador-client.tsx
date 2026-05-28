@@ -144,7 +144,11 @@ export function ContadorClient({
    *  viewerRole='contador'; para admin/admin2 viene en 0. */
   myContadorBalance: number;
 }) {
-  const isAdminViewer = viewerRole === 'admin';
+  // Eduardo (admin2) también opera caja: la sección de recibir
+  // efectivo del contador debe estar visible para ambos roles admin*.
+  // El gating fino del PIN ya bloquea la acción si el rol no debiera
+  // proceder (admin / admin2 con PIN configurado).
+  const isAdminViewer = viewerRole === 'admin' || viewerRole === 'admin2';
   const totalAvailable = contadorBalances.reduce((s, c) => s + c.balance, 0);
   return (
     <div className="flex flex-col gap-6 max-w-3xl">
@@ -157,8 +161,11 @@ export function ContadorClient({
         </p>
       </div>
 
-      {/* SECCIÓN ADMIN ONLY: efectivo disponible del contador. Va al
-          inicio para que el admin la vea primero al entrar. */}
+      {/* SECCIÓN ADMIN+ADMIN2: efectivo disponible del contador. Va al
+          inicio para que sea lo primero que se ve al entrar. La sección
+          se muestra SIEMPRE para administradores, incluso si los
+          contadores no tienen saldo aún — la tabla informa el estado
+          actual y deja claro que no hay nada por recibir. */}
       {isAdminViewer && (
         <ContadorAvailableSection
           totalAvailable={totalAvailable}
@@ -963,7 +970,7 @@ function ContadorAvailableSection({
     <div className="flex flex-col gap-3">
       <div>
         <h2 className="text-lg font-semibold">
-          💰 Efectivo disponible del contador
+          💰 Recibir efectivo del contador
         </h2>
         <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
           Saldo físico que cada contador tiene en su caja, listo para
@@ -1066,33 +1073,36 @@ function ContadorAvailableSection({
                       {formatMXN(c.balance)}
                     </td>
                     <td data-label="Acción" className="text-right">
-                      {c.balance > 0 ? (
-                        <button
-                          type="button"
-                          onClick={() => setPickedRow(c)}
-                          className="btn"
-                          style={{
-                            padding: '6px 12px',
-                            fontSize: '0.8125rem',
-                            fontWeight: 600,
-                            background: '#16A34A',
-                            color: '#fff',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 4,
-                          }}
-                          aria-label={`Recibir efectivo de ${c.name}`}
-                        >
-                          <DollarSign size={14} /> Recibir efectivo
-                        </button>
-                      ) : (
-                        <span
-                          className="text-xs"
-                          style={{ color: 'var(--text-tertiary)' }}
-                        >
-                          Sin saldo
-                        </span>
-                      )}
+                      {/* Botón siempre visible para dejar claro qué se
+                          puede hacer; deshabilitado cuando el saldo del
+                          contador es 0 con tooltip explicativo. */}
+                      <button
+                        type="button"
+                        onClick={() => setPickedRow(c)}
+                        disabled={c.balance <= 0}
+                        className="btn"
+                        style={{
+                          padding: '6px 12px',
+                          fontSize: '0.8125rem',
+                          fontWeight: 600,
+                          background:
+                            c.balance > 0 ? '#16A34A' : 'var(--bg-muted)',
+                          color:
+                            c.balance > 0 ? '#fff' : 'var(--text-tertiary)',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 4,
+                          cursor: c.balance > 0 ? 'pointer' : 'not-allowed',
+                        }}
+                        aria-label={`Recibir efectivo de ${c.name}`}
+                        title={
+                          c.balance > 0
+                            ? `Recibir efectivo de ${c.name}`
+                            : 'El contador no tiene saldo disponible'
+                        }
+                      >
+                        <DollarSign size={14} /> Recibir efectivo
+                      </button>
                     </td>
                   </tr>
                 ))

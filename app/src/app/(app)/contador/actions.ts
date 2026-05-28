@@ -481,10 +481,14 @@ export async function receiveFromContadorAction(
         reason: 'other',
       };
     }
-    if (callerProfile?.role !== 'admin') {
+    if (
+      callerProfile?.role !== 'admin' &&
+      callerProfile?.role !== 'admin2'
+    ) {
       return {
         status: 'error',
-        message: 'Solo un administrador puede recibir efectivo del contador.',
+        message:
+          'Solo un administrador (admin o admin2) puede recibir efectivo del contador.',
         reason: 'other',
       };
     }
