@@ -5,6 +5,7 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import {
   ConfirmDeliverySchema,
+  ConfirmDeliverySplitSchema,
   ReportIssueSchema,
   MarkFailedDeliverySchema,
   type ConfirmDeliveryState,
@@ -60,6 +61,12 @@ export async function confirmDeliveryAction(
   _prev: ConfirmDeliveryState,
   formData: FormData,
 ): Promise<ConfirmDeliveryState> {
+  // Pago dividido en 2 — el cliente paga el adeudo en dos transacciones
+  // distintas. Branch dedicado para no contaminar el flujo single con
+  // condicionales por todos lados.
+  if (formData.get('split_payment') === 'true') {
+    return confirmDeliverySplit(formData);
+  }
   const txn = new TxnLog();
   try {
     const amountRaw = formData.get('amount_collected');
@@ -516,6 +523,486 @@ export async function confirmDeliveryAction(
     const message =
       err instanceof Error ? err.message : 'Error desconocido al confirmar entrega';
     console.error('[confirmDeliveryAction] excepción no controlada:', err);
+    await txn.rollback('excepción no controlada');
+    return { status: 'error', message };
+  }
+}
+
+/**
+ * Variante "pago dividido" del confirm delivery — inserta DOS payments
+ * (uno por cada slot) con sus respectivas evidencias y, si alguno es en
+ * efectivo, un `cash_transfer` por payment cash. El driver_delivery
+ * registra el monto total cobrado.
+ *
+ * Reusa el mismo patrón de TxnLog rollback para garantizar atomicidad:
+ * si cualquier paso intermedio falla, deshacemos los previos (deletes en
+ * DB + removes en storage). Estructura paralela a la del flujo single
+ * para que cualquier cambio futuro de política (notif, edge function,
+ * payment_status recalc) se aplique acá también con minimal divergence.
+ */
+async function confirmDeliverySplit(
+  formData: FormData,
+): Promise<ConfirmDeliveryState> {
+  const txn = new TxnLog();
+  try {
+    // ── Parse + valida payload split
+    const pago1AmountRaw = formData.get('pago1_amount');
+    const pago2AmountRaw = formData.get('pago2_amount');
+    const pago1MethodRaw = formData.get('pago1_method');
+    const pago2MethodRaw = formData.get('pago2_method');
+    const receiverRaw = formData.get('receiver_id');
+    const receiverRoleRaw = formData.get('receiver_role');
+
+    const parsed = ConfirmDeliverySplitSchema.safeParse({
+      lead_id: formData.get('lead_id'),
+      receiver_id: typeof receiverRaw === 'string' ? receiverRaw : '',
+      receiver_role:
+        typeof receiverRoleRaw === 'string' && receiverRoleRaw.length > 0
+          ? receiverRoleRaw
+          : null,
+      pago1: {
+        amount:
+          typeof pago1AmountRaw === 'string' ? Number(pago1AmountRaw) : 0,
+        payment_method:
+          typeof pago1MethodRaw === 'string' ? pago1MethodRaw : '',
+      },
+      pago2: {
+        amount:
+          typeof pago2AmountRaw === 'string' ? Number(pago2AmountRaw) : 0,
+        payment_method:
+          typeof pago2MethodRaw === 'string' ? pago2MethodRaw : '',
+      },
+    });
+    if (!parsed.success) {
+      console.error(
+        '[confirmDeliverySplit] validación falló:',
+        parsed.error.flatten(),
+      );
+      return {
+        status: 'error',
+        message: 'Datos del pago dividido inválidos',
+        fieldErrors: parsed.error.flatten().fieldErrors as Record<
+          string,
+          string[]
+        >,
+      };
+    }
+    const data = parsed.data;
+    const totalCollected = data.pago1.amount + data.pago2.amount;
+
+    // ── Auth
+    const userClient = await supabaseServer();
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser();
+    if (authErr || !user) {
+      return {
+        status: 'error',
+        message: 'Sesión no válida. Vuelve a iniciar sesión.',
+      };
+    }
+    const driverId = user.id;
+
+    const admin = supabaseAdmin();
+
+    // ── Ownership
+    const { data: leadRow, error: leadErr } = await admin
+      .from('leads')
+      .select('id, driver_id, delivery_status, client_name, total_amount')
+      .eq('id', data.lead_id)
+      .maybeSingle();
+    if (leadErr) {
+      return {
+        status: 'error',
+        message: `No se pudo leer el lead: ${leadErr.message}`,
+      };
+    }
+    if (!leadRow) {
+      return { status: 'error', message: 'Lead no encontrado.' };
+    }
+    if (leadRow.driver_id !== driverId) {
+      return {
+        status: 'error',
+        message: 'Esta entrega no está asignada a ti.',
+      };
+    }
+    if (leadRow.delivery_status === 'entregado') {
+      return {
+        status: 'error',
+        message: 'Esta entrega ya está marcada como entregada.',
+      };
+    }
+    if (leadRow.delivery_status === 'cancelado') {
+      return { status: 'error', message: 'Esta entrega está cancelada.' };
+    }
+
+    // ── Upload de las DOS fotos (una por payment). Ambas obligatorias.
+    const evidence1 = formData.get('pago1_evidence');
+    const photo1Result = validatePhotoFile(evidence1);
+    if (!photo1Result.ok) {
+      return {
+        status: 'error',
+        message: `Foto del pago 1: ${photo1Result.message}`,
+      };
+    }
+    const evidence2 = formData.get('pago2_evidence');
+    const photo2Result = validatePhotoFile(evidence2);
+    if (!photo2Result.ok) {
+      return {
+        status: 'error',
+        message: `Foto del pago 2: ${photo2Result.message}`,
+      };
+    }
+
+    async function uploadEvidence(file: File): Promise<{ url: string; path: string }> {
+      const ext = (file.name.split('.').pop() ?? 'bin').toLowerCase();
+      const p = `${data.lead_id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const { error: upErr } = await admin.storage
+        .from(STORAGE_BUCKET)
+        .upload(p, file, {
+          contentType: file.type || `image/${ext}`,
+          upsert: false,
+        });
+      if (upErr) throw new Error(`subida falló: ${upErr.message}`);
+      const { data: pub } = admin.storage.from(STORAGE_BUCKET).getPublicUrl(p);
+      return { url: pub.publicUrl, path: p };
+    }
+
+    let url1: string;
+    let url2: string;
+    try {
+      const r1 = await uploadEvidence(evidence1 as File);
+      url1 = r1.url;
+      const path1 = r1.path;
+      txn.push(async () => {
+        await admin.storage.from(STORAGE_BUCKET).remove([path1]);
+      });
+      const r2 = await uploadEvidence(evidence2 as File);
+      url2 = r2.url;
+      const path2 = r2.path;
+      txn.push(async () => {
+        await admin.storage.from(STORAGE_BUCKET).remove([path2]);
+      });
+    } catch (e) {
+      await txn.rollback('upload de evidencia falló');
+      const msg = e instanceof Error ? e.message : 'no se pudo subir la evidencia';
+      return { status: 'error', message: `Subida de evidencia: ${msg}` };
+    }
+
+    // ── INSERT payment 1
+    const nowIso = new Date().toISOString();
+    const { data: pmt1Row, error: pmt1Err } = await admin
+      .from('payments')
+      .insert({
+        lead_id: data.lead_id,
+        amount: data.pago1.amount,
+        net_amount: data.pago1.amount,
+        payment_method: data.pago1.payment_method,
+        payment_type: 'liquidacion',
+        driver_id: driverId,
+        status: 'exitoso',
+        evidence_photo_url: url1,
+        paid_at: nowIso,
+        registered_by: driverId,
+      })
+      .select('id')
+      .single();
+    if (pmt1Err || !pmt1Row) {
+      await txn.rollback('insert payment 1 falló');
+      return {
+        status: 'error',
+        message: `No se pudo registrar el pago 1: ${
+          pmt1Err?.message ?? 'sin datos'
+        }`,
+      };
+    }
+    const payment1Id: string = pmt1Row.id;
+    txn.push(async () => {
+      await admin.from('payments').delete().eq('id', payment1Id);
+    });
+
+    // ── INSERT payment 2
+    const { data: pmt2Row, error: pmt2Err } = await admin
+      .from('payments')
+      .insert({
+        lead_id: data.lead_id,
+        amount: data.pago2.amount,
+        net_amount: data.pago2.amount,
+        payment_method: data.pago2.payment_method,
+        payment_type: 'liquidacion',
+        driver_id: driverId,
+        status: 'exitoso',
+        evidence_photo_url: url2,
+        paid_at: nowIso,
+        registered_by: driverId,
+      })
+      .select('id')
+      .single();
+    if (pmt2Err || !pmt2Row) {
+      await txn.rollback('insert payment 2 falló');
+      return {
+        status: 'error',
+        message: `No se pudo registrar el pago 2: ${
+          pmt2Err?.message ?? 'sin datos'
+        }`,
+      };
+    }
+    const payment2Id: string = pmt2Row.id;
+    txn.push(async () => {
+      await admin.from('payments').delete().eq('id', payment2Id);
+    });
+
+    // ── INSERT driver_deliveries (1 por entrega, amount = suma)
+    const anyEfectivo =
+      data.pago1.payment_method === 'efectivo' ||
+      data.pago2.payment_method === 'efectivo';
+    const receiverForInsert = anyEfectivo
+      ? data.receiver_id || null
+      : null;
+    const { data: delRow, error: delErr } = await admin
+      .from('driver_deliveries')
+      .insert({
+        lead_id: data.lead_id,
+        driver_id: driverId,
+        admin_receiver_id: receiverForInsert,
+        amount_collected: totalCollected,
+        evidence_photo_url: url1,
+        delivered_at: nowIso,
+      })
+      .select('id')
+      .single();
+    if (delErr || !delRow) {
+      console.error(
+        '[confirmDeliverySplit] insert driver_deliveries falló:',
+        delErr,
+      );
+      await txn.rollback('insert driver_deliveries falló');
+      return {
+        status: 'error',
+        message: `No se pudo registrar la entrega: ${
+          delErr?.message ?? 'sin datos'
+        }`,
+      };
+    }
+    const deliveryId: string = delRow.id;
+    txn.push(async () => {
+      await admin.from('driver_deliveries').delete().eq('id', deliveryId);
+    });
+
+    // ── Driver name lookup (compartido para notifs)
+    let driverName = 'Chofer';
+    try {
+      const { data: dp } = await admin
+        .from('profiles')
+        .select('full_name')
+        .eq('id', driverId)
+        .maybeSingle();
+      if (dp?.full_name) driverName = dp.full_name;
+    } catch (e) {
+      console.error(
+        '[confirmDeliverySplit] driver name lookup falló (no fatal):',
+        e,
+      );
+    }
+    const clientName =
+      leadRow.client_name ?? `Lead ${data.lead_id.slice(0, 8)}`;
+
+    // ── Cash transfers — uno por cada pago en efectivo, mismo receiver.
+    //    Non-fatal: la entrega física ya pasó.
+    const cashSlots: { amount: number }[] = [];
+    if (data.pago1.payment_method === 'efectivo')
+      cashSlots.push({ amount: data.pago1.amount });
+    if (data.pago2.payment_method === 'efectivo')
+      cashSlots.push({ amount: data.pago2.amount });
+    if (cashSlots.length > 0) {
+      try {
+        const receiverRole: 'admin' | 'contador' =
+          data.receiver_role === 'admin' ? 'admin' : 'contador';
+        const receiverIdForInsert =
+          typeof data.receiver_id === 'string' && data.receiver_id.length > 0
+            ? data.receiver_id
+            : null;
+        const inserts = cashSlots.map((c) => ({
+          driver_id: driverId,
+          contador_id: null,
+          amount: c.amount,
+          status: 'pendiente',
+          receiver_role: receiverRole,
+          receiver_id: receiverIdForInsert,
+        }));
+        const { error: ctErr } = await admin
+          .from('cash_transfers')
+          .insert(inserts);
+        if (ctErr) {
+          console.error(
+            '[confirmDeliverySplit] cash_transfers insert falló (no fatal):',
+            ctErr,
+          );
+        } else if (receiverIdForInsert) {
+          const totalCash = cashSlots.reduce((s, c) => s + c.amount, 0);
+          const amountFmt = new Intl.NumberFormat('es-MX', {
+            style: 'currency',
+            currency: 'MXN',
+            minimumFractionDigits: 0,
+          }).format(totalCash);
+          const message =
+            `🚗 El chofer ${driverName} te entregará ${amountFmt} de ` +
+            `${clientName}. Confirma la recepción en tu panel.`;
+          const { error: notifErr } = await admin
+            .from('notifications')
+            .insert({
+              recipient_id: receiverIdForInsert,
+              type: 'efectivo_chofer_pendiente',
+              message,
+            });
+          if (notifErr) {
+            console.error(
+              '[confirmDeliverySplit] notif efectivo_chofer_pendiente falló (no fatal):',
+              notifErr,
+            );
+          }
+        }
+      } catch (e) {
+        console.error(
+          '[confirmDeliverySplit] cash_transfer flow excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
+    // ── UPDATE leads.delivery_status = 'entregado'
+    const { error: updErr } = await admin
+      .from('leads')
+      .update({ delivery_status: 'entregado' })
+      .eq('id', data.lead_id);
+    if (updErr) {
+      console.error(
+        '[confirmDeliverySplit] update lead.delivery_status falló:',
+        updErr,
+      );
+      await txn.rollback('update lead.delivery_status falló');
+      return {
+        status: 'error',
+        message: `No se pudo actualizar el estado del lead: ${updErr.message}`,
+      };
+    }
+
+    // ── Recalcular payment_status (suma de TODOS los exitosos del lead)
+    try {
+      const { data: paidRows } = await admin
+        .from('payments')
+        .select('amount')
+        .eq('lead_id', data.lead_id)
+        .eq('status', 'exitoso');
+      const total = Number(leadRow.total_amount ?? 0);
+      const totalPaid = (paidRows ?? []).reduce(
+        (s, p) => s + Number(p.amount ?? 0),
+        0,
+      );
+      let nextPayStatus: 'pendiente' | 'parcial' | 'pagado';
+      if (total > 0 && totalPaid >= total) nextPayStatus = 'pagado';
+      else if (totalPaid > 0) nextPayStatus = 'parcial';
+      else nextPayStatus = 'pendiente';
+      const { error: payUpdErr } = await admin
+        .from('leads')
+        .update({ payment_status: nextPayStatus })
+        .eq('id', data.lead_id);
+      if (payUpdErr) {
+        console.error(
+          '[confirmDeliverySplit] recalc payment_status falló (no fatal):',
+          payUpdErr,
+        );
+      }
+    } catch (e) {
+      console.error(
+        '[confirmDeliverySplit] recalc payment_status excepción (no fatal):',
+        e,
+      );
+    }
+
+    // ── Notif entrega_confirmada a admins
+    try {
+      const { data: admins } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('role', 'admin')
+        .eq('is_active', true);
+      if (admins && admins.length > 0) {
+        const totalFmt = new Intl.NumberFormat('es-MX', {
+          style: 'currency',
+          currency: 'MXN',
+          minimumFractionDigits: 0,
+        }).format(totalCollected);
+        const methodLabel = (m: string) =>
+          m === 'efectivo'
+            ? 'Efectivo'
+            : m === 'transferencia'
+              ? 'Transferencia'
+              : 'Clip';
+        const message =
+          `✅ ${driverName} entregó a ${clientName} — cobró ${totalFmt} ` +
+          `en 2 pagos (${methodLabel(data.pago1.payment_method)} + ` +
+          `${methodLabel(data.pago2.payment_method)})`;
+        const inserts = admins.map((a) => ({
+          recipient_id: a.id,
+          type: 'entrega_confirmada',
+          message,
+        }));
+        const { error: notifErr } = await admin
+          .from('notifications')
+          .insert(inserts);
+        if (notifErr) {
+          console.error(
+            '[confirmDeliverySplit] notif insert falló (no fatal):',
+            notifErr,
+          );
+        }
+      }
+    } catch (e) {
+      console.error(
+        '[confirmDeliverySplit] notif excepción (no fatal):',
+        e,
+      );
+    }
+
+    // ── Edge Function commit-stock-delivery
+    try {
+      const { error: edgeErr } = await admin.functions.invoke(EDGE_FN, {
+        body: { lead_id: data.lead_id },
+      });
+      if (edgeErr) {
+        console.error(
+          `[confirmDeliverySplit] Edge Function ${EDGE_FN} falló (no fatal):`,
+          edgeErr,
+        );
+      }
+    } catch (e) {
+      console.error(
+        `[confirmDeliverySplit] excepción al invocar ${EDGE_FN} (no fatal):`,
+        e,
+      );
+    }
+
+    revalidatePath('/driver');
+    revalidatePath('/leads');
+    revalidatePath('/payments');
+    revalidatePath('/admin/entregas');
+    revalidatePath('/admin/catalogs');
+    return {
+      status: 'success',
+      message: 'Entrega confirmada con pago dividido.',
+      deliveryId,
+    };
+  } catch (err) {
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Error desconocido al confirmar entrega con pago dividido';
+    console.error(
+      '[confirmDeliverySplit] excepción no controlada:',
+      err,
+    );
     await txn.rollback('excepción no controlada');
     return { status: 'error', message };
   }

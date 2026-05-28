@@ -73,7 +73,7 @@ export default async function DriverPage() {
         .from('leads')
         .select(
           `id, client_name, phone, address, maps_url, total_amount, payment_status, delivery_status,
-           delivery_date, delivery_order, delivery_cost, purchase_type,
+           delivery_date, delivery_order, delivery_cost, purchase_type, extra_costs,
            failed_delivery_reason, failed_delivery_photo_url,
            lead_colors (
              quantity,
@@ -192,6 +192,10 @@ export default async function DriverPage() {
       delivery_order: number | null;
       delivery_cost: number | string | null;
       purchase_type: string | null;
+      /** Cargos extra del pedido (jsonb). Cada item: { description, amount }.
+       *  Las filas con descripción vacía o amount=0 se descartan al
+       *  mapear — son fantasmas de migraciones viejas. */
+      extra_costs: unknown | null;
       failed_delivery_reason: string | null;
       failed_delivery_photo_url: string | null;
       lead_colors: RawLeadColor[] | null;
@@ -219,12 +223,35 @@ export default async function DriverPage() {
           l.purchase_type === 'domicilio'
             ? Math.max(0, Number(l.delivery_cost ?? 0))
             : 0;
+        // Costos extras: filtramos rows con descripción no vacía y
+        // amount > 0 (lo demás son fantasmas de pedidos legacy). El
+        // monto ya está incluido en `total_amount`, así que `adeudo`
+        // ya cubre estos cargos; los enumeramos para que el chofer
+        // sepa el desglose de lo que está cobrando.
+        const extraCosts = Array.isArray(l.extra_costs)
+          ? (l.extra_costs as unknown[])
+              .map((e) => {
+                if (!e || typeof e !== 'object') return null;
+                const obj = e as { description?: unknown; amount?: unknown };
+                const description =
+                  typeof obj.description === 'string'
+                    ? obj.description.trim()
+                    : '';
+                const amount = Number(obj.amount ?? 0);
+                if (description.length === 0 || !(amount > 0)) return null;
+                return { description, amount };
+              })
+              .filter(
+                (x): x is { description: string; amount: number } => x !== null,
+              )
+          : [];
         return {
           id: l.id,
           client_name: l.client_name,
           phone: l.phone ?? '',
           address: l.address ?? '',
           maps_url: l.maps_url ?? '',
+          extra_costs: extraCosts,
           total_amount: total,
           adeudo,
           delivery_cost: deliveryCost,

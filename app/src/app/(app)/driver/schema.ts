@@ -128,6 +128,73 @@ export const initialConfirmDeliveryState: ConfirmDeliveryState = {
   status: 'idle',
 };
 
+/**
+ * Variante "pago dividido" de la confirmación de entrega.
+ *
+ * El cliente paga el adeudo en dos transacciones distintas — típicamente
+ * una en efectivo y otra por transferencia, o dos efectivos de personas
+ * diferentes. Cada slot lleva su propio monto, método y evidencia
+ * (la foto es obligatoria por payment, no por delivery, para que el
+ * comprobante asociado a cada `payments.id` sea independiente).
+ *
+ * Si cualquiera de los dos pagos es en efectivo, el receiver_role +
+ * receiver_id se comparten — el chofer entrega TODO el efectivo a la
+ * misma persona (UX más simple y un solo destinatario por entrega).
+ */
+const SplitPaymentSlotSchema = z.object({
+  amount: z
+    .number({ invalid_type_error: 'Monto inválido' })
+    .nonnegative('Monto debe ser ≥ 0')
+    .max(10_000_000, 'Monto demasiado grande'),
+  payment_method: z.enum(DRIVER_PAYMENT_METHOD_VALUES, {
+    message: 'Método de pago inválido',
+  }),
+});
+
+export const ConfirmDeliverySplitSchema = z
+  .object({
+    lead_id: z.string().uuid('lead_id inválido'),
+    receiver_id: z.string().optional().or(z.literal('')),
+    receiver_role: z
+      .enum(RECEIVER_ROLE_VALUES, { message: 'Destinatario inválido' })
+      .optional()
+      .nullable(),
+    pago1: SplitPaymentSlotSchema,
+    pago2: SplitPaymentSlotSchema,
+  })
+  .refine((d) => d.pago1.amount > 0 && d.pago2.amount > 0, {
+    message: 'Ambos pagos deben tener un monto mayor a 0.',
+    path: ['pago2'],
+  })
+  .refine(
+    (d) => {
+      const cash =
+        d.pago1.payment_method === 'efectivo' ||
+        d.pago2.payment_method === 'efectivo';
+      if (!cash) return true;
+      return d.receiver_role != null;
+    },
+    {
+      message: 'Selecciona a quién entregas el efectivo.',
+      path: ['receiver_role'],
+    },
+  )
+  .refine(
+    (d) => {
+      const cash =
+        d.pago1.payment_method === 'efectivo' ||
+        d.pago2.payment_method === 'efectivo';
+      if (!cash) return true;
+      return typeof d.receiver_id === 'string' && d.receiver_id.length > 0;
+    },
+    {
+      message: 'Selecciona la persona que recibirá el efectivo.',
+      path: ['receiver_id'],
+    },
+  );
+
+export type ConfirmDeliverySplitInput = z.infer<typeof ConfirmDeliverySplitSchema>;
+
 // ─── Issue reporting (faltantes / detalles) ──────────────────────────
 
 export const ISSUE_TYPE_VALUES = ['faltante', 'detalle'] as const;

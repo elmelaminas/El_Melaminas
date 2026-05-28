@@ -63,6 +63,10 @@ export type DeliveryCardData = {
   failed_delivery_reason: string | null;
   failed_delivery_photo_url: string | null;
   colors: { color_name: string; quantity: number }[];
+  /** Cargos extras del pedido (filtrados a description+amount válidos).
+   *  Sumados ya están dentro de `total_amount`/`adeudo`; los listamos
+   *  para que el chofer vea el desglose de lo que cobra. */
+  extra_costs: { description: string; amount: number }[];
 };
 
 export type ReceiverOption = {
@@ -435,7 +439,56 @@ function DeliveryCard({
   const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Pago dividido en 2. Toggle (single|split) + estado de cada slot.
+  // pago2.amount se autocalcula como adeudo - pago1.amount cuando el
+  // usuario modifica pago1 — luego puede editarlo manualmente si el
+  // monto cambia (p.ej. propina).
+  const [splitPayment, setSplitPayment] = useState<boolean>(false);
+  type PaymentSlot = {
+    amount: number;
+    method: (typeof DRIVER_PAYMENT_METHOD_VALUES)[number];
+    file: File | null;
+  };
+  const [pago1, setPago1] = useState<PaymentSlot>({
+    amount: 0,
+    method: 'efectivo',
+    file: null,
+  });
+  const [pago2, setPago2] = useState<PaymentSlot>({
+    amount: delivery.adeudo,
+    method: 'transferencia',
+    file: null,
+  });
+  const pago1FileRef = useRef<HTMLInputElement>(null);
+  const pago2FileRef = useRef<HTMLInputElement>(null);
+
+  function updatePago1(next: Partial<PaymentSlot>) {
+    setPago1((prev) => {
+      const merged = { ...prev, ...next };
+      // Si cambió el monto del pago1, recalculamos el pago2 al
+      // remanente (editable después). Si solo cambió método/foto, no
+      // tocamos pago2.
+      if (next.amount !== undefined) {
+        const remaining = Math.max(0, delivery.adeudo - merged.amount);
+        setPago2((p2) => ({ ...p2, amount: remaining }));
+      }
+      return merged;
+    });
+  }
+  function updatePago2(next: Partial<PaymentSlot>) {
+    setPago2((prev) => ({ ...prev, ...next }));
+  }
+
   const owes = delivery.adeudo > 0;
+  const splitSum = pago1.amount + pago2.amount;
+  const splitHasCash =
+    pago1.method === 'efectivo' || pago2.method === 'efectivo';
+  // En split mode el selector de destinatario aparece cuando AL MENOS
+  // uno de los dos pagos es efectivo; el receiver es compartido.
+  const needsReceiver = splitPayment
+    ? splitHasCash && pago1.amount + pago2.amount > 0
+    : paymentMethod === 'efectivo' && amount > 0;
   // Receptores filtrados según el rol elegido. La spec mapea
   // 'admin' → admins+supervisores ("al jefe"), 'contador' → contadores.
   const eligibleReceivers = receivers.filter((r) => {
@@ -453,20 +506,13 @@ function DeliveryCard({
 
   const handleSubmit = () => {
     setError(null);
-    if (owes && (!Number.isFinite(amount) || amount < 0)) {
-      setError('Monto cobrado inválido.');
-      return;
-    }
-    const photoCheck = validatePhotoFile(evidenceFile);
-    if (!photoCheck.ok) {
-      setError(`Foto de la entrega: ${photoCheck.message}`);
-      return;
-    }
-    if (owes && amount > 0 && isEfectivo && !receiverRole) {
+
+    // ── Validaciones comunes a receiver (cuando aplica)
+    if (owes && needsReceiver && !receiverRole) {
       setError('Selecciona a quién entregas el efectivo (admin o contador).');
       return;
     }
-    if (owes && amount > 0 && isEfectivo && !receiverId) {
+    if (owes && needsReceiver && !receiverId) {
       setError(
         receiverRole === 'contador'
           ? 'Selecciona el contador que recibirá el efectivo.'
@@ -477,17 +523,54 @@ function DeliveryCard({
 
     const fd = new FormData();
     fd.set('lead_id', delivery.id);
-    fd.set('amount_collected', String(owes ? amount : 0));
-    if (owes && amount > 0) {
-      fd.set('payment_method', paymentMethod);
-      if (isEfectivo && receiverId) {
-        fd.set('receiver_id', receiverId);
+
+    if (owes && splitPayment) {
+      // ── Validaciones split
+      if (!(pago1.amount > 0) || !(pago2.amount > 0)) {
+        setError('Ambos pagos deben tener un monto mayor a 0.');
+        return;
       }
-      if (isEfectivo && receiverRole) {
-        fd.set('receiver_role', receiverRole);
+      const p1Check = validatePhotoFile(pago1.file);
+      if (!p1Check.ok) {
+        setError(`Foto del pago 1: ${p1Check.message}`);
+        return;
       }
+      const p2Check = validatePhotoFile(pago2.file);
+      if (!p2Check.ok) {
+        setError(`Foto del pago 2: ${p2Check.message}`);
+        return;
+      }
+      // Advertencia (no bloqueante) si la suma no cubre el adeudo —
+      // permitimos continuar para el caso "cobrar parcial ahora,
+      // resto después".
+      fd.set('split_payment', 'true');
+      fd.set('pago1_amount', String(pago1.amount));
+      fd.set('pago1_method', pago1.method);
+      fd.set('pago1_evidence', pago1.file as File);
+      fd.set('pago2_amount', String(pago2.amount));
+      fd.set('pago2_method', pago2.method);
+      fd.set('pago2_evidence', pago2.file as File);
+      if (needsReceiver && receiverId) fd.set('receiver_id', receiverId);
+      if (needsReceiver && receiverRole) fd.set('receiver_role', receiverRole);
+    } else {
+      // ── Flujo single (existente)
+      if (owes && (!Number.isFinite(amount) || amount < 0)) {
+        setError('Monto cobrado inválido.');
+        return;
+      }
+      const photoCheck = validatePhotoFile(evidenceFile);
+      if (!photoCheck.ok) {
+        setError(`Foto de la entrega: ${photoCheck.message}`);
+        return;
+      }
+      fd.set('amount_collected', String(owes ? amount : 0));
+      if (owes && amount > 0) {
+        fd.set('payment_method', paymentMethod);
+        if (isEfectivo && receiverId) fd.set('receiver_id', receiverId);
+        if (isEfectivo && receiverRole) fd.set('receiver_role', receiverRole);
+      }
+      if (evidenceFile && evidenceFile.size > 0) fd.set('evidence', evidenceFile);
     }
-    if (evidenceFile && evidenceFile.size > 0) fd.set('evidence', evidenceFile);
 
     startTransition(async () => {
       try {
@@ -625,6 +708,51 @@ function DeliveryCard({
           </div>
         )}
       </div>
+
+      {/* Costos extras del pedido — solo si el lead registró cargos
+          adicionales (flete especial, instalación, etc.). El total YA
+          está dentro de `adeudo`/`total_amount`, pero desglosarlos
+          aquí evita preguntas del cliente. */}
+      {delivery.extra_costs.length > 0 && (
+        <div className="mb-4">
+          <div
+            className="text-xs uppercase tracking-wide mb-2"
+            style={{ color: 'var(--text-tertiary)' }}
+          >
+            Costos extras
+          </div>
+          <div
+            className="flex flex-col gap-2 p-3 rounded-lg"
+            style={{ background: 'var(--bg-subtle)' }}
+          >
+            {delivery.extra_costs.map((e, idx) => (
+              <div
+                key={`${e.description}-${idx}`}
+                className="flex items-center justify-between gap-2 text-sm"
+              >
+                <span style={{ color: 'var(--text-primary)' }}>
+                  • {e.description}
+                </span>
+                <span className="font-semibold">{formatMXN(e.amount)}</span>
+              </div>
+            ))}
+            <div
+              className="flex items-center justify-between gap-2 pt-2 mt-1 text-sm"
+              style={{
+                borderTop: '1px solid var(--border)',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              <span className="font-semibold">Total extras</span>
+              <span className="font-bold">
+                {formatMXN(
+                  delivery.extra_costs.reduce((s, e) => s + e.amount, 0),
+                )}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Costo del envío — visible solo cuando hay flete a domicilio.
           Ya está incluido en `adeudo`/`total_amount`; lo desglosamos
@@ -794,6 +922,137 @@ function DeliveryCard({
 
         {owes ? (
           <>
+            {/* Toggle Un solo pago / Dos pagos. Vive arriba de los
+                controles porque cambia el shape del formulario. */}
+            <div className="mb-3">
+              <label className="label">¿Cómo cobra el cliente?</label>
+              <div
+                role="radiogroup"
+                aria-label="Tipo de cobro"
+                className="grid grid-cols-2 gap-2"
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!splitPayment}
+                  onClick={() => setSplitPayment(false)}
+                  disabled={pending}
+                  className="btn"
+                  style={{
+                    padding: 12,
+                    fontSize: '0.8125rem',
+                    fontWeight: 600,
+                    background: !splitPayment
+                      ? 'var(--brand-primary)'
+                      : 'var(--bg-subtle)',
+                    color: !splitPayment ? '#fff' : 'var(--text-primary)',
+                    border: !splitPayment
+                      ? '2px solid var(--brand-primary)'
+                      : '2px solid transparent',
+                    borderRadius: 8,
+                    minHeight: 56,
+                  }}
+                >
+                  💰 Un solo pago
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={splitPayment}
+                  onClick={() => setSplitPayment(true)}
+                  disabled={pending}
+                  className="btn"
+                  style={{
+                    padding: 12,
+                    fontSize: '0.8125rem',
+                    fontWeight: 600,
+                    background: splitPayment
+                      ? 'var(--brand-primary)'
+                      : 'var(--bg-subtle)',
+                    color: splitPayment ? '#fff' : 'var(--text-primary)',
+                    border: splitPayment
+                      ? '2px solid var(--brand-primary)'
+                      : '2px solid transparent',
+                    borderRadius: 8,
+                    minHeight: 56,
+                  }}
+                >
+                  💰💰 Dos pagos
+                </button>
+              </div>
+            </div>
+
+            {splitPayment ? (
+              <>
+                <PaymentSlotEditor
+                  label="Pago 1"
+                  slot={pago1}
+                  setSlot={updatePago1}
+                  fileInputRef={pago1FileRef}
+                  pending={pending}
+                />
+                <PaymentSlotEditor
+                  label="Pago 2"
+                  slot={pago2}
+                  setSlot={updatePago2}
+                  fileInputRef={pago2FileRef}
+                  pending={pending}
+                />
+                {/* Resumen en vivo */}
+                <div
+                  className="mb-3 p-3 rounded-lg text-sm"
+                  style={{
+                    background: 'var(--bg-subtle)',
+                    border: '1px solid var(--border)',
+                  }}
+                  aria-live="polite"
+                >
+                  <div className="flex justify-between">
+                    <span>Total a cobrar:</span>
+                    <span className="font-semibold">
+                      {formatMXN(delivery.adeudo)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Pago 1:</span>
+                    <span>{formatMXN(pago1.amount)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Pago 2:</span>
+                    <span>{formatMXN(pago2.amount)}</span>
+                  </div>
+                  <div
+                    className="flex justify-between mt-2 pt-2"
+                    style={{ borderTop: '1px solid var(--border)' }}
+                  >
+                    <span className="font-semibold">Suma:</span>
+                    <span
+                      className="font-bold"
+                      style={{
+                        color:
+                          splitSum >= delivery.adeudo
+                            ? 'var(--success, #15803D)'
+                            : 'var(--warning, #B45309)',
+                      }}
+                    >
+                      {formatMXN(splitSum)}
+                      {splitSum >= delivery.adeudo ? ' ✓' : ''}
+                    </span>
+                  </div>
+                  {splitSum < delivery.adeudo && (
+                    <div
+                      className="text-xs mt-2"
+                      style={{ color: 'var(--warning, #B45309)' }}
+                      role="alert"
+                    >
+                      ⚠️ La suma no cubre el adeudo. El cliente quedará
+                      con saldo pendiente.
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
             <div className="mb-3">
               <label className="label">¿Cómo cobró el cliente?</label>
               <div
@@ -891,14 +1150,16 @@ function DeliveryCard({
                 disabled={pending}
               />
             </div>
+              </>
+            )}
 
             {/* Selector de DESTINATARIO del efectivo. Sólo cuando
-                el cobro es en efectivo (transferencia/Clip va directo
-                a cuenta). Dos pasos:
+                el cobro (single o split) involucra efectivo. Dos pasos:
                   1) Elegir rol — 'admin' o 'contador' (cards visuales).
                   2) Elegir persona específica de ese rol (dropdown).
-                Cambiar el rol resetea el receiver_id. */}
-            {isEfectivo && amount > 0 && (
+                Cambiar el rol resetea el receiver_id. En split mode
+                el receiver es compartido para todos los pagos cash. */}
+            {needsReceiver && (
               <div className="mb-3">
                 <label className="label">
                   ¿A quién entregas el efectivo?
@@ -1082,16 +1343,32 @@ function DeliveryCard({
           </div>
         )}
 
+        {(() => {
+          // Foto requerida según el modo:
+          //   - split: ambas fotos por payment
+          //   - single: foto única de la entrega (incluye lead ya liquidado)
+          const splitPhotosOk =
+            !!pago1.file &&
+            pago1.file.size > 0 &&
+            !!pago2.file &&
+            pago2.file.size > 0;
+          const singlePhotoOk = !!evidenceFile && evidenceFile.size > 0;
+          const canSubmit = owes && splitPayment
+            ? splitPhotosOk
+            : singlePhotoOk;
+          return (
         <button
           type="button"
           onClick={handleSubmit}
           className="btn btn-primary w-full"
           style={{ height: 56, fontSize: '1rem', fontWeight: 600 }}
-          disabled={pending || !evidenceFile || evidenceFile.size === 0}
+          disabled={pending || !canSubmit}
           aria-busy={pending}
           title={
-            !evidenceFile && !pending
-              ? 'Sube la foto de la entrega para continuar'
+            !canSubmit && !pending
+              ? owes && splitPayment
+                ? 'Sube las dos fotos (pago 1 y pago 2) para continuar'
+                : 'Sube la foto de la entrega para continuar'
               : undefined
           }
         >
@@ -1110,6 +1387,143 @@ function DeliveryCard({
             </>
           )}
         </button>
+          );
+        })()}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Slot de un pago dentro del flujo "pago dividido". Encapsula los 3
+ * controles (método, monto, foto) para una sola transacción. El
+ * `setSlot` lo provee el padre y aplica updates parciales sin tocar
+ * los otros campos.
+ */
+function PaymentSlotEditor({
+  label,
+  slot,
+  setSlot,
+  fileInputRef,
+  pending,
+}: {
+  label: string;
+  slot: {
+    amount: number;
+    method: (typeof DRIVER_PAYMENT_METHOD_VALUES)[number];
+    file: File | null;
+  };
+  setSlot: (
+    next: Partial<{
+      amount: number;
+      method: (typeof DRIVER_PAYMENT_METHOD_VALUES)[number];
+      file: File | null;
+    }>,
+  ) => void;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  pending: boolean;
+}) {
+  return (
+    <div
+      className="mb-3 p-3 rounded-lg"
+      style={{
+        border: '1px solid var(--border)',
+        background: 'var(--bg-subtle)',
+      }}
+    >
+      <div className="font-semibold mb-2 text-sm">{label}</div>
+      <div className="mb-2">
+        <label className="label">Método</label>
+        <div
+          role="radiogroup"
+          aria-label={`Método de ${label}`}
+          className="grid grid-cols-3 gap-2"
+        >
+          {DRIVER_PAYMENT_METHOD_OPTIONS.map((m) => {
+            const active = slot.method === m.value;
+            return (
+              <button
+                key={m.value}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                onClick={() => setSlot({ method: m.value })}
+                disabled={pending}
+                className="btn"
+                style={{
+                  padding: '6px 4px',
+                  fontSize: '0.75rem',
+                  fontWeight: 600,
+                  background: active
+                    ? 'var(--brand-primary)'
+                    : 'var(--bg-base, #fff)',
+                  color: active ? '#fff' : 'var(--text-primary)',
+                  border: active
+                    ? '2px solid var(--brand-primary)'
+                    : '2px solid var(--border)',
+                  borderRadius: 8,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 2,
+                  minHeight: 48,
+                }}
+              >
+                <span aria-hidden="true" style={{ fontSize: '1rem' }}>
+                  {m.emoji}
+                </span>
+                <span>{m.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mb-2">
+        <label className="label">Monto</label>
+        <input
+          type="number"
+          className="input"
+          value={slot.amount}
+          onChange={(e) => setSlot({ amount: Number(e.target.value) })}
+          min={0}
+          step="0.01"
+          style={{ height: 44, fontSize: '1rem' }}
+          disabled={pending}
+        />
+      </div>
+      <div
+        className="dropzone"
+        onClick={() => !pending && fileInputRef.current?.click()}
+        style={{
+          cursor: pending ? 'not-allowed' : 'pointer',
+          borderColor: slot.file ? undefined : '#FCA5A5',
+        }}
+      >
+        <Camera
+          size={18}
+          style={{ color: slot.file ? '#B91C1C' : '#DC2626' }}
+          className="mx-auto mb-1"
+        />
+        <div
+          className="text-xs font-medium"
+          style={{ color: 'var(--text-primary)' }}
+        >
+          {slot.file
+            ? slot.file.name
+            : `Foto del ${label.toLowerCase()} (obligatoria)`}
+        </div>
+        <div className="text-[10px]" style={{ color: '#B91C1C' }}>
+          JPG/PNG/WEBP/HEIC · máx. 10 MB
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={PHOTO_ACCEPT_ATTR}
+          capture="environment"
+          onChange={(e) => setSlot({ file: e.target.files?.[0] ?? null })}
+          style={{ display: 'none' }}
+          disabled={pending}
+        />
       </div>
     </div>
   );
