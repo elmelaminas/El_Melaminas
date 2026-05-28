@@ -87,8 +87,10 @@ function rolesAllowed(pathname: string): readonly Role[] | null {
   if (pathname === '/driver' || pathname.startsWith('/driver/')) return ['admin', 'admin2', 'driver'];
   if (pathname === '/warehouse' || pathname.startsWith('/warehouse/')) return ['admin', 'admin2', 'warehouse'];
   if (pathname === '/reports' || pathname.startsWith('/reports/')) return ['admin', 'admin2', 'supervisor'];
-  // /contador: contador + admin2 (admin regular ya no opera caja).
-  if (pathname === '/contador' || pathname.startsWith('/contador/')) return ['admin2', 'contador'];
+  // /contador: contador + admin2 + admin. El admin se incluye para que
+  // pueda validar cobros lead-por-lead con su propio PIN cuando el
+  // contador no esté disponible (refactor 2026-05).
+  if (pathname === '/contador' || pathname.startsWith('/contador/')) return ['admin', 'admin2', 'contador'];
   return null;
 }
 

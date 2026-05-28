@@ -302,12 +302,17 @@ export default async function ContadorPage() {
     // Idempotencia / estado: marcamos como "validado" cada ingreso que
     // ya tenga un egreso `source='validado_contador'` con el mismo
     // payment_id. Un lookup bulk sobre los payment_ids del listado.
+    //
+    // Adicional 2026-05: capturamos también `registered_by` para
+    // resolver el nombre del validador (admin/contador) y mostrarlo
+    // como "Por: X" debajo del badge "Validado" en la UI.
     const validatedPaymentIds = new Set<string>();
+    const validatorByPayment = new Map<string, string>();
     if (paymentIds.length > 0) {
       try {
         const { data: validatedRows, error: valErr } = await admin
           .from('admin_cash_register')
-          .select('payment_id')
+          .select('payment_id, registered_by')
           .eq('operation_type', 'egreso')
           .eq('source', 'validado_contador')
           .in('payment_id', paymentIds);
@@ -318,11 +323,44 @@ export default async function ContadorPage() {
           );
         }
         for (const v of validatedRows ?? []) {
-          if (v.payment_id) validatedPaymentIds.add(v.payment_id);
+          if (!v.payment_id) continue;
+          validatedPaymentIds.add(v.payment_id);
+          if (typeof v.registered_by === 'string' && v.registered_by) {
+            validatorByPayment.set(v.payment_id, v.registered_by);
+          }
         }
       } catch (e) {
         console.error(
           '[ContadorPage] validated lookup excepción (no fatal):',
+          e,
+        );
+      }
+    }
+
+    // Resolver nombres de los validadores que no estén ya en
+    // `nameById` (caso típico: el validador es un contador que no
+    // aparece en la lista de admins). Bulk lookup, best-effort.
+    const validatorIds = Array.from(new Set(validatorByPayment.values()));
+    const missingValidatorIds = validatorIds.filter((id) => !nameById.has(id));
+    if (missingValidatorIds.length > 0) {
+      try {
+        const { data: extra, error: extraErr } = await admin
+          .from('profiles')
+          .select('id, full_name')
+          .in('id', missingValidatorIds);
+        if (extraErr) {
+          console.error(
+            '[ContadorPage] validator names lookup falló (no fatal):',
+            extraErr,
+          );
+        } else {
+          for (const u of extra ?? []) {
+            nameById.set(u.id, u.full_name ?? '(sin nombre)');
+          }
+        }
+      } catch (e) {
+        console.error(
+          '[ContadorPage] validator names excepción (no fatal):',
           e,
         );
       }
@@ -335,6 +373,9 @@ export default async function ContadorPage() {
       const adminName = r.admin_id
         ? nameById.get(r.admin_id) ?? '—'
         : '—';
+      const validatorId = r.payment_id
+        ? validatorByPayment.get(r.payment_id) ?? null
+        : null;
       return {
         id: r.id,
         payment_id: r.payment_id ?? null,
@@ -345,6 +386,7 @@ export default async function ContadorPage() {
         validated: r.payment_id
           ? validatedPaymentIds.has(r.payment_id)
           : false,
+        validator_name: validatorId ? nameById.get(validatorId) ?? null : null,
       };
     });
 

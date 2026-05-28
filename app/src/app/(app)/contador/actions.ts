@@ -69,7 +69,7 @@ export async function receiveAdminCashAction(
 
     const admin = supabaseAdmin();
 
-    // Defense-in-depth: solo contador o admin2 puede validar.
+    // Defense-in-depth: contador, admin2 o admin pueden validar caja.
     const { data: callerProfile, error: callerErr } = await admin
       .from('profiles')
       .select('role')
@@ -83,11 +83,12 @@ export async function receiveAdminCashAction(
     }
     if (
       callerProfile?.role !== 'contador' &&
-      callerProfile?.role !== 'admin2'
+      callerProfile?.role !== 'admin2' &&
+      callerProfile?.role !== 'admin'
     ) {
       return {
         status: 'error',
-        message: 'Solo el contador (o admin2) puede validar caja del admin.',
+        message: 'Solo contador, admin o admin2 pueden validar caja del admin.',
       };
     }
 
@@ -243,11 +244,12 @@ export async function receiveIndividualCashAction(
     }
     if (
       callerProfile?.role !== 'contador' &&
-      callerProfile?.role !== 'admin2'
+      callerProfile?.role !== 'admin2' &&
+      callerProfile?.role !== 'admin'
     ) {
       return {
         status: 'error',
-        message: 'Solo el contador (o admin2) puede validar cobros.',
+        message: 'Solo contador, admin o admin2 pueden validar cobros.',
         reason: 'other',
       };
     }

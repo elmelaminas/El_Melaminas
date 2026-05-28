@@ -66,6 +66,12 @@ export type ReceivedCashHistoryRow = {
  * `validated=true` cuando ese egreso ya existe — la UI oculta el
  * botón "✓ Recibí" y muestra badge verde "Validado".
  */
+/** Fila visible en la sección "💰 Cobros en efectivo registrados".
+ *  `validated=true` significa que ya hay un egreso
+ *  `source='validado_contador'` para este `payment_id`. `validator_name`
+ *  proviene de `profiles.full_name` del usuario que insertó ese egreso
+ *  (admin, admin2 o contador) — se muestra como "Por: X" debajo del
+ *  badge "Validado" para auditoría rápida. */
 export type CashPaymentRow = {
   id: string;
   payment_id: string | null;
@@ -74,6 +80,10 @@ export type CashPaymentRow = {
   amount: number;
   created_at: string | null;
   validated: boolean;
+  /** Nombre del usuario que registró la validación
+   *  (`admin_cash_register.registered_by`). null si la fila aún no
+   *  está validada o si no se pudo resolver el nombre. */
+  validator_name: string | null;
 };
 
 /**
@@ -621,14 +631,14 @@ function CashPaymentsSection({
               className="text-sm font-semibold"
               style={{ color: '#92400E' }}
             >
-              No tienes PIN de confirmación configurado
+              Para validar cobros necesitas un PIN de 4 dígitos
             </div>
             <div
               className="text-xs mt-1"
               style={{ color: '#92400E' }}
             >
-              Contacta al administrador para que te asigne un PIN
-              desde /admin/users antes de validar cobros.
+              Contacta a Carlos Mena (Administrador) para que te asigne
+              tu PIN desde Usuarios → Editar tu perfil.
             </div>
           </div>
         </div>
@@ -751,9 +761,20 @@ function CashPaymentsSection({
                     </td>
                     <td data-label="Estado">
                       {p.validated ? (
-                        <span className="badge badge-success">
-                          ✓ Validado
-                        </span>
+                        <div className="flex flex-col items-start gap-0.5">
+                          <span className="badge badge-success">
+                            ✅ Validado
+                          </span>
+                          {p.validator_name && (
+                            <span
+                              className="text-[10px]"
+                              style={{ color: 'var(--text-tertiary)' }}
+                              title={`Validado por ${p.validator_name}`}
+                            >
+                              Por: {p.validator_name}
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <span className="badge badge-warning">
                           Pendiente
