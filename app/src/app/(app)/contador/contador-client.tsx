@@ -14,8 +14,8 @@ import {
 } from 'lucide-react';
 import { formatMXN } from '@/data/mock';
 import {
-  receiveIndividualCashAction,
-  receiveBulkFromContadorAction,
+  bulkReceiveCashContadorAction,
+  adminReceiveDirectOrContadorBulkAction,
 } from './actions';
 import { PinConfirmModal } from '@/components/ui/PinConfirmModal';
 import { formatDateTimeCDMX } from '@/lib/format-date';
@@ -106,6 +106,14 @@ export type CashPaymentRow = {
   /** Nombre del admin que recibió del contador; null si aún no
    *  recibido. Se muestra como "Por jefe: X" en la columna Estado. */
   receiver_name: string | null;
+  /** `true` cuando un admin recibió esta fila DIRECTO sin pasar por
+   *  el contador (existe un ingreso `source='recibido_directo_admin'`
+   *  con el mismo payment_id). Estado terminal: la fila no aparece
+   *  como seleccionable en ningún rol. */
+  received_directly: boolean;
+  /** Nombre del admin que recibió directo; null si no. Se muestra
+   *  como "Directo: X" en la columna Estado. */
+  direct_receiver_name: string | null;
 };
 
 /**
@@ -407,14 +415,9 @@ function CashPaymentsSection({
   const isAdminViewer = viewerRole === 'admin' || viewerRole === 'admin2';
   const isContadorViewer = viewerRole === 'contador';
 
-  // Contador viewer: una sola fila a la vez para el flujo individual
-  // existente (validar admin→contador). Es independiente del bulk
-  // selection del admin.
-  const [pendingRow, setPendingRow] = useState<CashPaymentRow | null>(null);
-
-  // Admin viewer: selección bulk con checkboxes. Set de payment_ids
-  // marcados + bandera para abrir el modal único de PIN. Las filas no
-  // seleccionables (no validadas o ya recibidas) no entran al set.
+  // Bulk selection compartido entre ambos roles (con reglas distintas
+  // de qué filas son seleccionables). Set de payment_ids + bandera
+  // para abrir el modal único de PIN.
   const [selectedPaymentIds, setSelectedPaymentIds] = useState<Set<string>>(
     new Set(),
   );
@@ -442,18 +445,26 @@ function CashPaymentsSection({
       )
     : cashPayments;
 
+  // Reglas de selectabilidad por rol:
+  //   - contador: filas en estado "pendiente" (no validadas, no
+  //     recibidas por ningún admin) — validar bulk.
+  //   - admin/admin2: filas no recibidas por ningún admin, sin
+  //     importar si el contador ya validó o no. Mixto permite
+  //     direct + via-contador en el mismo bulk.
+  // Estado terminal `received_directly` o `received_by_admin` saca a
+  // la fila del set selecionable en ambos roles.
+  function rowIsSelectable(p: CashPaymentRow): boolean {
+    if (typeof p.payment_id !== 'string') return false;
+    if (p.received_directly || p.received_by_admin) return false;
+    if (isContadorViewer) return !p.validated;
+    if (isAdminViewer) return true;
+    return false;
+  }
   // El "master checkbox" opera sobre las filas VISIBLES (filtradas).
   // UX estándar de tablas: "seleccionar todo" actúa sobre lo que la
   // vista actual muestra. Las selecciones previas no-visibles
   // permanecen tal cual.
-  const selectableVisibleRows = isAdminViewer
-    ? filteredCashPayments.filter(
-        (p) =>
-          typeof p.payment_id === 'string' &&
-          p.validated &&
-          !p.received_by_admin,
-      )
-    : [];
+  const selectableVisibleRows = filteredCashPayments.filter(rowIsSelectable);
   // `selectedRows` recorre el listado COMPLETO (no filtrado) para que
   // las selecciones que el filtro oculta sigan contribuyendo al total.
   const selectedRows = cashPayments.filter(
@@ -494,12 +505,36 @@ function CashPaymentsSection({
       return next;
     });
   }
-  // Nombre del contador que validó las filas seleccionadas — útil para
-  // el modal "Del contador: X". Si todas las seleccionadas vienen del
-  // mismo contador, mostramos su nombre; si vienen de varios mostramos
-  // "(varios)".
+  // Partición admin: una fila va por "directo" si NO fue validada por
+  // el contador todavía; va por "vía contador" si SÍ. La server
+  // action `adminReceiveDirectOrContadorBulkAction` recibe los dos
+  // arrays para procesarlos con el source correcto cada uno.
+  const adminPendingSelected = selectedRows.filter(
+    (r) => typeof r.payment_id === 'string' && !r.validated,
+  );
+  const adminValidatedSelected = selectedRows.filter(
+    (r) => typeof r.payment_id === 'string' && r.validated,
+  );
+  // Copy de la barra sticky para admin viewer según la mezcla.
+  let adminMixHint = '';
+  if (isAdminViewer && selectedRows.length > 0) {
+    if (adminPendingSelected.length > 0 && adminValidatedSelected.length === 0) {
+      adminMixHint = 'Recibirás directo — sin pasar por contador';
+    } else if (
+      adminValidatedSelected.length > 0 &&
+      adminPendingSelected.length === 0
+    ) {
+      adminMixHint = 'Recibirás del contador';
+    } else if (
+      adminPendingSelected.length > 0 &&
+      adminValidatedSelected.length > 0
+    ) {
+      adminMixHint = `Mezcla: ${adminPendingSelected.length} directo + ${adminValidatedSelected.length} del contador`;
+    }
+  }
+  // Nombres de contador para mostrar en el modal cuando aplica.
   const selectedValidatorNames = new Set(
-    selectedRows
+    adminValidatedSelected
       .map((r) => r.validator_name)
       .filter((n): n is string => typeof n === 'string' && n.length > 0),
   );
@@ -682,16 +717,14 @@ function CashPaymentsSection({
         </button>
       </div>
 
-      {/* Tabla de detalle. Para admin viewer agregamos columna de
-          checkbox al inicio (master + por fila); el contador viewer
-          mantiene la tabla original. La columna "Acción" queda
-          solo para el flujo del contador (per-row). */}
+      {/* Tabla de detalle. Ambos roles operan por checkboxes + barra
+          sticky; la columna "Acción" se eliminó. */}
       <div className="tbl-wrap">
         <div className="overflow-x-auto">
           <table className="tbl table-to-cards">
             <thead>
               <tr>
-                {isAdminViewer && (
+                {(isAdminViewer || isContadorViewer) && (
                   <th style={{ width: 36 }}>
                     <input
                       type="checkbox"
@@ -710,16 +743,13 @@ function CashPaymentsSection({
                 <th className="text-right">Monto</th>
                 <th>Fecha</th>
                 <th>Estado</th>
-                {isContadorViewer && <th className="text-right">Acción</th>}
               </tr>
             </thead>
             <tbody>
               {cashPayments.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={
-                      (isAdminViewer ? 1 : 0) + (isContadorViewer ? 6 : 5)
-                    }
+                    colSpan={isAdminViewer || isContadorViewer ? 6 : 5}
                     className="text-center py-6 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -729,9 +759,7 @@ function CashPaymentsSection({
               ) : filteredCashPayments.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={
-                      (isAdminViewer ? 1 : 0) + (isContadorViewer ? 6 : 5)
-                    }
+                    colSpan={isAdminViewer || isContadorViewer ? 6 : 5}
                     className="text-center py-6 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
@@ -740,18 +768,14 @@ function CashPaymentsSection({
                 </tr>
               ) : (
                 filteredCashPayments.map((p) => {
-                  const selectable =
-                    isAdminViewer &&
-                    typeof p.payment_id === 'string' &&
-                    p.validated &&
-                    !p.received_by_admin;
+                  const selectable = rowIsSelectable(p);
                   const checked =
                     selectable &&
                     typeof p.payment_id === 'string' &&
                     selectedPaymentIds.has(p.payment_id);
                   return (
                   <tr key={p.id}>
-                    {isAdminViewer && (
+                    {(isAdminViewer || isContadorViewer) && (
                       <td data-label="Sel.">
                         {selectable && p.payment_id ? (
                           <input
@@ -800,12 +824,32 @@ function CashPaymentsSection({
                       {formatDateTime(p.created_at)}
                     </td>
                     <td data-label="Estado">
-                      {/* Tres estados, en orden de "más avanzado a menos":
-                          received_by_admin > validated > pendiente. El
-                          badge superior siempre refleja el estado más
-                          avanzado, y debajo se acumula la línea "Por: X"
-                          de cada paso conocido. */}
-                      {p.received_by_admin ? (
+                      {/* Cuatro estados terminales, en orden de "más
+                          avanzado a menos":
+                            received_directly > received_by_admin
+                              > validated > pendiente. */}
+                      {p.received_directly ? (
+                        <div className="flex flex-col items-start gap-0.5">
+                          <span
+                            className="badge"
+                            style={{
+                              background: '#DBEAFE',
+                              color: '#1E40AF',
+                            }}
+                          >
+                            ✅ Recibido directo
+                          </span>
+                          {p.direct_receiver_name && (
+                            <span
+                              className="text-[10px]"
+                              style={{ color: 'var(--text-tertiary)' }}
+                              title={`Recibido directo por ${p.direct_receiver_name}`}
+                            >
+                              Directo: {p.direct_receiver_name}
+                            </span>
+                          )}
+                        </div>
+                      ) : p.received_by_admin ? (
                         <div className="flex flex-col items-start gap-0.5">
                           <span className="badge badge-success">
                             ✅ Recibido por jefe
@@ -832,7 +876,7 @@ function CashPaymentsSection({
                       ) : p.validated ? (
                         <div className="flex flex-col items-start gap-0.5">
                           <span className="badge badge-success">
-                            ✅ Validado
+                            ✅ Validado por contador
                           </span>
                           {p.validator_name && (
                             <span
@@ -850,43 +894,6 @@ function CashPaymentsSection({
                         </span>
                       )}
                     </td>
-                    {/* Columna "Acción" solo para contador viewer: el
-                        admin opera por checkboxes + barra sticky. */}
-                    {isContadorViewer && (
-                      <td data-label="Acción" className="text-right">
-                        {p.payment_id && !p.validated ? (
-                          <button
-                            type="button"
-                            onClick={() => setPendingRow(p)}
-                            disabled={!hasPin}
-                            className="btn"
-                            style={{
-                              padding: '4px 10px',
-                              fontSize: '0.75rem',
-                              fontWeight: 600,
-                              background: hasPin
-                                ? '#16A34A'
-                                : 'var(--bg-muted)',
-                              color: hasPin
-                                ? '#fff'
-                                : 'var(--text-tertiary)',
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 4,
-                              cursor: hasPin ? 'pointer' : 'not-allowed',
-                            }}
-                            aria-label={`Validar cobro de ${p.client_name}`}
-                            title={
-                              hasPin
-                                ? `Validar cobro de ${p.client_name}`
-                                : 'Necesitas un PIN configurado para validar'
-                            }
-                          >
-                            <CircleCheckBig size={12} /> Recibí
-                          </button>
-                        ) : null}
-                      </td>
-                    )}
                   </tr>
                   );
                 })
@@ -910,12 +917,13 @@ function CashPaymentsSection({
         )}
       </div>
 
-      {/* Admin viewer: barra sticky al fondo + modal único bulk.
-          Aparecen solo cuando hay selección y rol admin/admin2. */}
-      {isAdminViewer && selectedPaymentIds.size > 0 && (
+      {/* Barra sticky compartida: aparece para contador o admin
+          cuando hay selección. El copy de la línea inferior cambia
+          según el rol y la mezcla. */}
+      {(isAdminViewer || isContadorViewer) && selectedPaymentIds.size > 0 && (
         <div
           role="region"
-          aria-label="Confirmación de recepción de cobros del contador"
+          aria-label="Confirmación bulk de cobros"
           className="fixed left-0 right-0 z-40"
           style={{ bottom: 0 }}
         >
@@ -936,24 +944,34 @@ function CashPaymentsSection({
               border: '1px solid var(--border)',
             }}
           >
-            <div
-              className="text-sm"
-              style={{ color: 'var(--text-primary)' }}
-            >
-              <span style={{ fontWeight: 600 }}>
-                ☑ {selectedPaymentIds.size}{' '}
-                {selectedPaymentIds.size === 1
-                  ? 'cliente seleccionado'
-                  : 'clientes seleccionados'}
-              </span>
-              <span
-                style={{ marginLeft: 12, color: 'var(--text-secondary)' }}
+            <div className="flex flex-col">
+              <div
+                className="text-sm"
+                style={{ color: 'var(--text-primary)' }}
               >
-                Total:{' '}
-                <strong style={{ color: '#15803D' }}>
-                  {formatMXN(selectedTotal)}
-                </strong>
-              </span>
+                <span style={{ fontWeight: 600 }}>
+                  ☑ {selectedPaymentIds.size}{' '}
+                  {selectedPaymentIds.size === 1
+                    ? 'seleccionado'
+                    : 'seleccionados'}
+                </span>
+                <span
+                  style={{ marginLeft: 12, color: 'var(--text-secondary)' }}
+                >
+                  Total:{' '}
+                  <strong style={{ color: '#15803D' }}>
+                    {formatMXN(selectedTotal)}
+                  </strong>
+                </span>
+              </div>
+              {isAdminViewer && adminMixHint && (
+                <div
+                  className="text-xs mt-1"
+                  style={{ color: 'var(--text-tertiary)' }}
+                >
+                  {adminMixHint}
+                </div>
+              )}
             </div>
             <div className="flex gap-2">
               <button
@@ -970,23 +988,31 @@ function CashPaymentsSection({
                 disabled={!hasPin || selectedPaymentIds.size === 0}
                 title={
                   hasPin
-                    ? 'Confirmar recepción con PIN'
+                    ? 'Confirmar con PIN'
                     : 'Necesitas un PIN configurado'
                 }
               >
-                <CircleCheckBig size={16} /> Confirmar recepción
+                <CircleCheckBig size={16} />{' '}
+                {isContadorViewer ? 'Confirmar validación' : 'Confirmar recepción'}
               </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* Modal admin: mezcla directo + via contador. Llama a la
+          server action `adminReceiveDirectOrContadorBulkAction` con
+          las dos slices. */}
       {isAdminViewer && (
         <PinConfirmModal
           isOpen={bulkModalOpen}
           onClose={() => setBulkModalOpen(false)}
-          title="Confirmar recepción del contador"
-          intro="¿Confirmas recibir efectivo del contador?"
+          title="Confirmar recepción"
+          intro={
+            adminMixHint
+              ? `${adminMixHint}. ¿Confirmas?`
+              : '¿Confirmas la recepción?'
+          }
           confirmText="Confirmar recepción"
           details={[
             ...selectedRows.map((r) => ({
@@ -1001,17 +1027,38 @@ function CashPaymentsSection({
                 </strong>
               ),
             },
-            { label: 'Del contador', value: contadorLabel },
+            ...(adminValidatedSelected.length > 0
+              ? [{ label: 'Del contador', value: contadorLabel }]
+              : []),
+            ...(adminPendingSelected.length > 0
+              ? [
+                  {
+                    label: 'Directo (sin contador)',
+                    value: `${adminPendingSelected.length} ${
+                      adminPendingSelected.length === 1 ? 'cobro' : 'cobros'
+                    }`,
+                  },
+                ]
+              : []),
           ]}
           onConfirm={async (pin) => {
-            const ids = Array.from(selectedPaymentIds);
-            if (ids.length === 0) {
+            if (selectedPaymentIds.size === 0) {
               return {
                 success: false,
                 error: 'Selecciona al menos un cobro.',
               };
             }
-            const result = await receiveBulkFromContadorAction(ids, pin);
+            const pendingIds = adminPendingSelected
+              .map((r) => r.payment_id)
+              .filter((x): x is string => typeof x === 'string');
+            const validatedIds = adminValidatedSelected
+              .map((r) => r.payment_id)
+              .filter((x): x is string => typeof x === 'string');
+            const result = await adminReceiveDirectOrContadorBulkAction(
+              pendingIds,
+              validatedIds,
+              pin,
+            );
             if (result.status === 'success') {
               setSelectedPaymentIds(new Set());
               router.refresh();
@@ -1020,10 +1067,9 @@ function CashPaymentsSection({
             if (result.status === 'error') {
               if (
                 result.reason === 'already_received' ||
-                result.reason === 'not_validated'
+                result.reason === 'not_validated' ||
+                result.reason === 'concurrent_validation'
               ) {
-                // Re-sync para que el admin vea por qué falló (alguien
-                // recibió o el contador des-validó entre ticks).
                 router.refresh();
               }
               const r = result.reason;
@@ -1039,39 +1085,42 @@ function CashPaymentsSection({
           }}
         />
       )}
+
+      {/* Modal contador: bulk validation. Llama a
+          `bulkReceiveCashContadorAction` con los payment_ids
+          seleccionados. */}
       {isContadorViewer && (
         <PinConfirmModal
-          isOpen={pendingRow != null}
-          onClose={() => setPendingRow(null)}
-          title="Confirmar recepción de efectivo"
-          details={
-            pendingRow
-              ? [
-                  { label: 'Cliente', value: pendingRow.client_name },
-                  {
-                    label: 'Monto',
-                    value: (
-                      <strong style={{ color: '#15803D' }}>
-                        {formatMXN(pendingRow.amount)}
-                      </strong>
-                    ),
-                  },
-                  { label: 'Admin', value: pendingRow.admin_name },
-                ]
-              : []
-          }
+          isOpen={bulkModalOpen}
+          onClose={() => setBulkModalOpen(false)}
+          title="Confirmar validación"
+          intro="¿Confirmas la validación de estos cobros?"
+          confirmText="Confirmar validación"
+          details={[
+            ...selectedRows.map((r) => ({
+              label: r.client_name,
+              value: formatMXN(r.amount),
+            })),
+            {
+              label: 'TOTAL A VALIDAR',
+              value: (
+                <strong style={{ color: '#15803D' }}>
+                  {formatMXN(selectedTotal)}
+                </strong>
+              ),
+            },
+          ]}
           onConfirm={async (pin) => {
-            if (!pendingRow?.payment_id) {
+            const ids = Array.from(selectedPaymentIds);
+            if (ids.length === 0) {
               return {
                 success: false,
-                error: 'Este cobro no tiene un pago asociado.',
+                error: 'Selecciona al menos un cobro.',
               };
             }
-            const result = await receiveIndividualCashAction(
-              pendingRow.payment_id,
-              pin,
-            );
+            const result = await bulkReceiveCashContadorAction(ids, pin);
             if (result.status === 'success') {
+              setSelectedPaymentIds(new Set());
               router.refresh();
               return { success: true };
             }
@@ -1079,10 +1128,13 @@ function CashPaymentsSection({
               if (result.reason === 'already_validated') {
                 router.refresh();
               }
+              const r = result.reason;
+              const mapped: 'pin_incorrect' | 'pin_missing' | 'other' =
+                r === 'pin_incorrect' || r === 'pin_missing' ? r : 'other';
               return {
                 success: false,
                 error: result.message,
-                reason: result.reason,
+                reason: mapped,
               };
             }
             return { success: false, error: 'Estado inesperado.' };

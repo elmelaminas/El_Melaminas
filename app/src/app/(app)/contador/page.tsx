@@ -342,38 +342,46 @@ export default async function ContadorPage() {
       }
     }
 
-    // Bulk lookup adicional: ingresos `source='recibido_contador'` por
-    // payment_id. Sirve para saber qué filas ya fueron recibidas por
-    // algún admin desde el contador (paso 3 de la cadena
-    // driver → admin → contador → admin). El admin viewer usa esto
-    // para ocultar el botón "Recibí del contador" cuando alguien más
-    // ya recibió ese cobro.
+    // Bulk lookup: ingresos `source='recibido_contador'` por payment_id
+    // (chain: contador → admin) Y `source='recibido_directo_admin'`
+    // (bypass del contador). Ambos son estados terminales: la fila ya
+    // está físicamente en la caja de algún admin.
     const receivedByAdminPaymentIds = new Set<string>();
     const adminReceiverByPayment = new Map<string, string>();
+    const receivedDirectlyPaymentIds = new Set<string>();
+    const directReceiverByPayment = new Map<string, string>();
     if (paymentIds.length > 0) {
       try {
         const { data: receivedRows, error: receivedErr } = await admin
           .from('admin_cash_register')
-          .select('payment_id, registered_by')
+          .select('payment_id, registered_by, source')
           .eq('operation_type', 'ingreso')
-          .eq('source', 'recibido_contador')
+          .in('source', ['recibido_contador', 'recibido_directo_admin'])
           .in('payment_id', paymentIds);
         if (receivedErr) {
           console.error(
-            '[ContadorPage] recibido_contador lookup falló (no fatal):',
+            '[ContadorPage] received lookup falló (no fatal):',
             receivedErr,
           );
         }
         for (const r of receivedRows ?? []) {
           if (!r.payment_id) continue;
-          receivedByAdminPaymentIds.add(r.payment_id);
-          if (typeof r.registered_by === 'string' && r.registered_by) {
-            adminReceiverByPayment.set(r.payment_id, r.registered_by);
+          const src = (r as { source?: string }).source;
+          if (src === 'recibido_contador') {
+            receivedByAdminPaymentIds.add(r.payment_id);
+            if (typeof r.registered_by === 'string' && r.registered_by) {
+              adminReceiverByPayment.set(r.payment_id, r.registered_by);
+            }
+          } else if (src === 'recibido_directo_admin') {
+            receivedDirectlyPaymentIds.add(r.payment_id);
+            if (typeof r.registered_by === 'string' && r.registered_by) {
+              directReceiverByPayment.set(r.payment_id, r.registered_by);
+            }
           }
         }
       } catch (e) {
         console.error(
-          '[ContadorPage] recibido_contador excepción (no fatal):',
+          '[ContadorPage] received lookup excepción (no fatal):',
           e,
         );
       }
@@ -387,6 +395,7 @@ export default async function ContadorPage() {
       new Set([
         ...validatorByPayment.values(),
         ...adminReceiverByPayment.values(),
+        ...directReceiverByPayment.values(),
       ]),
     );
     const missingNameIds = allLookupIds.filter((id) => !nameById.has(id));
@@ -427,6 +436,9 @@ export default async function ContadorPage() {
       const adminReceiverId = r.payment_id
         ? adminReceiverByPayment.get(r.payment_id) ?? null
         : null;
+      const directReceiverId = r.payment_id
+        ? directReceiverByPayment.get(r.payment_id) ?? null
+        : null;
       return {
         id: r.id,
         payment_id: r.payment_id ?? null,
@@ -443,6 +455,12 @@ export default async function ContadorPage() {
           : false,
         receiver_name: adminReceiverId
           ? nameById.get(adminReceiverId) ?? null
+          : null,
+        received_directly: r.payment_id
+          ? receivedDirectlyPaymentIds.has(r.payment_id)
+          : false,
+        direct_receiver_name: directReceiverId
+          ? nameById.get(directReceiverId) ?? null
           : null,
       };
     });

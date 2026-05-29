@@ -205,3 +205,125 @@ export type ReceiveBulkFromContadorState =
 
 export const initialReceiveBulkFromContadorState: ReceiveBulkFromContadorState =
   { status: 'idle' };
+
+/**
+ * `bulkReceiveCashContadorAction(payment_ids, pin)` — el contador
+ * valida en bulk varios cobros en efectivo desde la tabla "Cobros en
+ * efectivo registrados". Reemplaza al flujo per-row de
+ * `receiveIndividualCashAction` para el rol contador.
+ *
+ * Pre-condición por cada payment_id: existe un ingreso
+ * `source='pago_efectivo'` y no existe ya un egreso
+ * `validado_contador` con ese mismo payment_id (idempotencia).
+ *
+ * Side-effect: por cada fila, un INSERT egreso
+ * `source='validado_contador'` en la caja del admin que originalmente
+ * recibió el efectivo (`admin_id` del ingreso original). El balance
+ * de ese admin se reconcilia (ingreso − egreso = 0); el contador
+ * "absorbe" el efectivo físicamente.
+ */
+export const BulkReceiveCashContadorSchema = z.object({
+  payment_ids: z
+    .array(z.string().uuid('payment_id inválido'))
+    .min(1, 'Selecciona al menos un cobro')
+    .max(100, 'Demasiados cobros seleccionados'),
+  pin: z
+    .string()
+    .regex(/^\d{4}$/, 'PIN debe tener exactamente 4 dígitos'),
+});
+
+export type BulkReceiveCashContadorInput = z.infer<
+  typeof BulkReceiveCashContadorSchema
+>;
+
+export type BulkReceiveCashContadorState =
+  | { status: 'idle' }
+  | { status: 'success'; received: number; count: number }
+  | {
+      status: 'error';
+      message: string;
+      reason?:
+        | 'pin_incorrect'
+        | 'pin_missing'
+        | 'not_pago_efectivo'
+        | 'already_validated'
+        | 'other';
+    };
+
+export const initialBulkReceiveCashContadorState: BulkReceiveCashContadorState =
+  { status: 'idle' };
+
+/**
+ * `adminReceiveDirectOrContadorBulkAction(pending_ids, validated_ids, pin)`
+ * — un admin (admin o admin2) recibe en bulk una mezcla de cobros:
+ *   - `pending_payment_ids`: el contador AÚN no los validó; el admin
+ *     los recibe DIRECTO (bypass del contador) con source
+ *     `recibido_directo_admin`.
+ *   - `validated_payment_ids`: el contador SÍ los validó; el admin
+ *     los recibe vía contador con source `recibido_contador` + un
+ *     row en `contador_to_admin_transfers`.
+ *
+ * Al menos un id en alguno de los dos arrays. Total ≤ 100 para
+ * acotar bulks abusivos. PIN del admin que ejecuta.
+ *
+ * Por cada `pending_payment_id` se insertan DOS rows en
+ * `admin_cash_register`:
+ *   1. EGRESO en la caja del admin original (admin que recibió cash
+ *      del cliente) con source `recibido_directo_admin` — el dinero
+ *      sale de su caja.
+ *   2. INGRESO en la caja del admin actual con source
+ *      `recibido_directo_admin` — el dinero entra a la mía.
+ * Esto mantiene la contabilidad balanceada (ingreso − egreso = 0
+ * por admin) sin involucrar al contador.
+ */
+export const AdminReceiveDirectOrContadorBulkSchema = z
+  .object({
+    pending_payment_ids: z.array(z.string().uuid('payment_id inválido')),
+    validated_payment_ids: z.array(z.string().uuid('payment_id inválido')),
+    pin: z
+      .string()
+      .regex(/^\d{4}$/, 'PIN debe tener exactamente 4 dígitos'),
+  })
+  .refine(
+    (d) =>
+      d.pending_payment_ids.length + d.validated_payment_ids.length >= 1,
+    {
+      message: 'Selecciona al menos un cobro',
+      path: ['pending_payment_ids'],
+    },
+  )
+  .refine(
+    (d) =>
+      d.pending_payment_ids.length + d.validated_payment_ids.length <= 100,
+    {
+      message: 'Demasiados cobros seleccionados',
+      path: ['pending_payment_ids'],
+    },
+  );
+
+export type AdminReceiveDirectOrContadorBulkInput = z.infer<
+  typeof AdminReceiveDirectOrContadorBulkSchema
+>;
+
+export type AdminReceiveDirectOrContadorBulkState =
+  | { status: 'idle' }
+  | {
+      status: 'success';
+      received: number;
+      direct_count: number;
+      contador_count: number;
+    }
+  | {
+      status: 'error';
+      message: string;
+      reason?:
+        | 'pin_incorrect'
+        | 'pin_missing'
+        | 'not_validated'
+        | 'already_received'
+        | 'concurrent_validation'
+        | 'other';
+    };
+
+export const initialAdminReceiveDirectOrContadorBulkState: AdminReceiveDirectOrContadorBulkState =
+  { status: 'idle' };

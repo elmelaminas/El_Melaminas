@@ -4,6 +4,7 @@ import {
   CircleCheckBig,
   Wallet,
   Banknote,
+  Zap,
 } from 'lucide-react';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
@@ -114,13 +115,15 @@ export default async function MiCajaPage() {
     const saldo = totalIngresos - totalEgresos;
 
     // Desglose del mes por fuente:
-    //   pago_efectivo     → cobros directos (admin recibió cash de cliente)
-    //   chofer            → efectivo recibido de un chofer en entrega
-    //   recibido_contador → admin recibió efectivo de la caja del contador
-    //   egreso (any)      → entregado al contador (lo que SALIÓ de la caja)
+    //   pago_efectivo          → cobros directos (admin recibió cash de cliente)
+    //   chofer                 → efectivo recibido de un chofer en entrega
+    //   recibido_contador      → admin recibió de la caja del contador
+    //   recibido_directo_admin → admin recibió DIRECTO (bypass del contador)
+    //   egreso (any)           → entregado al contador (lo que SALIÓ de la caja)
     let monthCobrosDirectos = 0;
     let monthCobrosChofer = 0;
     let monthRecibidoContador = 0;
+    let monthRecibidoDirecto = 0;
     let monthEgresos = 0;
     for (const r of allRows) {
       const createdAt = r.created_at;
@@ -136,6 +139,8 @@ export default async function MiCajaPage() {
         if (r.source === 'pago_efectivo') monthCobrosDirectos += amt;
         else if (r.source === 'chofer') monthCobrosChofer += amt;
         else if (r.source === 'recibido_contador') monthRecibidoContador += amt;
+        else if (r.source === 'recibido_directo_admin')
+          monthRecibidoDirecto += amt;
         // ingresos de otra source (edge) los ignoramos en el desglose
         // pero sí contaron en totalIngresos.
       } else {
@@ -403,7 +408,7 @@ export default async function MiCajaPage() {
           <h2 className="text-lg font-semibold mb-3">
             Movimientos del mes
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-3">
             <BreakdownCard
               icon={<DollarSign size={22} />}
               label="Cobros directos"
@@ -423,6 +428,13 @@ export default async function MiCajaPage() {
               label="Recibido del contador"
               value={monthRecibidoContador}
               color="#4338CA"
+              sign="+"
+            />
+            <BreakdownCard
+              icon={<Zap size={22} />}
+              label="Recibido directo"
+              value={monthRecibidoDirecto}
+              color="#6366F1"
               sign="+"
             />
             <BreakdownCard
@@ -596,10 +608,11 @@ function BreakdownCard({
 /**
  * Etiqueta legible de la columna `source` para el historial.
  * Valores conocidos:
- *   - 'pago_efectivo'       → cobros directos
- *   - 'chofer'              → recibido de un chofer en entrega
- *   - 'validado_contador'   → entregado al contador (egreso)
- *   - 'recibido_contador'   → recibido del contador (ingreso del admin)
+ *   - 'pago_efectivo'          → cobros directos
+ *   - 'chofer'                 → recibido de un chofer en entrega
+ *   - 'validado_contador'      → entregado al contador (egreso)
+ *   - 'recibido_contador'      → recibido del contador (ingreso)
+ *   - 'recibido_directo_admin' → recibido directo bypass contador
  * Otros se muestran tal cual (defensivo).
  */
 function sourceLabel(source: string): string {
@@ -612,6 +625,8 @@ function sourceLabel(source: string): string {
       return 'Entregado al contador';
     case 'recibido_contador':
       return 'Recibido del contador';
+    case 'recibido_directo_admin':
+      return 'Recibido directo (sin contador)';
     default:
       return source || '—';
   }
