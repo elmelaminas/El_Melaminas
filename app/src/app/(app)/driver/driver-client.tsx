@@ -1144,7 +1144,10 @@ function DeliveryCard({
                 ref={fileRef}
                 type="file"
                 accept={PHOTO_ACCEPT_ATTR}
-                capture="environment"
+                // Sin `capture` para que el navegador móvil ofrezca el
+                // selector entre cámara y galería — el comprobante de
+                // pago muchas veces viene de la app del banco / chat
+                // del cliente, no de una foto recién tomada.
                 onChange={(e) => setEvidenceFile(e.target.files?.[0] ?? null)}
                 style={{ display: 'none' }}
                 disabled={pending}
@@ -1519,7 +1522,9 @@ function PaymentSlotEditor({
           ref={fileInputRef}
           type="file"
           accept={PHOTO_ACCEPT_ATTR}
-          capture="environment"
+          // Sin `capture`: cada slot del pago dividido acepta cámara o
+          // galería (mismo razonamiento que el evidencia single — el
+          // comprobante suele venir del banco / chat).
           onChange={(e) => setSlot({ file: e.target.files?.[0] ?? null })}
           style={{ display: 'none' }}
           disabled={pending}
