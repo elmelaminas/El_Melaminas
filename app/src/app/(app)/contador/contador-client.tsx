@@ -470,11 +470,6 @@ function CashPaymentsSection({
     if (isAdminViewer) return true;
     return false;
   }
-  // El "master checkbox" opera sobre las filas VISIBLES (filtradas).
-  // UX estándar de tablas: "seleccionar todo" actúa sobre lo que la
-  // vista actual muestra. Las selecciones previas no-visibles
-  // permanecen tal cual.
-  const selectableVisibleRows = filteredCashPayments.filter(rowIsSelectable);
   // `selectedRows` recorre el listado COMPLETO (no filtrado) para que
   // las selecciones que el filtro oculta sigan contribuyendo al total.
   const selectedRows = cashPayments.filter(
@@ -483,24 +478,66 @@ function CashPaymentsSection({
       selectedPaymentIds.has(p.payment_id),
   );
   const selectedTotal = selectedRows.reduce((s, p) => s + p.amount, 0);
-  const allVisibleSelected =
-    selectableVisibleRows.length > 0 &&
-    selectableVisibleRows.every(
+
+  // Partición por estado de la tabla — tres secciones con headers
+  // dedicados: ⏳ Pendientes / ✅ Validados / 💰 Recibidos. Las tres
+  // arrancan del listado YA filtrado por el buscador para que la
+  // búsqueda recorte cada sección por separado.
+  const pendingRows = filteredCashPayments.filter(
+    (r) => !r.validated && !r.received_by_admin && !r.received_directly,
+  );
+  const validatedRows = filteredCashPayments.filter(
+    (r) => r.validated && !r.received_by_admin && !r.received_directly,
+  );
+  const receivedRows = filteredCashPayments.filter(
+    (r) => r.received_by_admin || r.received_directly,
+  );
+
+  // "Master checkbox" por sección. Cada uno selecciona/des-selecciona
+  // SOLO las filas seleccionables visibles de SU sección, sin tocar
+  // las de otras. Esto evita que un admin clickee "todos" en
+  // Pendientes y por accidente arrastre Validados al set.
+  const pendingSelectable = pendingRows.filter(rowIsSelectable);
+  const validatedSelectable = validatedRows.filter(rowIsSelectable);
+  const allPendingSelected =
+    pendingSelectable.length > 0 &&
+    pendingSelectable.every(
       (r) =>
         typeof r.payment_id === 'string' &&
         selectedPaymentIds.has(r.payment_id),
     );
-  // Toggle limitado al subset visible: marca/desmarca solo las
-  // seleccionables actualmente en pantalla, sin tocar el resto.
-  function toggleAllVisible() {
+  const allValidatedSelected =
+    validatedSelectable.length > 0 &&
+    validatedSelectable.every(
+      (r) =>
+        typeof r.payment_id === 'string' &&
+        selectedPaymentIds.has(r.payment_id),
+    );
+
+  function toggleAllPending() {
     setSelectedPaymentIds((prev) => {
       const next = new Set(prev);
-      if (allVisibleSelected) {
-        for (const r of selectableVisibleRows) {
+      if (allPendingSelected) {
+        for (const r of pendingSelectable) {
           if (typeof r.payment_id === 'string') next.delete(r.payment_id);
         }
       } else {
-        for (const r of selectableVisibleRows) {
+        for (const r of pendingSelectable) {
+          if (typeof r.payment_id === 'string') next.add(r.payment_id);
+        }
+      }
+      return next;
+    });
+  }
+  function toggleAllValidated() {
+    setSelectedPaymentIds((prev) => {
+      const next = new Set(prev);
+      if (allValidatedSelected) {
+        for (const r of validatedSelectable) {
+          if (typeof r.payment_id === 'string') next.delete(r.payment_id);
+        }
+      } else {
+        for (const r of validatedSelectable) {
           if (typeof r.payment_id === 'string') next.add(r.payment_id);
         }
       }
@@ -727,205 +764,111 @@ function CashPaymentsSection({
         </button>
       </div>
 
-      {/* Tabla de detalle. Ambos roles operan por checkboxes + barra
-          sticky; la columna "Acción" se eliminó. */}
-      <div className="tbl-wrap">
-        <div className="overflow-x-auto">
-          <table className="tbl table-to-cards">
-            <thead>
-              <tr>
-                {(isAdminViewer || isContadorViewer) && (
-                  <th style={{ width: 36 }}>
-                    <input
-                      type="checkbox"
-                      aria-label="Seleccionar todos los cobros visibles recibibles"
-                      title="Seleccionar todos los cobros visibles recibibles"
-                      checked={allVisibleSelected}
-                      disabled={
-                        selectableVisibleRows.length === 0 || !hasPin
-                      }
-                      onChange={toggleAllVisible}
-                    />
-                  </th>
-                )}
-                <th>Cliente</th>
-                <th>Admin</th>
-                <th className="text-right">Monto</th>
-                <th>Fecha</th>
-                <th>Estado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {cashPayments.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={isAdminViewer || isContadorViewer ? 6 : 5}
-                    className="text-center py-6 text-sm"
-                    style={{ color: 'var(--text-tertiary)' }}
-                  >
-                    No hay cobros en efectivo este mes.
-                  </td>
-                </tr>
-              ) : filteredCashPayments.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={isAdminViewer || isContadorViewer ? 6 : 5}
-                    className="text-center py-6 text-sm"
-                    style={{ color: 'var(--text-tertiary)' }}
-                  >
-                    No se encontraron cobros para &ldquo;{q}&rdquo;.
-                  </td>
-                </tr>
-              ) : (
-                filteredCashPayments.map((p) => {
-                  const selectable = rowIsSelectable(p);
-                  const checked =
-                    selectable &&
-                    typeof p.payment_id === 'string' &&
-                    selectedPaymentIds.has(p.payment_id);
-                  return (
-                  <tr key={p.id}>
-                    {(isAdminViewer || isContadorViewer) && (
-                      <td data-label="Sel.">
-                        {selectable && p.payment_id ? (
-                          <input
-                            type="checkbox"
-                            aria-label={`Seleccionar cobro de ${p.client_name}`}
-                            disabled={!hasPin}
-                            checked={!!checked}
-                            onChange={() => toggleRow(p.payment_id as string)}
-                          />
-                        ) : (
-                          <span aria-hidden="true">&nbsp;</span>
-                        )}
-                      </td>
-                    )}
-                    <td data-label="Cliente" className="font-medium">
-                      {p.client_name}
-                    </td>
-                    <td
-                      data-label="Admin"
-                      className="text-sm"
-                      style={{ color: 'var(--text-secondary)' }}
-                    >
-                      {p.admin_name}
-                    </td>
-                    <td
-                      data-label="Monto"
-                      className="text-right font-bold"
-                      style={{ color: '#15803D' }}
-                    >
-                      <Banknote
-                        size={14}
-                        style={{
-                          display: 'inline',
-                          verticalAlign: 'middle',
-                          marginRight: 4,
-                          color: '#15803D',
-                        }}
-                      />
-                      {formatMXN(p.amount)}
-                    </td>
-                    <td
-                      data-label="Fecha"
-                      className="text-sm"
-                      style={{ color: 'var(--text-secondary)' }}
-                    >
-                      {formatDateTime(p.created_at)}
-                    </td>
-                    <td data-label="Estado">
-                      {/* Cuatro estados terminales, en orden de "más
-                          avanzado a menos":
-                            received_directly > received_by_admin
-                              > validated > pendiente. */}
-                      {p.received_directly ? (
-                        <div className="flex flex-col items-start gap-0.5">
-                          <span
-                            className="badge"
-                            style={{
-                              background: '#DBEAFE',
-                              color: '#1E40AF',
-                            }}
-                          >
-                            ✅ Recibido directo
-                          </span>
-                          {p.direct_receiver_name && (
-                            <span
-                              className="text-[10px]"
-                              style={{ color: 'var(--text-tertiary)' }}
-                              title={`Recibido directo por ${p.direct_receiver_name}`}
-                            >
-                              Directo: {p.direct_receiver_name}
-                            </span>
-                          )}
-                        </div>
-                      ) : p.received_by_admin ? (
-                        <div className="flex flex-col items-start gap-0.5">
-                          <span className="badge badge-success">
-                            ✅ Recibido por jefe
-                          </span>
-                          {p.receiver_name && (
-                            <span
-                              className="text-[10px]"
-                              style={{ color: 'var(--text-tertiary)' }}
-                              title={`Recibido por ${p.receiver_name}`}
-                            >
-                              Por jefe: {p.receiver_name}
-                            </span>
-                          )}
-                          {p.validator_name && (
-                            <span
-                              className="text-[10px]"
-                              style={{ color: 'var(--text-tertiary)' }}
-                              title={`Validado por ${p.validator_name}`}
-                            >
-                              Validado: {p.validator_name}
-                            </span>
-                          )}
-                        </div>
-                      ) : p.validated ? (
-                        <div className="flex flex-col items-start gap-0.5">
-                          <span className="badge badge-success">
-                            ✅ Validado por contador
-                          </span>
-                          {p.validator_name && (
-                            <span
-                              className="text-[10px]"
-                              style={{ color: 'var(--text-tertiary)' }}
-                              title={`Validado por ${p.validator_name}`}
-                            >
-                              Por: {p.validator_name}
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="badge badge-warning">
-                          Pendiente
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-        {cashPayments.length > 0 && (
-          <div
-            className="px-6 py-3 border-t text-xs flex justify-end"
-            style={{
-              borderColor: 'var(--border)',
-              color: 'var(--text-secondary)',
-            }}
+      {/* Tabla de detalle separada en 3 secciones según el estado del
+          cobro: pendientes / validados por contador / recibidos. Cada
+          sección tiene su propio fondo, contador y master checkbox
+          (cuando aplica). Si una sección queda vacía con la búsqueda
+          activa, se oculta. */}
+      {cashPayments.length === 0 ? (
+        <div
+          className="tbl-wrap"
+          style={{ padding: '24px', textAlign: 'center' }}
+        >
+          <span
+            className="text-sm"
+            style={{ color: 'var(--text-tertiary)' }}
           >
-            Total en efectivo este mes:{' '}
-            <strong style={{ color: '#15803D', marginLeft: 4 }}>
-              {formatMXN(total)}
-            </strong>
-          </div>
-        )}
-      </div>
+            No hay cobros en efectivo este mes.
+          </span>
+        </div>
+      ) : filteredCashPayments.length === 0 ? (
+        <div
+          className="tbl-wrap"
+          style={{ padding: '24px', textAlign: 'center' }}
+        >
+          <span
+            className="text-sm"
+            style={{ color: 'var(--text-tertiary)' }}
+          >
+            No se encontraron cobros para &ldquo;{q}&rdquo;.
+          </span>
+        </div>
+      ) : (
+        <>
+          {pendingRows.length > 0 && (
+            <SectionTable
+              title="⏳ Pendientes de validar"
+              count={pendingRows.length}
+              bg="#FFFBEB"
+              border="#FCD34D"
+              showCheckboxCol={isAdminViewer || isContadorViewer}
+              master={
+                isAdminViewer || isContadorViewer
+                  ? {
+                      checked: allPendingSelected,
+                      disabled: pendingSelectable.length === 0 || !hasPin,
+                      onToggle: toggleAllPending,
+                    }
+                  : null
+              }
+              rows={pendingRows}
+              rowIsSelectable={rowIsSelectable}
+              hasPin={hasPin}
+              selectedPaymentIds={selectedPaymentIds}
+              toggleRow={toggleRow}
+            />
+          )}
+          {validatedRows.length > 0 && (
+            <SectionTable
+              title="✅ Validados por contador"
+              count={validatedRows.length}
+              bg="#ECFDF5"
+              border="#A7F3D0"
+              showCheckboxCol={isAdminViewer}
+              master={
+                isAdminViewer
+                  ? {
+                      checked: allValidatedSelected,
+                      disabled: validatedSelectable.length === 0 || !hasPin,
+                      onToggle: toggleAllValidated,
+                    }
+                  : null
+              }
+              rows={validatedRows}
+              rowIsSelectable={rowIsSelectable}
+              hasPin={hasPin}
+              selectedPaymentIds={selectedPaymentIds}
+              toggleRow={toggleRow}
+            />
+          )}
+          {receivedRows.length > 0 && (
+            <SectionTable
+              title="💰 Recibidos"
+              count={receivedRows.length}
+              bg="#EFF6FF"
+              border="#BFDBFE"
+              showCheckboxCol={false}
+              master={null}
+              rows={receivedRows}
+              rowIsSelectable={rowIsSelectable}
+              hasPin={hasPin}
+              selectedPaymentIds={selectedPaymentIds}
+              toggleRow={toggleRow}
+            />
+          )}
+        </>
+      )}
+      {cashPayments.length > 0 && (
+        <div
+          className="px-4 py-2 text-xs flex justify-end"
+          style={{ color: 'var(--text-secondary)' }}
+        >
+          Total en efectivo este mes:{' '}
+          <strong style={{ color: '#15803D', marginLeft: 4 }}>
+            {formatMXN(total)}
+          </strong>
+        </div>
+      )}
 
       {/* Barra sticky compartida: aparece para contador o admin
           cuando hay selección. El copy de la línea inferior cambia
@@ -1356,3 +1299,247 @@ function MyContadorBalanceCard({ balance }: { balance: number }) {
     </div>
   );
 }
+
+/**
+ * Tabla autocontenida para una de las tres secciones de
+ * "Cobros en efectivo registrados" (Pendientes / Validados /
+ * Recibidos). Encapsula:
+ *   - Header con título + contador de filas.
+ *   - Background tint propio de la sección (amarillo, verde o azul).
+ *   - Columna de checkbox + master cuando aplica.
+ *   - Render unificado de la columna Estado para los 4 estados
+ *     terminales (pendiente / validado / recibido-jefe / recibido-directo).
+ *
+ * El estado de selección vive en el padre — el componente solo lee
+ * `selectedPaymentIds` y dispara `toggleRow` / `master.onToggle`.
+ */
+function SectionTable({
+  title,
+  count,
+  bg,
+  border,
+  showCheckboxCol,
+  master,
+  rows,
+  rowIsSelectable,
+  hasPin,
+  selectedPaymentIds,
+  toggleRow,
+}: {
+  title: string;
+  count: number;
+  bg: string;
+  border: string;
+  showCheckboxCol: boolean;
+  /** null → no se renderiza el master checkbox (sección read-only). */
+  master: {
+    checked: boolean;
+    disabled: boolean;
+    onToggle: () => void;
+  } | null;
+  rows: CashPaymentRow[];
+  rowIsSelectable: (p: CashPaymentRow) => boolean;
+  hasPin: boolean;
+  selectedPaymentIds: Set<string>;
+  toggleRow: (paymentId: string) => void;
+}) {
+  return (
+    <div
+      className="tbl-wrap"
+      style={{
+        background: bg,
+        border: `1px solid ${border}`,
+        borderRadius: 8,
+      }}
+    >
+      <div
+        className="px-4 py-3 flex items-center justify-between"
+        style={{ borderBottom: `1px solid ${border}` }}
+      >
+        <div
+          className="text-sm font-semibold"
+          style={{ color: 'var(--text-primary)' }}
+        >
+          {title}{' '}
+          <span
+            className="text-xs font-normal"
+            style={{ color: 'var(--text-tertiary)' }}
+          >
+            ({count})
+          </span>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="tbl table-to-cards">
+          <thead>
+            <tr>
+              {showCheckboxCol && (
+                <th style={{ width: 36 }}>
+                  {master && (
+                    <input
+                      type="checkbox"
+                      aria-label={`Seleccionar todos en ${title}`}
+                      title={`Seleccionar todos en ${title}`}
+                      checked={master.checked}
+                      disabled={master.disabled}
+                      onChange={master.onToggle}
+                    />
+                  )}
+                </th>
+              )}
+              <th>Cliente</th>
+              <th>Admin</th>
+              <th className="text-right">Monto</th>
+              <th>Fecha</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((p) => {
+              const selectable = rowIsSelectable(p);
+              const checked =
+                selectable &&
+                typeof p.payment_id === 'string' &&
+                selectedPaymentIds.has(p.payment_id);
+              return (
+                <tr key={p.id}>
+                  {showCheckboxCol && (
+                    <td data-label="Sel.">
+                      {selectable && p.payment_id ? (
+                        <input
+                          type="checkbox"
+                          aria-label={`Seleccionar cobro de ${p.client_name}`}
+                          disabled={!hasPin}
+                          checked={!!checked}
+                          onChange={() =>
+                            toggleRow(p.payment_id as string)
+                          }
+                        />
+                      ) : (
+                        <span aria-hidden="true">&nbsp;</span>
+                      )}
+                    </td>
+                  )}
+                  <td data-label="Cliente" className="font-medium">
+                    {p.client_name}
+                  </td>
+                  <td
+                    data-label="Admin"
+                    className="text-sm"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    {p.admin_name}
+                  </td>
+                  <td
+                    data-label="Monto"
+                    className="text-right font-bold"
+                    style={{ color: '#15803D' }}
+                  >
+                    <Banknote
+                      size={14}
+                      style={{
+                        display: 'inline',
+                        verticalAlign: 'middle',
+                        marginRight: 4,
+                        color: '#15803D',
+                      }}
+                    />
+                    {formatMXN(p.amount)}
+                  </td>
+                  <td
+                    data-label="Fecha"
+                    className="text-sm"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    {formatDateTime(p.created_at)}
+                  </td>
+                  <td data-label="Estado">
+                    <CashPaymentStatusBadge row={p} />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Badge de estado de una fila de cobro. Cuatro estados terminales en
+ * orden de "más avanzado a menos": directo > recibido-por-jefe >
+ * validado > pendiente. Cada paso conocido añade una línea pequeña
+ * "Por: X" debajo del badge para auditoría rápida.
+ */
+function CashPaymentStatusBadge({ row }: { row: CashPaymentRow }) {
+  if (row.received_directly) {
+    return (
+      <div className="flex flex-col items-start gap-0.5">
+        <span
+          className="badge"
+          style={{ background: '#DBEAFE', color: '#1E40AF' }}
+        >
+          ✅ Recibido
+        </span>
+        {row.direct_receiver_name && (
+          <span
+            className="text-[10px]"
+            style={{ color: 'var(--text-tertiary)' }}
+            title={`Recibido directo por ${row.direct_receiver_name}`}
+          >
+            Directo: {row.direct_receiver_name}
+          </span>
+        )}
+      </div>
+    );
+  }
+  if (row.received_by_admin) {
+    return (
+      <div className="flex flex-col items-start gap-0.5">
+        <span
+          className="badge"
+          style={{ background: '#DBEAFE', color: '#1E40AF' }}
+        >
+          ✅ Recibido
+        </span>
+        {row.receiver_name && (
+          <span
+            className="text-[10px]"
+            style={{ color: 'var(--text-tertiary)' }}
+            title={`Recibido por ${row.receiver_name}`}
+          >
+            Por jefe: {row.receiver_name}
+          </span>
+        )}
+        {row.validator_name && (
+          <span
+            className="text-[10px]"
+            style={{ color: 'var(--text-tertiary)' }}
+            title={`Validado por ${row.validator_name}`}
+          >
+            Validado: {row.validator_name}
+          </span>
+        )}
+      </div>
+    );
+  }
+  if (row.validated) {
+    return (
+      <div className="flex flex-col items-start gap-0.5">
+        <span className="badge badge-success">✅ Validado por contador</span>
+        {row.validator_name && (
+          <span
+            className="text-[10px]"
+            style={{ color: 'var(--text-tertiary)' }}
+            title={`Validado por ${row.validator_name}`}
+          >
+            Por: {row.validator_name}
+          </span>
+        )}
+      </div>
+    );
+  }
+  return <span className="badge badge-warning">Pendiente</span>;
+}
+
