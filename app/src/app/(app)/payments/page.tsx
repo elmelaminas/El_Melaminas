@@ -3,6 +3,7 @@ import { supabaseServer } from '@/lib/supabase/server';
 import { signEvidenceUrls } from '@/lib/supabase/storage';
 import { PaymentsClient, type PaymentRow } from './payments-client';
 import { getDateWindow } from '../dashboard/constants';
+import { normalizeSearch } from '@/lib/normalize-search';
 
 /**
  * Página /payments — listado paginado.
@@ -64,8 +65,10 @@ function whitelist<T extends string>(
   return (allowed as readonly string[]).includes(value) ? (value as T) : '';
 }
 
+// Sanitiza + normaliza el término de búsqueda (lowercase + sin
+// acentos). Mismo patrón que `/leads/page.tsx`.
 function sanitizeQuery(q: string): string {
-  return q.replace(/[,%*\\()]/g, '').trim().slice(0, 80);
+  return normalizeSearch(q.replace(/[,%*\\()]/g, '')).slice(0, 80);
 }
 
 export default async function PaymentsPage({

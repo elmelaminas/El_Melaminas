@@ -7,6 +7,7 @@ import {
 } from './leads-client';
 import type { Channel, DeliveryStatus, PaymentStatus } from '@/data/mock';
 import { getDateWindow } from '../dashboard/constants';
+import { normalizeSearch } from '@/lib/normalize-search';
 
 /**
  * Página /leads — listado paginado con filtros bookmarkables vía URL.
@@ -109,9 +110,19 @@ function pickStr(v: string | string[] | undefined): string {
  * wildcards — un usuario que busque "Pérez, Juan" o "20%" haría queries
  * inválidas. Stripping es pragmático: pierde precisión (búsqueda por
  * substring sin esos chars) pero NO rompe.
+ *
+ * Adicional: aplicamos `normalizeSearch` para colapsar acentos +
+ * lowercase antes de la query. Esto hace que un usuario que escribe
+ * "garcia" matchee contra DB con "García" si la columna en DB ya viene
+ * de-acentuada (caso típico cuando hay una columna generada o cuando
+ * los nombres se guardan normalizados en otra columna). Sergio tiene
+ * pendiente crear `unaccent_lower(text)` en Supabase para cubrir el
+ * caso general donde la DB sí tiene acentos; mientras tanto el
+ * `ilike` ya es case-insensitive de Postgres y este normalize cubre
+ * el lado del input.
  */
 function sanitizeQuery(q: string): string {
-  return q.replace(/[,%*\\()]/g, '').trim().slice(0, 80);
+  return normalizeSearch(q.replace(/[,%*\\()]/g, '')).slice(0, 80);
 }
 
 export default async function LeadsPage({

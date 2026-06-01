@@ -201,11 +201,11 @@ const MES_SHORT: Readonly<Record<number, string>> = {
  * Estado importante: TODO el filtro vive en la URL (`?q=…&channel=…`),
  * el Server Component lee searchParams y manda `leads` ya filtrados.
  * Este componente sólo:
- *  - mantiene `qInput` local para el campo de búsqueda. El push a la URL
- *    se dispara EXPLÍCITAMENTE (botón "Buscar", Enter o "Limpiar"), no
- *    en cada keystroke — el debounce automático generaba navegaciones
- *    innecesarias y, en tablas grandes, una tabla parpadeante mientras
- *    el usuario escribía.
+ *  - mantiene `qInput` local para el campo de búsqueda. Un debounce
+ *    de 300ms dispara `router.push` automáticamente al dejar de
+ *    escribir; el botón "Buscar" y Enter siguen disponibles como
+ *    triggers explícitos que cortan la espera (útil para no esperar
+ *    el debounce cuando el usuario sabe que quiere buscar YA).
  *  - construye nuevas URLs y navega con `router.push`.
  *  - usa `useTransition` para atenuar la tabla mientras llega la nueva data.
  *
@@ -213,6 +213,7 @@ const MES_SHORT: Readonly<Record<number, string>> = {
  * (back, link externo) — sin esto, el input pintaría stale-text después
  * de una navegación externa.
  */
+const SEARCH_DEBOUNCE_MS = 300;
 export function LeadsClient({
   leads,
   total,
@@ -273,9 +274,21 @@ export function LeadsClient({
     setQInput(filters.q);
   }, [filters.q]);
 
-  // Búsqueda explícita: dispara navegación al botón / Enter / clear.
-  // Definida como callback para que el input, el botón y el ícono X
-  // compartan la misma lógica sin duplicar el shape del payload.
+  // Debounce automático: 300ms después del último keystroke, push a la
+  // URL. Si `qInput` ya coincide con `filters.q` (sync de arriba) no
+  // dispara — evita doble round-trip al volver a la página.
+  useEffect(() => {
+    if (qInput === filters.q) return;
+    const t = setTimeout(() => {
+      pushFilters({ q: qInput, page: 1 });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qInput, filters.q]);
+
+  // Búsqueda explícita: Enter, botón "Buscar" o botón "X". Atajo que
+  // cancela la espera del debounce cuando el usuario sabe ya quiere
+  // buscar (mejor UX que esperar 300ms tras un Enter).
   function commitSearch(nextQ: string) {
     pushFilters({ q: nextQ, page: 1 });
   }

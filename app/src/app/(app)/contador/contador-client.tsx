@@ -25,6 +25,7 @@ import {
 } from './actions';
 import { PinConfirmModal } from '@/components/ui/PinConfirmModal';
 import { formatDateTimeCDMX } from '@/lib/format-date';
+import { normalizeSearch } from '@/lib/normalize-search';
 
 /**
  * Saldo vivo de un contador: cuánto efectivo físico tiene en mano
@@ -472,26 +473,33 @@ function CashPaymentsSection({
   );
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
 
-  // Búsqueda local por nombre del cliente. `qInput` se va actualizando
-  // mientras se escribe; `q` solo se commita al apretar Enter o el
-  // botón "Buscar" (mismo patrón que /leads). Filtro local sobre los
-  // datos ya cargados — no toca Supabase. Importante: el filtro NO
-  // afecta la selección bulk: si un cliente quedó marcado y el filtro
-  // lo oculta, sigue contando para el total y se incluirá al
-  // confirmar.
+  // Búsqueda local por nombre del cliente, reactiva: el filtro se
+  // recalcula en cada keystroke (es JS en memoria sobre las filas ya
+  // cargadas, costo O(n)). Enter / botón / X siguen ahí pero solo
+  // como atajos de UX — no hace falta presionarlos para que la tabla
+  // reaccione. El input ya no usa dos estados (qInput + q committed)
+  // porque no hay round-trip a Supabase que defender.
+  // Importante: el filtro NO afecta la selección bulk — si un cliente
+  // quedó marcado y el filtro lo oculta, sigue contando para el total
+  // y se incluirá al confirmar.
   const [qInput, setQInput] = useState('');
-  const [q, setQ] = useState('');
-  function commitSearch(next: string) {
-    setQ(next);
+  const q = qInput;
+  function commitSearch(_next: string) {
+    // No-op: la búsqueda ya es reactiva al escribir. La función se
+    // conserva como punto de extensión por si el día de mañana
+    // queremos volver a tener un "commit" (p.ej. con debounce a una
+    // RPC server-side).
   }
   function clearSearch() {
     setQInput('');
-    setQ('');
   }
   const filteredCashPayments = q
-    ? cashPayments.filter((p) =>
-        (p.client_name ?? '').toLowerCase().includes(q.toLowerCase()),
-      )
+    ? (() => {
+        const needle = normalizeSearch(q);
+        return cashPayments.filter((p) =>
+          normalizeSearch(p.client_name ?? '').includes(needle),
+        );
+      })()
     : cashPayments;
 
   // Reglas de selectabilidad por rol:
