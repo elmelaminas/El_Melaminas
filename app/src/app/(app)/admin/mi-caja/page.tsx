@@ -10,6 +10,7 @@ import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import { formatMXN } from '@/data/mock';
 import { formatDateTimeCDMX } from '@/lib/format-date';
+import { MonthYearSelector } from '@/components/ui/MonthYearSelector';
 
 /**
  * Página /admin/mi-caja — resumen personal de efectivo del admin
@@ -36,8 +37,23 @@ import { formatDateTimeCDMX } from '@/lib/format-date';
  */
 export const dynamic = 'force-dynamic';
 
-export default async function MiCajaPage() {
+type RawSearchParams = {
+  mes?: string | string[];
+  anio?: string | string[];
+};
+
+function pickStr(v: string | string[] | undefined): string {
+  if (Array.isArray(v)) return v[0] ?? '';
+  return v ?? '';
+}
+
+export default async function MiCajaPage({
+  searchParams,
+}: {
+  searchParams: Promise<RawSearchParams>;
+}) {
   try {
+    const raw = await searchParams;
     const userClient = await supabaseServer();
     const {
       data: { user },
@@ -51,14 +67,26 @@ export default async function MiCajaPage() {
 
     const admin = supabaseAdmin();
 
-    // Rango del mes calendario actual (UTC, consistente con
-    // dashboard).
+    // Mes/año del filtro. Defaults al mes actual UTC (mismo patrón que
+    // dashboard / contador / caja). El filtro solo afecta el "desglose
+    // del mes" y la tabla de movimientos recientes; el saldo total
+    // sigue siendo acumulativo desde siempre (no se filtra).
     const now = new Date();
+    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
+    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
+    const mes =
+      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12
+        ? mesRaw
+        : now.getUTCMonth() + 1;
+    const anio =
+      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
+        ? anioRaw
+        : now.getUTCFullYear();
     const startOfMonthIso = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+      Date.UTC(anio, mes - 1, 1),
     ).toISOString();
     const startOfNextMonthIso = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+      Date.UTC(anio, mes, 1),
     ).toISOString();
 
     // Tres queries en paralelo:
@@ -336,15 +364,18 @@ export default async function MiCajaPage() {
 
     return (
       <div className="flex flex-col gap-6">
-        <div>
-          <h1 className="text-2xl font-bold">Mi Efectivo</h1>
-          <p
-            className="text-sm"
-            style={{ color: 'var(--text-secondary)' }}
-          >
-            Resumen de tu caja personal: cobros directos, efectivo de
-            choferes y lo entregado al contador.
-          </p>
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold">Mi Efectivo</h1>
+            <p
+              className="text-sm"
+              style={{ color: 'var(--text-secondary)' }}
+            >
+              Resumen de tu caja personal: cobros directos, efectivo de
+              choferes y lo entregado al contador.
+            </p>
+          </div>
+          <MonthYearSelector mes={mes} anio={anio} />
         </div>
 
         {/* SECCIÓN 1: saldo actual (prominente). */}

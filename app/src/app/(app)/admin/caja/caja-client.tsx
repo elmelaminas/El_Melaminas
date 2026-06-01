@@ -13,6 +13,7 @@ import { formatMXN } from '@/data/mock';
 import { adminReceivesDriverCashAction } from './actions';
 import { PinConfirmModal } from '@/components/ui/PinConfirmModal';
 import { formatDateTimeCDMX } from '@/lib/format-date';
+import { MonthYearSelector } from '@/components/ui/MonthYearSelector';
 
 export type TransferRow = {
   id: string;
@@ -67,6 +68,8 @@ export function CajaClient({
   myBalance,
   myIngresosThisMonth,
   myEgresosThisMonth,
+  mes,
+  anio,
 }: {
   tab: TabKey;
   pendingTransfers: TransferRow[];
@@ -78,6 +81,8 @@ export function CajaClient({
   myBalance: number;
   myIngresosThisMonth: number;
   myEgresosThisMonth: number;
+  mes: number;
+  anio: number;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -99,12 +104,15 @@ export function CajaClient({
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-bold">Caja</h1>
-        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-          Recibe el efectivo que los choferes traen y consulta tu caja
-          personal.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Caja</h1>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            Recibe el efectivo que los choferes traen y consulta tu caja
+            personal.
+          </p>
+        </div>
+        <MonthYearSelector mes={mes} anio={anio} />
       </div>
 
       {/* Tabs */}

@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
+import { MonthYearSelector } from '@/components/ui/MonthYearSelector';
 import {
   DollarSign,
   Loader,
@@ -137,6 +138,8 @@ export function ContadorClient({
   viewerRole,
   contadorBalances,
   myContadorBalance,
+  mes,
+  anio,
 }: {
   admins: AdminWithCash[];
   grandTotal: number;
@@ -160,6 +163,10 @@ export function ContadorClient({
   /** Saldo vivo del contador autenticado. Solo positivo si
    *  viewerRole='contador'; para admin/admin2 viene en 0. */
   myContadorBalance: number;
+  /** Mes seleccionado (1-12) — pasado al `<MonthYearSelector>`. */
+  mes: number;
+  /** Año seleccionado (4 dígitos). */
+  anio: number;
 }) {
   // Eduardo (admin2) también opera caja: la sección de recibir
   // efectivo del contador debe estar visible para ambos roles admin*.
@@ -169,13 +176,16 @@ export function ContadorClient({
   const totalAvailable = contadorBalances.reduce((s, c) => s + c.balance, 0);
   return (
     <div className="flex flex-col gap-6 max-w-3xl">
-      <div>
-        <h1 className="text-2xl font-bold">Caja</h1>
-        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-          {isAdminViewer
-            ? 'Recibe el efectivo acumulado en la caja del contador y valida el efectivo del resto del equipo.'
-            : 'Valida el efectivo acumulado en la caja de cada administrador.'}
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Caja</h1>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            {isAdminViewer
+              ? 'Recibe el efectivo acumulado en la caja del contador y valida el efectivo del resto del equipo.'
+              : 'Valida el efectivo acumulado en la caja de cada administrador.'}
+          </p>
+        </div>
+        <MonthYearSelector mes={mes} anio={anio} />
       </div>
 
       {/* SECCIÓN ADMIN+ADMIN2: efectivo disponible del contador. Va al

@@ -29,8 +29,42 @@ import {
  */
 export const dynamic = 'force-dynamic';
 
-export default async function ContadorPage() {
+type RawSearchParams = {
+  mes?: string | string[];
+  anio?: string | string[];
+};
+
+function pickStr(v: string | string[] | undefined): string {
+  if (Array.isArray(v)) return v[0] ?? '';
+  return v ?? '';
+}
+
+export default async function ContadorPage({
+  searchParams,
+}: {
+  searchParams: Promise<RawSearchParams>;
+}) {
   try {
+    const raw = await searchParams;
+    // Mes/año del filtro. Defaults: mes actual UTC. Si llegan valores
+    // fuera de rango (URL stale o manipulada) caemos a los defaults
+    // silenciosamente.
+    const now = new Date();
+    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
+    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
+    const mes =
+      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12
+        ? mesRaw
+        : now.getUTCMonth() + 1;
+    const anio =
+      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
+        ? anioRaw
+        : now.getUTCFullYear();
+    // Ventana UTC [start, end) — `created_at` y `validated_at` viven
+    // en timestamptz y comparan correctamente contra ISO strings.
+    const startIso = new Date(Date.UTC(anio, mes - 1, 1)).toISOString();
+    const endIso = new Date(Date.UTC(anio, mes, 1)).toISOString();
+
     const admin = supabaseAdmin();
 
     const userClient = await supabaseServer();
@@ -76,28 +110,16 @@ export default async function ContadorPage() {
       }
     }
 
-    // Inicio del mes en UTC — usado en (cashRes para `this_month` por
-    // admin) y en (cashPaymentsRes para listar cobros del mes en curso).
-    const nowForQuery = new Date();
-    const startOfMonthIso = new Date(
-      Date.UTC(nowForQuery.getUTCFullYear(), nowForQuery.getUTCMonth(), 1),
-    ).toISOString();
-
-    // Cinco queries en paralelo:
+    // Cinco queries en paralelo. Todas filtran por la ventana [startIso,
+    // endIso) del mes seleccionado — el filtro es exclusivamente para
+    // lo que se MUESTRA; las server actions no aplican filtro temporal
+    // y siguen pudiendo validar/recibir cobros viejos.
     //   1. Admins activos (admin + admin2)
-    //   2. admin_cash_register completo (para sumar por admin)
-    //   3. Historial personal de validaciones del contador actual
-    //      (egresos donde el contador es `registered_by` y la source
-    //      es 'validado_contador').
-    //   4. Historial de cash_transfers recibidos por este contador.
-    //      Refactor 2026-05: el admin es quien recibe ahora, pero los
-    //      registros antiguos (donde un contador real cerraba el ciclo)
-    //      siguen vivos en DB y este historial los expone. Si la tabla
-    //      no aplica al rol actual el resultado queda vacío.
+    //   2. admin_cash_register del mes (para sumar por admin)
+    //   3. Historial personal de validaciones del contador en el mes
+    //   4. Historial de cash_transfers recibidos por este contador
+    //      en el mes
     //   5. Cobros en efectivo del mes registrados por admins
-    //      (admin_cash_register ingresos con source='pago_efectivo').
-    //      Resolvemos client_name + admin_name via lookups posteriores
-    //      porque supabase-js no soporta JOIN multi-tabla directo.
     const [adminsRes, cashRes, historyRes, receivedRes, cashPaymentsRes] = await Promise.all([
       admin
         .from('profiles')
@@ -107,7 +129,9 @@ export default async function ContadorPage() {
         .order('full_name', { ascending: true }),
       admin
         .from('admin_cash_register')
-        .select('admin_id, amount, operation_type, created_at'),
+        .select('admin_id, amount, operation_type, created_at')
+        .gte('created_at', startIso)
+        .lt('created_at', endIso),
       contadorId
         ? admin
             .from('admin_cash_register')
@@ -116,6 +140,8 @@ export default async function ContadorPage() {
             )
             .eq('registered_by', contadorId)
             .eq('source', 'validado_contador')
+            .gte('created_at', startIso)
+            .lt('created_at', endIso)
             .order('created_at', { ascending: false })
             .limit(20)
         : Promise.resolve({ data: [], error: null }),
@@ -125,16 +151,11 @@ export default async function ContadorPage() {
             .select(
               'id, driver_id, amount, status, created_at, receiver_id, receiver_role',
             )
-            // Refactor 2026-05/2: el chofer ahora elige a quién
-            // entregar el efectivo (admin o contador). El contador
-            // ve sólo los cash_transfers dirigidos a él vía
-            // receiver_id=auth.uid() AND receiver_role='contador'.
-            // Mantenemos el OR sobre contador_id histórico para que
-            // los registros pre-refactor (donde el contador_id se
-            // llenaba al recibir) sigan apareciendo en su historial.
             .or(
               `and(receiver_role.eq.contador,receiver_id.eq.${contadorId}),contador_id.eq.${contadorId}`,
             )
+            .gte('created_at', startIso)
+            .lt('created_at', endIso)
             .order('created_at', { ascending: false })
             .limit(20)
         : Promise.resolve({ data: [], error: null }),
@@ -143,7 +164,8 @@ export default async function ContadorPage() {
         .select('id, admin_id, amount, created_at, payment_id')
         .eq('operation_type', 'ingreso')
         .eq('source', 'pago_efectivo')
-        .gte('created_at', startOfMonthIso)
+        .gte('created_at', startIso)
+        .lt('created_at', endIso)
         .order('created_at', { ascending: false }),
     ]);
 
@@ -193,7 +215,10 @@ export default async function ContadorPage() {
         thisMonth: 0,
       };
       slot.balance += isIngreso ? amt : -amt;
-      if (isIngreso && r.created_at && r.created_at >= startOfMonthIso) {
+      // `cashRes` ya está filtrado al mes seleccionado; el check de
+      // ventana es redundante pero lo dejamos explícito para que el
+      // significado quede inequívoco ("ingresos del mes filtrado").
+      if (isIngreso && r.created_at && r.created_at >= startIso) {
         slot.thisMonth += amt;
       }
       byAdmin.set(r.admin_id, slot);
@@ -497,10 +522,14 @@ export default async function ContadorPage() {
         .from('admin_cash_register')
         .select('amount, registered_by')
         .eq('operation_type', 'egreso')
-        .eq('source', 'validado_contador'),
+        .eq('source', 'validado_contador')
+        .gte('created_at', startIso)
+        .lt('created_at', endIso),
       admin
         .from('contador_to_admin_transfers')
-        .select('contador_id, amount'),
+        .select('contador_id, amount')
+        .gte('created_at', startIso)
+        .lt('created_at', endIso),
       admin
         .from('profiles')
         .select('id, full_name')
@@ -587,6 +616,8 @@ export default async function ContadorPage() {
         viewerRole={viewerRole}
         contadorBalances={contadorBalances}
         myContadorBalance={myContadorBalance}
+        mes={mes}
+        anio={anio}
       />
     );
   } catch (err) {

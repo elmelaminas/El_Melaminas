@@ -28,6 +28,8 @@ export const dynamic = 'force-dynamic';
 
 type RawSearchParams = {
   tab?: string | string[];
+  mes?: string | string[];
+  anio?: string | string[];
 };
 
 function pickStr(v: string | string[] | undefined): string {
@@ -54,6 +56,25 @@ export default async function CajaPage({
     const tab: TabKey = (ALLOWED_TABS as readonly string[]).includes(tabParam)
       ? (tabParam as TabKey)
       : 'efectivo-choferes';
+
+    // Mes/año del filtro. Defaults al mes actual UTC; valores fuera de
+    // rango (URL stale o manipulada) caen al default silenciosamente.
+    // Aplica a las queries de cash_transfers (tabs choferes / validados)
+    // y admin_cash_register (tab mi-caja). Las actions NO filtran por
+    // fecha — el filtro solo controla qué SE MUESTRA.
+    const now = new Date();
+    const mesRaw = Number.parseInt(pickStr(raw.mes), 10);
+    const anioRaw = Number.parseInt(pickStr(raw.anio), 10);
+    const mes =
+      Number.isFinite(mesRaw) && mesRaw >= 1 && mesRaw <= 12
+        ? mesRaw
+        : now.getUTCMonth() + 1;
+    const anio =
+      Number.isFinite(anioRaw) && anioRaw >= 2000 && anioRaw <= 2100
+        ? anioRaw
+        : now.getUTCFullYear();
+    const startIso = new Date(Date.UTC(anio, mes - 1, 1)).toISOString();
+    const endIso = new Date(Date.UTC(anio, mes, 1)).toISOString();
 
     const userClient = await supabaseServer();
     const {
@@ -82,6 +103,8 @@ export default async function CajaPage({
               .eq('status', 'pendiente')
               .eq('receiver_role', 'admin')
               .eq('receiver_id', currentUserId)
+              .gte('created_at', startIso)
+              .lt('created_at', endIso)
               .order('created_at', { ascending: false })
           : Promise.resolve({ data: [], error: null }),
         currentUserId
@@ -93,7 +116,12 @@ export default async function CajaPage({
               .eq('status', 'recibido')
               .eq('receiver_role', 'admin')
               .eq('receiver_id', currentUserId)
-              .order('created_at', { ascending: false })
+              // Tab "validados": filtramos por `admin_validated_at`
+              // (cuándo el admin marcó como recibido), no por created_at,
+              // para que el historial respete el mes en que SE VALIDÓ.
+              .gte('admin_validated_at', startIso)
+              .lt('admin_validated_at', endIso)
+              .order('admin_validated_at', { ascending: false })
               .limit(200)
           : Promise.resolve({ data: [], error: null }),
         currentUserId
@@ -103,6 +131,8 @@ export default async function CajaPage({
                 'id, admin_id, amount, operation_type, source, created_at, notes, registered_by',
               )
               .eq('admin_id', currentUserId)
+              .gte('created_at', startIso)
+              .lt('created_at', endIso)
               .order('created_at', { ascending: false })
               .limit(100)
           : Promise.resolve({ data: [], error: null }),
@@ -195,11 +225,9 @@ export default async function CajaPage({
     );
 
     // ── Tab "Mi caja": movimientos del admin actual + saldo.
-    const now = new Date();
-    const startOfMonthIso = new Date(
-      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
-    ).toISOString();
-
+    // `myMovsRaw` ya viene filtrado al mes; el filtro inner sólo es
+    // defensivo para que el cálculo del "del mes" reuse la misma
+    // ventana sin recomputar.
     const myMovements: CashMovement[] = myMovsRaw.map((m) => ({
       id: m.id,
       amount: Number(m.amount ?? 0),
@@ -230,7 +258,8 @@ export default async function CajaPage({
         (m) =>
           m.operation_type === 'ingreso' &&
           m.created_at &&
-          m.created_at >= startOfMonthIso,
+          m.created_at >= startIso &&
+          m.created_at < endIso,
       )
       .reduce((s, m) => s + m.amount, 0);
     const myEgresosThisMonth = myMovements
@@ -238,7 +267,8 @@ export default async function CajaPage({
         (m) =>
           m.operation_type !== 'ingreso' &&
           m.created_at &&
-          m.created_at >= startOfMonthIso,
+          m.created_at >= startIso &&
+          m.created_at < endIso,
       )
       .reduce((s, m) => s + m.amount, 0);
 
@@ -254,6 +284,8 @@ export default async function CajaPage({
         myBalance={myBalance}
         myIngresosThisMonth={myIngresosThisMonth}
         myEgresosThisMonth={myEgresosThisMonth}
+        mes={mes}
+        anio={anio}
       />
     );
   } catch (err) {
