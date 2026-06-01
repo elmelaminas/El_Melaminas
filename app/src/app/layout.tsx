@@ -1,11 +1,21 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { DemoProvider } from '@/context/DemoContext';
 
 export const metadata: Metadata = {
-  title: 'EL MELAMINAS — Sistema de Gestión Operativa',
-  description:
-    'Prototipo visual del sistema operativo de EL MELAMINAS: leads, pagos, almacén y entregas.',
+  title: 'EL MELAMINAS',
+  description: 'Sistema de Gestión Operativa',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'EL MELAMINAS',
+  },
+};
+
+// `themeColor` se declara en `viewport` (no en `metadata`) desde
+// Next 14 — exportarlo en `metadata` muestra un warning.
+export const viewport: Viewport = {
+  themeColor: '#8B6914',
 };
 
 export default function RootLayout({
