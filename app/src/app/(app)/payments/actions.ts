@@ -5,6 +5,8 @@ import { z } from 'zod';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { supabaseServer } from '@/lib/supabase/server';
 import { validatePhotoFile } from '@/lib/validate-photo';
+import { savePaymentAction } from './new/actions';
+import type { PaymentFormState } from './new/schema';
 
 // NB: 'use server' — solo async functions. El schema vive inline porque
 // es muy chico y no se reusa cliente-side (el form de liquidación se
@@ -316,4 +318,32 @@ export async function liquidateLeadAction(
     console.error('[liquidateLeadAction] excepción no controlada:', err);
     return { status: 'error', message };
   }
+}
+
+/**
+ * `addPaymentToLeadAction(prev, formData)` — registra un pago nuevo
+ * sobre un lead existente desde el modal de detalle en /payments.
+ *
+ * Es un thin wrapper sobre `savePaymentAction` de `payments/new` para
+ * mantener UNA sola implementación del flujo completo (upload de
+ * evidencia, INSERT payments, INSERT admin_cash_register cuando es
+ * efectivo, recálculo de leads.payment_status, notif a admins,
+ * revalidate). Single source of truth: cualquier mejora del flujo de
+ * pagos aplica para ambos endpoints sin riesgo de divergencia.
+ *
+ * El modal de /payments arma un FormData sin la lista de deducibles
+ * (no soporta agregar deducibles desde ahí); le metemos `'[]'` por
+ * default para que el schema de `savePaymentAction` no falle al
+ * parsearlo. Si en el futuro queremos soportar deducibles desde el
+ * modal, el form puede enviar el `deductibles_json` como JSON-string
+ * y este wrapper lo respeta tal cual.
+ */
+export async function addPaymentToLeadAction(
+  prev: PaymentFormState,
+  formData: FormData,
+): Promise<PaymentFormState> {
+  if (!formData.has('deductibles_json')) {
+    formData.set('deductibles_json', '[]');
+  }
+  return savePaymentAction(prev, formData);
 }

@@ -32,7 +32,7 @@ import {
   getLeadRowStyle,
   LeadRowLegend,
 } from '@/components/ui/lead-row-color';
-import { liquidateLeadAction } from './actions';
+import { addPaymentToLeadAction, liquidateLeadAction } from './actions';
 
 export type PaymentRow = {
   id: string;
@@ -1079,6 +1079,70 @@ function PaymentDetailModal({
   const [liqPending, startLiqTransition] = useTransition();
   const liqFileRef = useRef<HTMLInputElement>(null);
 
+  // Form de "+ Agregar pago" inline. Mismo flujo de cobro que
+  // `/payments/new` reutilizando `addPaymentToLeadAction`. Visible
+  // solo para admin/admin2. Default del monto = adeudo actual; el
+  // usuario puede sobreescribir si solo pone un anticipo parcial.
+  const [addOpen, setAddOpen] = useState(false);
+  const [addAmount, setAddAmount] = useState<string>(
+    adeudo > 0 ? String(adeudo) : '',
+  );
+  const [addMethod, setAddMethod] =
+    useState<PaymentRow['method']>('efectivo');
+  const [addType, setAddType] = useState<PaymentRow['payment_type']>(
+    adeudo > 0 ? 'liquidacion' : 'anticipo',
+  );
+  const [addFile, setAddFile] = useState<File | null>(null);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [addPending, startAddTransition] = useTransition();
+  const addFileRef = useRef<HTMLInputElement>(null);
+
+  function resetAddForm() {
+    setAddOpen(false);
+    setAddError(null);
+    setAddFile(null);
+    if (addFileRef.current) addFileRef.current.value = '';
+  }
+
+  function handleAddPayment() {
+    setAddError(null);
+    const amountNum = Number(addAmount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      setAddError('Ingresa un monto válido mayor a 0.');
+      return;
+    }
+    const photoCheck = validatePhotoFile(addFile);
+    if (!photoCheck.ok) {
+      setAddError(`Foto del comprobante: ${photoCheck.message}`);
+      return;
+    }
+    const fd = new FormData();
+    fd.set('lead_id', leadId);
+    fd.set('amount', String(amountNum));
+    fd.set('method', addMethod);
+    fd.set('payment_type', addType);
+    if (addFile) fd.set('evidence', addFile);
+    startAddTransition(async () => {
+      try {
+        const result = await addPaymentToLeadAction(
+          { status: 'idle' },
+          fd,
+        );
+        if (result.status === 'success') {
+          // El modal sigue abierto (el padre conserva selectedLeadId).
+          // router.refresh() recarga los pagos del lead → la timeline
+          // mostrará el nuevo pago y el adeudo se actualizará solo.
+          resetAddForm();
+          router.refresh();
+        } else if (result.status === 'error') {
+          setAddError(result.message);
+        }
+      } catch (err) {
+        setAddError(err instanceof Error ? err.message : 'Error de red');
+      }
+    });
+  }
+
   function handleConfirmLiquidate() {
     setLiqError(null);
     const photoCheck = validatePhotoFile(liqFile);
@@ -1266,6 +1330,160 @@ function PaymentDetailModal({
             </div>
           ))}
         </div>
+
+        {/* "+ Agregar pago" inline — admin/admin2 only. Compatible
+            con el flujo de /payments/new: misma server action, mismo
+            efecto de cobro (registra payment, alimenta admin_cash_register
+            si es efectivo, recalcula payment_status del lead). */}
+        {isAdmin && (
+          <div className="mb-5">
+            {!addOpen ? (
+              <button
+                type="button"
+                className="btn w-full"
+                style={{
+                  background: 'var(--brand-primary, #1B3A5C)',
+                  color: '#fff',
+                  padding: '10px 16px',
+                  fontWeight: 600,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                }}
+                onClick={() => setAddOpen(true)}
+              >
+                + Agregar pago
+              </button>
+            ) : (
+              <div
+                className="card p-3 flex flex-col gap-2"
+                style={{
+                  background: 'var(--bg-subtle)',
+                  border: '1px solid var(--border)',
+                }}
+              >
+                <div className="font-semibold text-sm">
+                  Nuevo pago para {clientName}
+                </div>
+                <label
+                  className="text-xs"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Monto
+                </label>
+                <input
+                  type="number"
+                  className="input"
+                  value={addAmount}
+                  onChange={(e) => setAddAmount(e.target.value)}
+                  min={0}
+                  step="0.01"
+                  disabled={addPending}
+                />
+                {adeudo > 0 && (
+                  <div
+                    className="text-[11px]"
+                    style={{ color: 'var(--text-tertiary)' }}
+                  >
+                    Adeudo actual: {formatMXN(adeudo)}
+                  </div>
+                )}
+                <label
+                  className="text-xs"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Método de pago
+                </label>
+                <select
+                  value={addMethod}
+                  onChange={(e) =>
+                    setAddMethod(e.target.value as PaymentRow['method'])
+                  }
+                  disabled={addPending}
+                  className="select"
+                >
+                  <option value="efectivo">Efectivo</option>
+                  <option value="transferencia">Transferencia</option>
+                  <option value="clip">Clip</option>
+                </select>
+                <label
+                  className="text-xs"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Tipo de pago
+                </label>
+                <select
+                  value={addType}
+                  onChange={(e) =>
+                    setAddType(
+                      e.target.value as PaymentRow['payment_type'],
+                    )
+                  }
+                  disabled={addPending}
+                  className="select"
+                >
+                  <option value="anticipo">Anticipo</option>
+                  <option value="liquidacion">Liquidación</option>
+                  <option value="contra_entrega">Contra entrega</option>
+                </select>
+                <label
+                  className="text-xs"
+                  style={{ color: 'var(--text-secondary)' }}
+                >
+                  Foto del comprobante{' '}
+                  <span style={{ color: '#DC2626' }}>* obligatoria</span>
+                </label>
+                <input
+                  ref={addFileRef}
+                  type="file"
+                  accept={PHOTO_ACCEPT_ATTR}
+                  onChange={(e) => setAddFile(e.target.files?.[0] ?? null)}
+                  disabled={addPending}
+                />
+                {addError && (
+                  <div
+                    role="alert"
+                    className="text-xs"
+                    style={{ color: 'var(--danger, #dc2626)' }}
+                  >
+                    {addError}
+                  </div>
+                )}
+                <div className="flex gap-2 mt-1">
+                  <button
+                    type="button"
+                    className="btn btn-outline flex-1"
+                    onClick={resetAddForm}
+                    disabled={addPending}
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    className="btn flex-1"
+                    style={{
+                      background: 'var(--brand-primary, #1B3A5C)',
+                      color: '#fff',
+                      fontWeight: 600,
+                    }}
+                    onClick={handleAddPayment}
+                    disabled={addPending || !addFile}
+                  >
+                    {addPending ? (
+                      <>
+                        <Loader size={14} className="animate-spin" />
+                        <span style={{ marginLeft: 6 }}>Guardando…</span>
+                      </>
+                    ) : (
+                      'Guardar pago'
+                    )}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Resumen al pie */}
         <div
