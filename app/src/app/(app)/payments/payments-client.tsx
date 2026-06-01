@@ -23,7 +23,7 @@ import {
   type PaymentType,
 } from '@/data/mock';
 import { ImageLightbox } from '@/components/ui/ImageLightbox';
-import { formatDateCDMX } from '@/lib/format-date';
+import { formatDateCDMX, formatDateTimeCDMX } from '@/lib/format-date';
 import {
   validatePhotoFile,
   PHOTO_ACCEPT_ATTR,
@@ -64,6 +64,10 @@ export type PaymentRow = {
   /** Adeudo restante del LEAD (no del pago): total − sum(pagos
    *  exitosos). 0 = lead totalmente pagado. */
   adeudo: number;
+  /** Nombre del usuario que insertó el pago (vía
+   *  `payments.registered_by` → `profiles.full_name`). null si la
+   *  resolución falló o el registro es histórico. */
+  registered_by_name: string | null;
 };
 
 type FiltersState = {
@@ -166,6 +170,25 @@ export function PaymentsClient({
   const [lightbox, setLightbox] = useState<
     { src: string; alt: string } | null
   >(null);
+
+  // lead_id del modal de detalle por lead. null = modal cerrado. Al
+  // hacer click en una fila se setea; el modal calcula la timeline a
+  // partir del agrupado `paymentsByLead`.
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+
+  // Agrupado por lead_id desde el array YA cargado de la página. La
+  // spec acepta esta limitación (sólo lo visible en la página actual);
+  // cubre el caso común donde un lead tiene 1-3 pagos y todos caen en
+  // la misma página.
+  const paymentsByLead = useMemo(() => {
+    const map = new Map<string, PaymentRow[]>();
+    for (const p of payments) {
+      const list = map.get(p.lead_id) ?? [];
+      list.push(p);
+      map.set(p.lead_id, list);
+    }
+    return map;
+  }, [payments]);
 
   const [qInput, setQInput] = useState<string>(filters.q);
 
@@ -421,6 +444,29 @@ export function PaymentsClient({
         />
       )}
 
+      {/* Modal de detalle por lead. Se abre al hacer click en una
+          fila; se cierra con Esc, click en overlay o el botón X
+          interno. Las evidencias de la timeline reutilizan el mismo
+          state del lightbox (se montan encima del drawer). */}
+      {selectedLeadId &&
+        (() => {
+          const leadPayments = paymentsByLead.get(selectedLeadId);
+          if (!leadPayments || leadPayments.length === 0) return null;
+          const first = leadPayments[0];
+          return (
+            <PaymentDetailModal
+              leadId={selectedLeadId}
+              clientName={first.client_name}
+              totalAmount={first.lead_total_amount}
+              adeudo={first.adeudo}
+              payments={leadPayments}
+              isAdmin={isAdmin}
+              onClose={() => setSelectedLeadId(null)}
+              onOpenEvidence={(src, alt) => setLightbox({ src, alt })}
+            />
+          );
+        })()}
+
       {/* Tabla */}
       <div
         id="payments-table"
@@ -473,6 +519,7 @@ export function PaymentsClient({
                         alt: `Evidencia del pago de ${p.client_name}`,
                       })
                     }
+                    onOpenLead={() => setSelectedLeadId(p.lead_id)}
                   />
                 ))
               )}
@@ -544,11 +591,16 @@ function PaymentRowItem({
   contraEntregaSet,
   isAdmin,
   onOpenEvidence,
+  onOpenLead,
 }: {
   payment: PaymentRow;
   contraEntregaSet: ReadonlySet<string>;
   isAdmin: boolean;
   onOpenEvidence: () => void;
+  /** Abre el modal de detalle del lead asociado al pago. Se dispara
+   *  al hacer click en cualquier parte de la fila que NO sea uno de
+   *  los botones de acción (cámara, lápiz, Liquidar). */
+  onOpenLead: () => void;
 }) {
   const router = useRouter();
   const [liqPending, startLiqTransition] = useTransition();
@@ -650,7 +702,19 @@ function PaymentRowItem({
   };
 
   return (
-    <tr style={rowStyle}>
+    <tr
+      style={{ ...rowStyle, cursor: 'pointer' }}
+      onClick={onOpenLead}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onOpenLead();
+        }
+      }}
+      title="Ver todos los pagos de este lead"
+    >
       <td data-label="Cliente">
         <div className="font-medium">{p.client_name}</div>
         <div
@@ -695,7 +759,14 @@ function PaymentRowItem({
       <td data-label="Tipo">
         <TypeBadge type={TYPE_TO_BADGE[p.payment_type]} />
       </td>
-      <td data-label="Adeudo">
+      <td
+        data-label="Adeudo"
+        onClick={(e) => {
+          // Cualquier interacción dentro de "Adeudo" (botón Liquidar
+          // o prompt expandido) NO debe abrir el modal de detalle.
+          e.stopPropagation();
+        }}
+      >
         {isLiquidated ? (
           <span className="badge badge-success">✓ Liquidado</span>
         ) : showLiqPrompt ? (
@@ -881,7 +952,10 @@ function PaymentRowItem({
         {p.evidence_photo_url ? (
           <button
             type="button"
-            onClick={onOpenEvidence}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenEvidence();
+            }}
             className="btn btn-ghost"
             style={{ padding: 6, color: 'var(--brand-secondary)' }}
             aria-label={`Ver evidencia del pago de ${p.client_name}`}
@@ -904,6 +978,7 @@ function PaymentRowItem({
               style={{ padding: '6px' }}
               aria-label={`Editar pago de ${p.client_name}`}
               title="Editar pago"
+              onClick={(e) => e.stopPropagation()}
             >
               <Pencil size={16} />
             </Link>
@@ -941,3 +1016,391 @@ function SummaryCard({
 // `formatDate` ahora reusa el shared `formatDateCDMX` para fijar TZ
 // México y soportar fechas-puras (YYYY-MM-DD) sin shifts de UTC.
 const formatDate = formatDateCDMX;
+
+/**
+ * Drawer lateral derecho con el detalle de TODOS los pagos del lead
+ * seleccionado: timeline ordenada del más viejo al más nuevo,
+ * resumen al pie con total/pagado/adeudo, y botón "Liquidar" inline
+ * cuando aún hay saldo pendiente.
+ *
+ * Se cierra con Escape, click en el overlay o el botón X del header.
+ * Las evidencias se abren con el mismo `ImageLightbox` del padre (el
+ * lightbox se monta a nivel raíz para que aparezca encima del drawer).
+ */
+function PaymentDetailModal({
+  leadId,
+  clientName,
+  totalAmount,
+  adeudo,
+  payments,
+  isAdmin,
+  onClose,
+  onOpenEvidence,
+}: {
+  leadId: string;
+  clientName: string;
+  totalAmount: number;
+  adeudo: number;
+  payments: PaymentRow[];
+  isAdmin: boolean;
+  onClose: () => void;
+  onOpenEvidence: (src: string, alt: string) => void;
+}) {
+  const router = useRouter();
+  // Timeline ordenada por paid_at ASC. Pagos sin fecha (legacy) caen
+  // al final con string vacío.
+  const timeline = useMemo(
+    () =>
+      [...payments].sort((a, b) =>
+        (a.paid_at ?? '').localeCompare(b.paid_at ?? ''),
+      ),
+    [payments],
+  );
+  const totalPagadoExitoso = payments
+    .filter((p) => p.status === 'exitoso')
+    .reduce((s, p) => s + p.amount, 0);
+
+  // Cierre con Escape.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  // Inline liquidar — mismo flujo que la fila (puede liquidar lead
+  // entero desde aquí). Visible solo cuando adeudo > 0 y el viewer
+  // es admin/admin2.
+  const [liqOpen, setLiqOpen] = useState(false);
+  const [liqMethod, setLiqMethod] = useState<PaymentRow['method']>('efectivo');
+  const [liqFile, setLiqFile] = useState<File | null>(null);
+  const [liqError, setLiqError] = useState<string | null>(null);
+  const [liqPending, startLiqTransition] = useTransition();
+  const liqFileRef = useRef<HTMLInputElement>(null);
+
+  function handleConfirmLiquidate() {
+    setLiqError(null);
+    const photoCheck = validatePhotoFile(liqFile);
+    if (!photoCheck.ok) {
+      setLiqError(`Foto del comprobante: ${photoCheck.message}`);
+      return;
+    }
+    const fd = new FormData();
+    fd.set('lead_id', leadId);
+    fd.set('payment_method', liqMethod);
+    if (liqFile) fd.set('evidence', liqFile);
+    startLiqTransition(async () => {
+      try {
+        const result = await liquidateLeadAction({ status: 'idle' }, fd);
+        if (result.status === 'success') {
+          router.refresh();
+          onClose();
+        } else if (result.status === 'error') {
+          setLiqError(result.message);
+        }
+      } catch (err) {
+        setLiqError(err instanceof Error ? err.message : 'Error de red');
+      }
+    });
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex"
+      style={{ background: 'rgba(15,23,42,0.45)' }}
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="payment-detail-title"
+    >
+      <div style={{ flex: 1 }} aria-hidden="true" />
+      <aside
+        className="card animate-slide-in-right"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: '100%',
+          maxWidth: 520,
+          height: '100%',
+          overflowY: 'auto',
+          borderRadius: 0,
+          background: 'var(--bg-base, #fff)',
+          padding: '20px 24px',
+          boxShadow: '-8px 0 32px rgba(0,0,0,0.15)',
+        }}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <h2
+              id="payment-detail-title"
+              className="text-xl font-bold leading-tight"
+              style={{ color: 'var(--text-primary)' }}
+            >
+              {clientName}
+            </h2>
+            <div className="text-xs mt-1" style={{ color: 'var(--text-tertiary)' }}>
+              {payments.length}{' '}
+              {payments.length === 1 ? 'pago registrado' : 'pagos registrados'}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ padding: 6, flexShrink: 0 }}
+            onClick={onClose}
+            aria-label="Cerrar detalle"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Totales superiores */}
+        <div
+          className="grid grid-cols-2 gap-3 mb-5"
+          style={{
+            background: 'var(--bg-subtle)',
+            borderRadius: 8,
+            padding: 12,
+          }}
+        >
+          <div>
+            <div
+              className="text-[11px] uppercase"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              Total del pedido
+            </div>
+            <div className="font-bold text-lg">{formatMXN(totalAmount)}</div>
+          </div>
+          <div>
+            <div
+              className="text-[11px] uppercase"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              Adeudo
+            </div>
+            {adeudo > 0 ? (
+              <div
+                className="font-bold text-lg"
+                style={{ color: 'var(--danger, #B91C1C)' }}
+              >
+                {formatMXN(adeudo)}
+              </div>
+            ) : (
+              <div
+                className="font-bold text-lg"
+                style={{ color: 'var(--success, #15803D)' }}
+              >
+                ✓ Liquidado
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Timeline */}
+        <div className="flex flex-col gap-3 mb-5">
+          {timeline.map((p) => (
+            <div
+              key={p.id}
+              className="card p-3"
+              style={{ background: 'var(--bg-base, #fff)' }}
+            >
+              <div
+                className="text-xs"
+                style={{ color: 'var(--text-tertiary)' }}
+              >
+                {formatDateTimeCDMX(p.paid_at)}
+              </div>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <strong
+                  className="text-base"
+                  style={{ color: 'var(--success, #15803D)' }}
+                >
+                  {formatMXN(p.amount)}
+                </strong>
+                <MethodBadge method={METHOD_TO_BADGE[p.method]} />
+                <TypeBadge type={TYPE_TO_BADGE[p.payment_type]} />
+              </div>
+              {p.deductibles.length > 0 && (
+                <div
+                  className="text-[11px] mt-1"
+                  style={{ color: 'var(--text-tertiary)' }}
+                >
+                  Deducibles:{' '}
+                  {p.deductibles
+                    .map((d) => `${d.concept} (-${formatMXN(d.amount)})`)
+                    .join(', ')}
+                </div>
+              )}
+              <div
+                className="text-[11px] mt-1 flex items-center justify-between gap-2 flex-wrap"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                <span>
+                  Estado: <strong>{p.status}</strong>
+                  {p.registered_by_name
+                    ? ` · Registró: ${p.registered_by_name}`
+                    : ''}
+                </span>
+                {p.evidence_photo_url && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onOpenEvidence(
+                        p.evidence_photo_url as string,
+                        `Evidencia del pago de ${clientName}`,
+                      )
+                    }
+                    className="btn btn-ghost"
+                    style={{
+                      padding: '2px 8px',
+                      fontSize: '0.6875rem',
+                      color: 'var(--brand-secondary)',
+                    }}
+                  >
+                    📷 Ver evidencia
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Resumen al pie */}
+        <div
+          className="pt-3 mt-2"
+          style={{ borderTop: '1px solid var(--border)' }}
+        >
+          <div className="flex items-center justify-between text-sm py-1">
+            <span style={{ color: 'var(--text-tertiary)' }}>
+              Total pagado:
+            </span>
+            <strong style={{ color: 'var(--success, #15803D)' }}>
+              {formatMXN(totalPagadoExitoso)}
+            </strong>
+          </div>
+          <div className="flex items-center justify-between text-sm py-1">
+            <span style={{ color: 'var(--text-tertiary)' }}>
+              Adeudo restante:
+            </span>
+            <strong
+              style={{
+                color:
+                  adeudo > 0
+                    ? 'var(--danger, #B91C1C)'
+                    : 'var(--success, #15803D)',
+              }}
+            >
+              {adeudo > 0 ? formatMXN(adeudo) : 'Liquidado'}
+            </strong>
+          </div>
+
+          {/* Liquidar inline — mismo action que la fila. Sólo admin. */}
+          {adeudo > 0 && isAdmin && (
+            <div className="mt-4">
+              {!liqOpen ? (
+                <button
+                  type="button"
+                  className="btn w-full"
+                  style={{
+                    background: '#16A34A',
+                    color: '#fff',
+                    padding: '10px 16px',
+                    fontWeight: 600,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                  }}
+                  onClick={() => setLiqOpen(true)}
+                >
+                  <CircleCheckBig size={16} /> Liquidar {formatMXN(adeudo)}
+                </button>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <label
+                    className="text-xs"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    Método de pago
+                  </label>
+                  <select
+                    value={liqMethod}
+                    onChange={(e) =>
+                      setLiqMethod(e.target.value as PaymentRow['method'])
+                    }
+                    disabled={liqPending}
+                    className="select"
+                  >
+                    <option value="efectivo">Efectivo</option>
+                    <option value="transferencia">Transferencia</option>
+                    <option value="clip">Clip</option>
+                  </select>
+                  <label
+                    className="text-xs"
+                    style={{ color: 'var(--text-secondary)' }}
+                  >
+                    Foto del comprobante{' '}
+                    <span style={{ color: '#DC2626' }}>* obligatoria</span>
+                  </label>
+                  <input
+                    ref={liqFileRef}
+                    type="file"
+                    accept={PHOTO_ACCEPT_ATTR}
+                    onChange={(e) => setLiqFile(e.target.files?.[0] ?? null)}
+                    disabled={liqPending}
+                  />
+                  {liqError && (
+                    <div
+                      role="alert"
+                      className="text-xs"
+                      style={{ color: 'var(--danger, #dc2626)' }}
+                    >
+                      {liqError}
+                    </div>
+                  )}
+                  <div className="flex gap-2 mt-1">
+                    <button
+                      type="button"
+                      className="btn btn-outline flex-1"
+                      onClick={() => {
+                        setLiqOpen(false);
+                        setLiqError(null);
+                        setLiqFile(null);
+                        if (liqFileRef.current) liqFileRef.current.value = '';
+                      }}
+                      disabled={liqPending}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      className="btn flex-1"
+                      style={{
+                        background: '#16A34A',
+                        color: '#fff',
+                        fontWeight: 600,
+                      }}
+                      onClick={handleConfirmLiquidate}
+                      disabled={liqPending || !liqFile}
+                    >
+                      {liqPending ? (
+                        <>
+                          <Loader size={14} className="animate-spin" />
+                          <span style={{ marginLeft: 6 }}>Liquidando…</span>
+                        </>
+                      ) : (
+                        'Confirmar liquidación'
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </aside>
+    </div>
+  );
+}

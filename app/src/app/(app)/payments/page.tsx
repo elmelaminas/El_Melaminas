@@ -138,7 +138,7 @@ export default async function PaymentsPage({
       .from('payments')
       .select(
         `id, lead_id, amount, net_amount, payment_method, payment_type,
-         status, paid_at, evidence_photo_url,
+         status, paid_at, evidence_photo_url, registered_by,
          leads ( client_name, total_amount, sale_type, product_type,
                  payment_status, delivery_status, row_color )`,
         { count: 'exact' },
@@ -203,10 +203,46 @@ export default async function PaymentsPage({
       status: string | null;
       paid_at: string | null;
       evidence_photo_url: string | null;
+      registered_by: string | null;
       leads: RawLeadJoin | RawLeadJoin[] | null;
     };
 
     const rawRows = (data ?? []) as RawPayment[];
+
+    // Resolver nombres de quien registró cada pago — los usa el modal
+    // de detalle por lead (timeline). Bulk lookup deduplicado;
+    // best-effort: si falla, los nombres caen a "—" en el cliente.
+    const registeredByIds = Array.from(
+      new Set(
+        rawRows
+          .map((r) => r.registered_by)
+          .filter((x): x is string => !!x),
+      ),
+    );
+    const nameByUserId = new Map<string, string>();
+    if (registeredByIds.length > 0) {
+      try {
+        const { data: profiles, error: profErr } = await admin
+          .from('profiles')
+          .select('id, full_name')
+          .in('id', registeredByIds);
+        if (profErr) {
+          console.error(
+            '[PaymentsPage] registered_by names lookup falló (no fatal):',
+            profErr,
+          );
+        } else {
+          for (const p of profiles ?? []) {
+            nameByUserId.set(p.id, p.full_name ?? '(sin nombre)');
+          }
+        }
+      } catch (e) {
+        console.error(
+          '[PaymentsPage] registered_by excepción (no fatal):',
+          e,
+        );
+      }
+    }
 
     // Cargar solo los deducibles de la página actual; el SELECT de
     // profiles para resolver nombre de chofer se eliminó junto con la
@@ -329,6 +365,11 @@ export default async function PaymentsPage({
         lead_row_color: leadObj?.row_color ?? null,
         lead_total_amount: leadTotal,
         adeudo,
+        // Nombre del usuario que insertó el pago — null si no se pudo
+        // resolver (registered_by ausente o perfil borrado).
+        registered_by_name: r.registered_by
+          ? nameByUserId.get(r.registered_by) ?? null
+          : null,
       };
     });
 
