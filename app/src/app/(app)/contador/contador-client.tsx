@@ -1,7 +1,12 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useState, useTransition } from 'react';
+
+/** Tab keys de la sección "Cobros en efectivo registrados". Espejado
+ *  desde page.tsx para que el padre y este componente compartan el
+ *  mismo dominio sin acoplar el tipo a su archivo. */
+export type CashTabKey = 'pendientes' | 'validados' | 'recibidos';
 import { MonthYearSelector } from '@/components/ui/MonthYearSelector';
 import {
   DollarSign,
@@ -140,6 +145,7 @@ export function ContadorClient({
   myContadorBalance,
   mes,
   anio,
+  cashTab,
 }: {
   admins: AdminWithCash[];
   grandTotal: number;
@@ -167,6 +173,11 @@ export function ContadorClient({
   mes: number;
   /** Año seleccionado (4 dígitos). */
   anio: number;
+  /** Tab activo de "Cobros en efectivo registrados". Se lee del
+   *  searchParam `tab` en page.tsx y se pasa por prop para que el
+   *  cliente sepa qué sección mostrar y para que los `TabButton`
+   *  pinten su estado activo. */
+  cashTab: CashTabKey;
 }) {
   // Eduardo (admin2) también opera caja: la sección de recibir
   // efectivo del contador debe estar visible para ambos roles admin*.
@@ -215,6 +226,7 @@ export function ContadorClient({
         cashPayments={cashPayments}
         hasPin={hasPin}
         viewerRole={viewerRole}
+        cashTab={cashTab}
       />
 
       {/* Las secciones "Pendiente de validar" + "Efectivo del
@@ -409,6 +421,7 @@ function CashPaymentsSection({
   cashPayments,
   hasPin,
   viewerRole,
+  cashTab,
 }: {
   cashPayments: CashPaymentRow[];
   hasPin: boolean;
@@ -418,8 +431,34 @@ function CashPaymentsSection({
    *  Si el rol no encaja en ninguno (caso defensivo) no se muestran
    *  botones de acción — la tabla queda informativa. */
   viewerRole: '' | 'admin' | 'admin2' | 'contador';
+  /** Tab activo (`pendientes`/`validados`/`recibidos`). Solo el de
+   *  ese tab se renderiza; los otros permanecen ocultos pero las
+   *  selecciones cruzadas siguen vivas en el set y contribuyen al
+   *  total de la barra sticky. */
+  cashTab: CashTabKey;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [, tabStartTransition] = useTransition();
+
+  /** Cambia el tab activo preservando todos los demás searchParams
+   *  (mes, anio, etc.). El buscador local (`q`) NO está en la URL
+   *  así que su valor se conserva automáticamente al re-renderizar. */
+  function selectCashTab(next: CashTabKey) {
+    if (next === cashTab) return;
+    const params = new URLSearchParams(searchParams?.toString() ?? '');
+    if (next === 'pendientes') {
+      // Default — limpiamos para mantener URL compacta.
+      params.delete('tab');
+    } else {
+      params.set('tab', next);
+    }
+    const qs = params.toString();
+    tabStartTransition(() => {
+      router.push(qs ? `${pathname}?${qs}` : pathname);
+    });
+  }
   const total = cashPayments.reduce((s, p) => s + p.amount, 0);
   const count = cashPayments.length;
   const isAdminViewer = viewerRole === 'admin' || viewerRole === 'admin2';
@@ -764,11 +803,41 @@ function CashPaymentsSection({
         </button>
       </div>
 
-      {/* Tabla de detalle separada en 3 secciones según el estado del
-          cobro: pendientes / validados por contador / recibidos. Cada
-          sección tiene su propio fondo, contador y master checkbox
-          (cuando aplica). Si una sección queda vacía con la búsqueda
-          activa, se oculta. */}
+      {/* Tabs horizontales para Pendientes / Validados / Recibidos.
+          El contador de cada tab refleja las filas YA FILTRADAS por
+          el buscador (mejor pista de "dónde está mi match" cuando el
+          tab activo se queda vacío). El tab activo es bookmarkeable
+          vía `?tab=...`. */}
+      <div
+        className="flex gap-2 flex-wrap"
+        style={{ borderBottom: '1px solid var(--border)' }}
+      >
+        <CashTabButton
+          id="cash-tab-pendientes"
+          active={cashTab === 'pendientes'}
+          onClick={() => selectCashTab('pendientes')}
+        >
+          ⏳ Pendientes
+          <CashTabCount count={pendingRows.length} />
+        </CashTabButton>
+        <CashTabButton
+          id="cash-tab-validados"
+          active={cashTab === 'validados'}
+          onClick={() => selectCashTab('validados')}
+        >
+          ✅ Validados
+          <CashTabCount count={validatedRows.length} />
+        </CashTabButton>
+        <CashTabButton
+          id="cash-tab-recibidos"
+          active={cashTab === 'recibidos'}
+          onClick={() => selectCashTab('recibidos')}
+        >
+          💰 Recibidos
+          <CashTabCount count={receivedRows.length} />
+        </CashTabButton>
+      </div>
+
       {cashPayments.length === 0 ? (
         <div
           className="tbl-wrap"
@@ -795,66 +864,79 @@ function CashPaymentsSection({
         </div>
       ) : (
         <>
-          {pendingRows.length > 0 && (
-            <SectionTable
-              title="⏳ Pendientes de validar"
-              count={pendingRows.length}
-              bg="#FFFBEB"
-              border="#FCD34D"
-              showCheckboxCol={isAdminViewer || isContadorViewer}
-              master={
-                isAdminViewer || isContadorViewer
-                  ? {
-                      checked: allPendingSelected,
-                      disabled: pendingSelectable.length === 0 || !hasPin,
-                      onToggle: toggleAllPending,
-                    }
-                  : null
-              }
-              rows={pendingRows}
-              rowIsSelectable={rowIsSelectable}
-              hasPin={hasPin}
-              selectedPaymentIds={selectedPaymentIds}
-              toggleRow={toggleRow}
-            />
+          {cashTab === 'pendientes' && (
+            pendingRows.length > 0 ? (
+              <SectionTable
+                title="⏳ Pendientes de validar"
+                count={pendingRows.length}
+                bg="#FFFBEB"
+                border="#FCD34D"
+                showCheckboxCol={isAdminViewer || isContadorViewer}
+                master={
+                  isAdminViewer || isContadorViewer
+                    ? {
+                        checked: allPendingSelected,
+                        disabled: pendingSelectable.length === 0 || !hasPin,
+                        onToggle: toggleAllPending,
+                      }
+                    : null
+                }
+                rows={pendingRows}
+                rowIsSelectable={rowIsSelectable}
+                hasPin={hasPin}
+                selectedPaymentIds={selectedPaymentIds}
+                toggleRow={toggleRow}
+              />
+            ) : (
+              <EmptyTabState message="Sin cobros pendientes." />
+            )
           )}
-          {validatedRows.length > 0 && (
-            <SectionTable
-              title="✅ Validados por contador"
-              count={validatedRows.length}
-              bg="#ECFDF5"
-              border="#A7F3D0"
-              showCheckboxCol={isAdminViewer}
-              master={
-                isAdminViewer
-                  ? {
-                      checked: allValidatedSelected,
-                      disabled: validatedSelectable.length === 0 || !hasPin,
-                      onToggle: toggleAllValidated,
-                    }
-                  : null
-              }
-              rows={validatedRows}
-              rowIsSelectable={rowIsSelectable}
-              hasPin={hasPin}
-              selectedPaymentIds={selectedPaymentIds}
-              toggleRow={toggleRow}
-            />
+          {cashTab === 'validados' && (
+            validatedRows.length > 0 ? (
+              <SectionTable
+                title="✅ Validados por contador"
+                count={validatedRows.length}
+                bg="#ECFDF5"
+                border="#A7F3D0"
+                showCheckboxCol={isAdminViewer}
+                master={
+                  isAdminViewer
+                    ? {
+                        checked: allValidatedSelected,
+                        disabled:
+                          validatedSelectable.length === 0 || !hasPin,
+                        onToggle: toggleAllValidated,
+                      }
+                    : null
+                }
+                rows={validatedRows}
+                rowIsSelectable={rowIsSelectable}
+                hasPin={hasPin}
+                selectedPaymentIds={selectedPaymentIds}
+                toggleRow={toggleRow}
+              />
+            ) : (
+              <EmptyTabState message="Sin cobros validados por contador." />
+            )
           )}
-          {receivedRows.length > 0 && (
-            <SectionTable
-              title="💰 Recibidos"
-              count={receivedRows.length}
-              bg="#EFF6FF"
-              border="#BFDBFE"
-              showCheckboxCol={false}
-              master={null}
-              rows={receivedRows}
-              rowIsSelectable={rowIsSelectable}
-              hasPin={hasPin}
-              selectedPaymentIds={selectedPaymentIds}
-              toggleRow={toggleRow}
-            />
+          {cashTab === 'recibidos' && (
+            receivedRows.length > 0 ? (
+              <SectionTable
+                title="💰 Recibidos"
+                count={receivedRows.length}
+                bg="#EFF6FF"
+                border="#BFDBFE"
+                showCheckboxCol={false}
+                master={null}
+                rows={receivedRows}
+                rowIsSelectable={rowIsSelectable}
+                hasPin={hasPin}
+                selectedPaymentIds={selectedPaymentIds}
+                toggleRow={toggleRow}
+              />
+            ) : (
+              <EmptyTabState message="Sin cobros recibidos." />
+            )
           )}
         </>
       )}
@@ -1541,5 +1623,79 @@ function CashPaymentStatusBadge({ row }: { row: CashPaymentRow }) {
     );
   }
   return <span className="badge badge-warning">Pendiente</span>;
+}
+
+/**
+ * Botón de tab para "Cobros en efectivo registrados". Mismo estilo
+ * que el `TabButton` de /admin/caja: border-bottom 2px en color
+ * primario para activo, texto secundario para inactivo. Local a este
+ * archivo para no exponer otro símbolo público.
+ */
+function CashTabButton({
+  active,
+  onClick,
+  children,
+  id,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  id?: string;
+}) {
+  return (
+    <button
+      id={id}
+      type="button"
+      onClick={onClick}
+      className="flex items-center gap-2 px-4 py-2 text-sm font-medium"
+      style={{
+        color: active ? 'var(--brand-primary)' : 'var(--text-secondary)',
+        borderBottom: active
+          ? '2px solid var(--brand-primary)'
+          : '2px solid transparent',
+        marginBottom: -1,
+        background: 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+      }}
+      aria-pressed={active}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Badge contador para los tabs — pill gris con la cantidad de filas
+ *  visibles en ese tab tras el filtro de búsqueda. */
+function CashTabCount({ count }: { count: number }) {
+  return (
+    <span
+      className="text-xs"
+      style={{
+        padding: '2px 8px',
+        borderRadius: 9999,
+        background: 'var(--bg-subtle)',
+        color: 'var(--text-tertiary)',
+      }}
+    >
+      {count}
+    </span>
+  );
+}
+
+/** Mensaje informativo cuando el tab activo no tiene filas (sí hay
+ *  cobros este mes pero ninguno cae en este estado). Mantiene la
+ *  altura mínima para no colapsar visualmente al switchear. */
+function EmptyTabState({ message }: { message: string }) {
+  return (
+    <div
+      className="tbl-wrap"
+      style={{ padding: '24px', textAlign: 'center' }}
+    >
+      <span className="text-sm" style={{ color: 'var(--text-tertiary)' }}>
+        {message}
+      </span>
+    </div>
+  );
 }
 

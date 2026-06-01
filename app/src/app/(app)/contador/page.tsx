@@ -32,7 +32,11 @@ export const dynamic = 'force-dynamic';
 type RawSearchParams = {
   mes?: string | string[];
   anio?: string | string[];
+  tab?: string | string[];
 };
+
+const CASH_TAB_VALUES = ['pendientes', 'validados', 'recibidos'] as const;
+type CashTabKey = (typeof CASH_TAB_VALUES)[number];
 
 function pickStr(v: string | string[] | undefined): string {
   if (Array.isArray(v)) return v[0] ?? '';
@@ -64,6 +68,16 @@ export default async function ContadorPage({
     // en timestamptz y comparan correctamente contra ISO strings.
     const startIso = new Date(Date.UTC(anio, mes - 1, 1)).toISOString();
     const endIso = new Date(Date.UTC(anio, mes, 1)).toISOString();
+
+    // Tab activo de la sección "Cobros en efectivo registrados". Default
+    // 'pendientes' — lo primero que el usuario quiere actuar al entrar.
+    // Valor manipulado en URL cae a 'pendientes' silenciosamente.
+    const tabRaw = pickStr(raw.tab);
+    const cashTab: CashTabKey = (CASH_TAB_VALUES as readonly string[]).includes(
+      tabRaw,
+    )
+      ? (tabRaw as CashTabKey)
+      : 'pendientes';
 
     const admin = supabaseAdmin();
 
@@ -618,6 +632,7 @@ export default async function ContadorPage({
         myContadorBalance={myContadorBalance}
         mes={mes}
         anio={anio}
+        cashTab={cashTab}
       />
     );
   } catch (err) {
