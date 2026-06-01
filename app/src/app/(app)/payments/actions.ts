@@ -345,5 +345,71 @@ export async function addPaymentToLeadAction(
   if (!formData.has('deductibles_json')) {
     formData.set('deductibles_json', '[]');
   }
+
+  // Guard de defensa en profundidad: si el lead ya está liquidado,
+  // bloqueamos antes de tocar el flujo completo (upload + insert).
+  // El UI ya esconde el botón cuando `adeudo <= 0`, pero un cliente
+  // manipulado podría seguir hitting el endpoint — este chequeo
+  // server-side detiene el insert antes de generar storage huérfana.
+  //
+  // El monto puede igualar al adeudo (= liquidar) o ser menor
+  // (= anticipo parcial). Solo rechazamos cuando adeudo ya es 0
+  // o el lead aparece como 'pagado' en `payment_status`.
+  try {
+    const leadIdRaw = formData.get('lead_id');
+    if (typeof leadIdRaw === 'string' && leadIdRaw.length > 0) {
+      const admin = supabaseAdmin();
+      const { data: leadRow, error: leadErr } = await admin
+        .from('leads')
+        .select('total_amount, payment_status')
+        .eq('id', leadIdRaw)
+        .maybeSingle();
+      if (leadErr) {
+        console.error(
+          '[addPaymentToLeadAction] lead lookup falló (no fatal, sigue al save):',
+          leadErr,
+        );
+      } else if (leadRow) {
+        if (leadRow.payment_status === 'pagado') {
+          return {
+            status: 'error',
+            message:
+              'Este pedido ya está liquidado. No se pueden agregar más pagos.',
+          };
+        }
+        const { data: paidRows, error: paidErr } = await admin
+          .from('payments')
+          .select('amount')
+          .eq('lead_id', leadIdRaw)
+          .eq('status', 'exitoso');
+        if (paidErr) {
+          console.error(
+            '[addPaymentToLeadAction] paid sum lookup falló (no fatal):',
+            paidErr,
+          );
+        } else {
+          const total = Number(leadRow.total_amount ?? 0);
+          const paid = (paidRows ?? []).reduce(
+            (s, r) => s + Number(r.amount ?? 0),
+            0,
+          );
+          const remaining = total - paid;
+          if (total > 0 && remaining <= 0) {
+            return {
+              status: 'error',
+              message:
+                'Este pedido ya está liquidado. No se pueden agregar más pagos.',
+            };
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.error(
+      '[addPaymentToLeadAction] guard de liquidación excepción (no fatal):',
+      e,
+    );
+  }
+
   return savePaymentAction(prev, formData);
 }

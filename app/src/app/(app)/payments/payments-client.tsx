@@ -1334,8 +1334,24 @@ function PaymentDetailModal({
         {/* "+ Agregar pago" inline — admin/admin2 only. Compatible
             con el flujo de /payments/new: misma server action, mismo
             efecto de cobro (registra payment, alimenta admin_cash_register
-            si es efectivo, recalcula payment_status del lead). */}
-        {isAdmin && (
+            si es efectivo, recalcula payment_status del lead).
+            Cuando el lead ya está liquidado mostramos un mensaje
+            informativo en su lugar; el server action revalida igual
+            esta condición por defensa en profundidad. */}
+        {isAdmin && adeudo <= 0 && (
+          <div
+            className="mb-5 text-xs flex items-center gap-1.5"
+            style={{ color: 'var(--success, #15803D)' }}
+            role="status"
+          >
+            <CircleCheckBig size={14} />
+            <span>
+              Este pedido ya está liquidado — no se pueden agregar más
+              pagos.
+            </span>
+          </div>
+        )}
+        {isAdmin && adeudo > 0 && (
           <div className="mb-5">
             {!addOpen ? (
               <button
