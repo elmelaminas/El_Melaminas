@@ -5,6 +5,7 @@
 'use client';
 
 import { useTransition } from 'react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
@@ -23,7 +24,6 @@ import {
   Banknote,
   History,
   LogOut,
-  Layers,
   Loader,
   X,
 } from 'lucide-react';
@@ -125,18 +125,16 @@ export default function Sidebar({
           borderBottom: '1px solid rgba(255,255,255,0.08)',
         }}
       >
-        <div
-          className="flex items-center justify-center"
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 8,
-            background: 'var(--brand-accent)',
-            color: '#1F2937',
-          }}
-        >
-          <Layers size={20} />
-        </div>
+        {/* Logo real de EL MELAMINAS exportado por favicon.io a
+            `public/`. Se sirve estático sin ImageResponse. */}
+        <Image
+          src="/android-chrome-192x192.png"
+          alt="EL MELAMINAS"
+          width={32}
+          height={32}
+          className="rounded-lg"
+          priority
+        />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div
             style={{
