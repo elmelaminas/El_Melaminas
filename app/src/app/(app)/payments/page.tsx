@@ -134,15 +134,24 @@ export default async function PaymentsPage({
     // simetría con `<MethodBadge>` y la URL `?method=…`. El mapeo
     // happens en el .map() de abajo. `driver_id` ya no se selecciona —
     // la columna ya no se muestra en el listado.
+    // `leads!inner(...)` fuerza un INNER JOIN: pagos huérfanos (lead
+    // borrado físicamente o soft-deleted con `deleted_at != null`) NO
+    // aparecen en la respuesta. Antes era un LEFT JOIN y los pagos
+    // huérfanos salían con `leads = null` → fila "(lead no encontrado)"
+    // en la UI y peor aún, contribuían a los totales globales.
+    // Combinamos con `.is('leads.deleted_at', null)` para excluir los
+    // soft-deleted (donde el row sigue existiendo en la tabla pero
+    // está marcado como borrado).
     let query = admin
       .from('payments')
       .select(
         `id, lead_id, amount, net_amount, payment_method, payment_type,
          status, paid_at, evidence_photo_url, registered_by,
-         leads ( client_name, total_amount, sale_type, product_type,
-                 payment_status, delivery_status, row_color )`,
+         leads!inner ( client_name, total_amount, sale_type, product_type,
+                       payment_status, delivery_status, row_color )`,
         { count: 'exact' },
       )
+      .is('leads.deleted_at', null)
       .order('paid_at', { ascending: false });
 
     if (method) query = query.eq('payment_method', method);
@@ -335,7 +344,21 @@ export default async function PaymentsPage({
     }
     const contraEntregaLeadIds = Array.from(contraEntregaSet);
 
-    const rows: PaymentRow[] = rawRows.map((r) => {
+    // Safety-net JS-side: si por alguna razón un row se cuela con
+    // `leads = null` o sin `lead_id` (ej: cache de PostgREST stale,
+    // diferencia transitoria entre el momento del JOIN y del SELECT
+    // embebido), igual lo filtramos. El `!inner` ya debería cubrir
+    // este caso server-side; este check es defensa en profundidad.
+    const filteredRawRows = rawRows.filter((r) => {
+      const leadObj = Array.isArray(r.leads) ? r.leads[0] : r.leads;
+      if (!leadObj) return false;
+      if (typeof r.lead_id !== 'string' || r.lead_id.length === 0) {
+        return false;
+      }
+      return true;
+    });
+
+    const rows: PaymentRow[] = filteredRawRows.map((r) => {
       const leadObj = Array.isArray(r.leads) ? r.leads[0] : r.leads;
       const leadId = r.lead_id ?? '';
       const leadTotal = Number(leadObj?.total_amount ?? 0);
@@ -344,6 +367,8 @@ export default async function PaymentsPage({
       return {
         id: r.id,
         lead_id: leadId,
+        // El filter anterior garantiza que `leadObj` exista, pero
+        // dejamos el fallback por si el TS narrowing no lo ve.
         client_name: leadObj?.client_name ?? '(lead no encontrado)',
         amount: Number(r.amount ?? 0),
         net_amount: Number(r.net_amount ?? 0),
@@ -395,11 +420,15 @@ export default async function PaymentsPage({
     const total = count ?? 0;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
-    // Totales globales (no de la página) — consulta extra rápida sin range.
+    // Totales globales (no de la página) — consulta extra rápida sin
+    // range. Mismo INNER JOIN + filtro de soft-delete que la query
+    // principal: los pagos huérfanos NO deben inflar Cobrado bruto /
+    // Ingreso neto.
     const { data: totalsData } = await admin
       .from('payments')
-      .select('amount, net_amount')
-      .eq('status', 'exitoso');
+      .select('amount, net_amount, leads!inner(deleted_at)')
+      .eq('status', 'exitoso')
+      .is('leads.deleted_at', null);
     const totalGross = (totalsData ?? []).reduce(
       (s, p) => s + Number(p.amount ?? 0),
       0,
