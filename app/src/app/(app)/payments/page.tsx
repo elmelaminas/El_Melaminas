@@ -189,11 +189,15 @@ export default async function PaymentsPage({
       );
     }
 
-    const start = (pageNumber - 1) * PAGE_SIZE;
-    const end = start + PAGE_SIZE - 1;
-    query = query.range(start, end);
+    // Cap defensivo: la tabla ahora paginará por LEAD (en JS) tras
+    // agrupar, no por pago. Traemos hasta 1000 pagos que matchean los
+    // filtros para identificar los leads relevantes; en práctica un
+    // mes típico cae muy por debajo. Si llegáramos al cap, el efecto
+    // es que las páginas más viejas no aparecen — preferible a
+    // OOM o queries lentas.
+    query = query.limit(1000);
 
-    const { data, error, count } = await query;
+    const { data, error } = await query;
     if (error) {
       return <ErrorState message={`Error leyendo pagos: ${error.message}`} />;
     }
@@ -221,7 +225,45 @@ export default async function PaymentsPage({
       leads: RawLeadJoin | RawLeadJoin[] | null;
     };
 
-    const rawRows = (data ?? []) as RawPayment[];
+    const filteredMatchRows = (data ?? []) as RawPayment[];
+
+    // Identificamos los lead_ids que MATCHEAN los filtros y luego
+    // hacemos un SEGUNDO SELECT para traer TODOS los pagos de esos
+    // leads (no solo los que pasan el filtro). Esto es lo que permite
+    // que la tabla agrupada muestre `monto_cobrado_total` real y que
+    // el modal de detalle liste TODOS los pagos del lead aunque la
+    // búsqueda esté filtrando por método/tipo/etc. Mismo principio
+    // que `/leads` cuando agrupa por cliente.
+    const matchingLeadIds = Array.from(
+      new Set(
+        filteredMatchRows
+          .map((r) => r.lead_id)
+          .filter((x): x is string => !!x),
+      ),
+    );
+
+    let rawRows: RawPayment[] = [];
+    if (matchingLeadIds.length > 0) {
+      const { data: allLeadPayments, error: allErr } = await admin
+        .from('payments')
+        .select(
+          `id, lead_id, amount, net_amount, payment_method, payment_type,
+           status, paid_at, evidence_photo_url, registered_by,
+           leads!inner ( client_name, total_amount, sale_type, product_type,
+                         payment_status, delivery_status, row_color )`,
+        )
+        .in('lead_id', matchingLeadIds)
+        .is('leads.deleted_at', null)
+        .order('paid_at', { ascending: false });
+      if (allErr) {
+        return (
+          <ErrorState
+            message={`Error leyendo pagos de los leads: ${allErr.message}`}
+          />
+        );
+      }
+      rawRows = (allLeadPayments ?? []) as RawPayment[];
+    }
 
     // Resolver nombres de quien registró cada pago — los usa el modal
     // de detalle por lead (timeline). Bulk lookup deduplicado;
@@ -417,8 +459,105 @@ export default async function PaymentsPage({
       rows[i].evidence_photo_url = signedEvidence[i];
     }
 
-    const total = count ?? 0;
+    // ── Agrupado por lead. Cada fila de la tabla representa UN lead
+    // con TODOS sus pagos (el segundo SELECT trajo todos), no un pago
+    // suelto. La paginación cuenta LEADS, no pagos.
+    type LeadGroupBuild = {
+      lead_id: string;
+      client_name: string;
+      total_amount: number;
+      adeudo: number;
+      payments: PaymentRow[];
+      latestPaidAt: string;
+      // Campos de coloreado a nivel lead — los mismos para todas las
+      // filas del lead, así que tomamos cualquiera (la primera).
+      lead_sale_type: string | null;
+      lead_product_type: string | null;
+      lead_payment_status: PaymentRow['lead_payment_status'];
+      lead_delivery_status: PaymentRow['lead_delivery_status'];
+      lead_row_color: string | null;
+    };
+    const groupMap = new Map<string, LeadGroupBuild>();
+    for (const r of rows) {
+      const existing = groupMap.get(r.lead_id);
+      if (existing) {
+        existing.payments.push(r);
+        // Llevamos la fecha más reciente para ordenar grupos al final.
+        if ((r.paid_at ?? '') > existing.latestPaidAt) {
+          existing.latestPaidAt = r.paid_at ?? '';
+        }
+      } else {
+        groupMap.set(r.lead_id, {
+          lead_id: r.lead_id,
+          client_name: r.client_name,
+          total_amount: r.lead_total_amount,
+          adeudo: r.adeudo,
+          payments: [r],
+          latestPaidAt: r.paid_at ?? '',
+          lead_sale_type: r.lead_sale_type,
+          lead_product_type: r.lead_product_type,
+          lead_payment_status: r.lead_payment_status,
+          lead_delivery_status: r.lead_delivery_status,
+          lead_row_color: r.lead_row_color,
+        });
+      }
+    }
+    const allGroups: LeadGroupBuild[] = Array.from(groupMap.values()).sort(
+      (a, b) => b.latestPaidAt.localeCompare(a.latestPaidAt),
+    );
+
+    // Computar agregados por grupo. Métodos / tipos = 'varios' si hay
+    // mezcla. Monto/deducibles/neto se calculan SOLO con pagos
+    // exitosos (lo mismo que reportan las cards superiores).
+    const leadGroups = allGroups.map((g) => {
+      const sortedPayments = [...g.payments].sort((a, b) =>
+        (b.paid_at ?? '').localeCompare(a.paid_at ?? ''),
+      );
+      const exitosos = sortedPayments.filter((p) => p.status === 'exitoso');
+      const montoCobrado = exitosos.reduce((s, p) => s + p.amount, 0);
+      const deduciblesTotal = exitosos.reduce(
+        (s, p) => s + p.deductibles.reduce((ss, d) => ss + d.amount, 0),
+        0,
+      );
+      const netoTotal = Math.max(0, montoCobrado - deduciblesTotal);
+      const methods = new Set(sortedPayments.map((p) => p.method));
+      const types = new Set(sortedPayments.map((p) => p.payment_type));
+      const latest = sortedPayments[0];
+      return {
+        lead_id: g.lead_id,
+        client_name: g.client_name,
+        total_amount: g.total_amount,
+        adeudo: g.adeudo,
+        payments: sortedPayments,
+        monto_cobrado_total: montoCobrado,
+        deducibles_total: deduciblesTotal,
+        neto_total: netoTotal,
+        ultimo_metodo:
+          methods.size === 1
+            ? (Array.from(methods)[0] as PaymentRow['method'])
+            : ('varios' as const),
+        ultimo_tipo:
+          types.size === 1
+            ? (Array.from(types)[0] as PaymentRow['payment_type'])
+            : ('varios' as const),
+        ultima_fecha: latest?.paid_at ?? null,
+        tiene_evidencia: sortedPayments.some(
+          (p) => p.evidence_photo_url != null,
+        ),
+        payments_count: sortedPayments.length,
+        lead_sale_type: g.lead_sale_type,
+        lead_product_type: g.lead_product_type,
+        lead_payment_status: g.lead_payment_status,
+        lead_delivery_status: g.lead_delivery_status,
+        lead_row_color: g.lead_row_color,
+      };
+    });
+
+    const total = leadGroups.length;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const pageStart = (pageNumber - 1) * PAGE_SIZE;
+    const pageEnd = pageStart + PAGE_SIZE;
+    const pagedLeadGroups = leadGroups.slice(pageStart, pageEnd);
 
     // Totales globales (no de la página) — consulta extra rápida sin
     // range. Mismo INNER JOIN + filtro de soft-delete que la query
@@ -483,7 +622,7 @@ export default async function PaymentsPage({
 
     return (
       <PaymentsClient
-        payments={rows}
+        leadGroups={pagedLeadGroups}
         total={total}
         page={pageNumber}
         pageSize={PAGE_SIZE}

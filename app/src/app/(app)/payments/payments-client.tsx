@@ -70,6 +70,40 @@ export type PaymentRow = {
   registered_by_name: string | null;
 };
 
+/**
+ * Fila agrupada por lead — la tabla ahora muestra UN row por lead con
+ * todos sus pagos colapsados. `payments` lista TODOS los pagos del
+ * lead (no solo los que matchearon el filtro) para que el modal de
+ * detalle tenga la timeline completa.
+ *
+ * Agregados (`monto_cobrado_total` / `deducibles_total` / `neto_total`)
+ * cubren SOLO pagos en estado `exitoso` — mismo criterio que las
+ * cards superiores. `ultimo_metodo` / `ultimo_tipo` valen `'varios'`
+ * cuando el lead tiene mezcla; un solo valor cuando todos los pagos
+ * usan el mismo.
+ */
+export type LeadGroupRow = {
+  lead_id: string;
+  client_name: string;
+  total_amount: number;
+  adeudo: number;
+  payments: PaymentRow[];
+  monto_cobrado_total: number;
+  deducibles_total: number;
+  neto_total: number;
+  ultimo_metodo: PaymentRow['method'] | 'varios';
+  ultimo_tipo: PaymentRow['payment_type'] | 'varios';
+  ultima_fecha: string | null;
+  tiene_evidencia: boolean;
+  payments_count: number;
+  // Lead-level metadata para `getLeadRowStyle`.
+  lead_sale_type: string | null;
+  lead_product_type: string | null;
+  lead_payment_status: PaymentStatus;
+  lead_delivery_status: DeliveryStatus;
+  lead_row_color: string | null;
+};
+
 type FiltersState = {
   q: string;
   method: '' | 'efectivo' | 'transferencia' | 'clip';
@@ -128,7 +162,7 @@ const TYPE_TO_BADGE: Record<PaymentRow['payment_type'], PaymentType> = {
 };
 
 export function PaymentsClient({
-  payments,
+  leadGroups,
   total,
   page,
   pageSize,
@@ -139,7 +173,10 @@ export function PaymentsClient({
   contraEntregaLeadIds,
   isAdmin,
 }: {
-  payments: PaymentRow[];
+  /** Filas agrupadas por lead — una entrada por lead con TODOS sus
+   *  pagos pre-cargados. Reemplaza al viejo `payments: PaymentRow[]`
+   *  que mostraba un row por pago. */
+  leadGroups: LeadGroupRow[];
   total: number;
   page: number;
   pageSize: number;
@@ -153,7 +190,7 @@ export function PaymentsClient({
    *  convertimos a Set para lookup O(1) en la regla de color
    *  naranja (mismo patrón que en /leads). */
   contraEntregaLeadIds: string[];
-  /** true si el usuario es admin/admin2 — habilita el botón Editar
+  /** true si el usuario es admin/admin2 — habilita el botón Liquidar
    *  por fila. Falso para supervisor (que solo lee la tabla). */
   isAdmin: boolean;
 }) {
@@ -172,23 +209,19 @@ export function PaymentsClient({
   >(null);
 
   // lead_id del modal de detalle por lead. null = modal cerrado. Al
-  // hacer click en una fila se setea; el modal calcula la timeline a
-  // partir del agrupado `paymentsByLead`.
+  // hacer click en una fila se setea y el modal hace lookup contra
+  // `leadGroups`.
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
 
-  // Agrupado por lead_id desde el array YA cargado de la página. La
-  // spec acepta esta limitación (sólo lo visible en la página actual);
-  // cubre el caso común donde un lead tiene 1-3 pagos y todos caen en
-  // la misma página.
-  const paymentsByLead = useMemo(() => {
-    const map = new Map<string, PaymentRow[]>();
-    for (const p of payments) {
-      const list = map.get(p.lead_id) ?? [];
-      list.push(p);
-      map.set(p.lead_id, list);
+  // Lookup O(1) por lead_id para el modal — el array ya viene
+  // agrupado y paginado desde el server.
+  const groupsByLeadId = useMemo(() => {
+    const map = new Map<string, LeadGroupRow>();
+    for (const g of leadGroups) {
+      map.set(g.lead_id, g);
     }
     return map;
-  }, [payments]);
+  }, [leadGroups]);
 
   // Lazy init: leemos `filters.q` UNA SOLA VEZ al montar para
   // hidratar el input desde la URL. Después no re-sincronizamos —
@@ -486,16 +519,15 @@ export function PaymentsClient({
           state del lightbox (se montan encima del drawer). */}
       {selectedLeadId &&
         (() => {
-          const leadPayments = paymentsByLead.get(selectedLeadId);
-          if (!leadPayments || leadPayments.length === 0) return null;
-          const first = leadPayments[0];
+          const group = groupsByLeadId.get(selectedLeadId);
+          if (!group) return null;
           return (
             <PaymentDetailModal
               leadId={selectedLeadId}
-              clientName={first.client_name}
-              totalAmount={first.lead_total_amount}
-              adeudo={first.adeudo}
-              payments={leadPayments}
+              clientName={group.client_name}
+              totalAmount={group.total_amount}
+              adeudo={group.adeudo}
+              payments={group.payments}
               isAdmin={isAdmin}
               onClose={() => setSelectedLeadId(null)}
               onOpenEvidence={(src, alt) => setLightbox({ src, alt })}
@@ -503,7 +535,7 @@ export function PaymentsClient({
           );
         })()}
 
-      {/* Tabla */}
+      {/* Tabla — una fila por LEAD agrupado. */}
       <div
         id="payments-table"
         className="tbl-wrap"
@@ -525,37 +557,29 @@ export function PaymentsClient({
                 <th>Adeudo</th>
                 <th>Fecha</th>
                 <th className="text-center">Evidencia</th>
-                {isAdmin && <th className="text-right">Acciones</th>}
               </tr>
             </thead>
             <tbody>
-              {payments.length === 0 ? (
+              {leadGroups.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={isAdmin ? 10 : 9}
+                    colSpan={9}
                     className="text-center py-8 text-sm"
                     style={{ color: 'var(--text-tertiary)' }}
                   >
                     {hasFilters
-                      ? 'Ningún pago coincide con los filtros actuales.'
-                      : 'Sin pagos registrados.'}
+                      ? 'Ningún pedido coincide con los filtros actuales.'
+                      : 'Sin pedidos registrados.'}
                   </td>
                 </tr>
               ) : (
-                payments.map((p) => (
-                  <PaymentRowItem
-                    key={p.id}
-                    payment={p}
+                leadGroups.map((g) => (
+                  <LeadGroupRowItem
+                    key={g.lead_id}
+                    group={g}
                     contraEntregaSet={contraEntregaSet}
                     isAdmin={isAdmin}
-                    onOpenEvidence={() =>
-                      p.evidence_photo_url &&
-                      setLightbox({
-                        src: p.evidence_photo_url,
-                        alt: `Evidencia del pago de ${p.client_name}`,
-                      })
-                    }
-                    onOpenLead={() => setSelectedLeadId(p.lead_id)}
+                    onOpenLead={() => setSelectedLeadId(g.lead_id)}
                   />
                 ))
               )}
@@ -577,7 +601,7 @@ export function PaymentsClient({
             >
               Mostrando <strong>{start}-{end}</strong> de{' '}
               <strong>{total}</strong>{' '}
-              {total === 1 ? 'pago' : 'pagos'}
+              {total === 1 ? 'pedido' : 'pedidos'}
             </div>
             <div className="flex items-center gap-1">
               <button
@@ -615,67 +639,59 @@ export function PaymentsClient({
 }
 
 /**
- * Una fila de la tabla de pagos. Encapsula:
+ * Una fila de la tabla — UN lead agrupado con TODOS sus pagos.
+ * Encapsula:
  *   - row style según las reglas de color del lead (mismas que /leads).
- *   - render del adeudo restante del LEAD + badge "Liquidado" o
- *     prompt inline para liquidar.
- *   - confirmación inline del método de pago para la liquidación
- *     (sin modal, para no tapar el resto de la tabla).
+ *   - aggregates por lead (monto cobrado, deducibles, neto).
+ *   - badges Método/Tipo, con valor "Varios" cuando hay mezcla de pagos.
+ *   - prompt inline para liquidar el adeudo del lead.
+ *   - badge "N pagos" junto al nombre cuando hay más de uno.
+ *
+ * NB: el botón "Editar pago" por fila se eliminó porque ya no apunta
+ * a un pago único; quien quiera editar entra al modal con el click
+ * en la fila y desde ahí navega al pago específico cuando se
+ * implemente esa entrada.
  */
-function PaymentRowItem({
-  payment: p,
+function LeadGroupRowItem({
+  group: g,
   contraEntregaSet,
   isAdmin,
-  onOpenEvidence,
   onOpenLead,
 }: {
-  payment: PaymentRow;
+  group: LeadGroupRow;
   contraEntregaSet: ReadonlySet<string>;
   isAdmin: boolean;
-  onOpenEvidence: () => void;
-  /** Abre el modal de detalle del lead asociado al pago. Se dispara
-   *  al hacer click en cualquier parte de la fila que NO sea uno de
-   *  los botones de acción (cámara, lápiz, Liquidar). */
   onOpenLead: () => void;
 }) {
   const router = useRouter();
   const [liqPending, startLiqTransition] = useTransition();
   const liqFileRef = useRef<HTMLInputElement>(null);
-  // null = ningún prompt visible; un valor = método seleccionado en
-  // el prompt inline antes de confirmar.
   const [showLiqPrompt, setShowLiqPrompt] = useState(false);
   const [liqMethod, setLiqMethod] = useState<PaymentRow['method']>('efectivo');
   const [liqError, setLiqError] = useState<string | null>(null);
   const [liqDone, setLiqDone] = useState(false);
-  // Evidencia: archivo seleccionado + URL de preview (object URL).
-  // SIEMPRE obligatoria (2026-05/3) — la política antigua de exigirla
-  // sólo en transferencia/Clip se eliminó.
   const [liqFile, setLiqFile] = useState<File | null>(null);
   const [liqPreview, setLiqPreview] = useState<string | null>(null);
 
-  const ded = p.deductibles.reduce((a, d) => a + d.amount, 0);
-
-  // Reglas de color del lead. Usamos un shape mínimo compatible con
-  // getLeadRowStyle: solo necesita los flags semánticos del lead.
+  // Reglas de color del lead. Mismo shape mínimo que el caller previo.
   const rowStyle = getLeadRowStyle(
     {
-      id: p.lead_id,
-      row_color: p.lead_row_color,
-      sale_type: p.lead_sale_type,
-      product_type: p.lead_product_type,
-      payment_status: p.lead_payment_status,
-      delivery_status: p.lead_delivery_status,
+      id: g.lead_id,
+      row_color: g.lead_row_color,
+      sale_type: g.lead_sale_type,
+      product_type: g.lead_product_type,
+      payment_status: g.lead_payment_status,
+      delivery_status: g.lead_delivery_status,
     },
     contraEntregaSet,
   );
 
-  // Estado del adeudo del LEAD asociado a este pago. `liqDone` es
-  // optimismo post-liquidación: pinta "Liquidado" inmediatamente.
+  // `liqDone` = optimismo post-liquidación: pinta "Liquidado" antes
+  // del refresh.
   const isLiquidated =
-    liqDone || p.adeudo <= 0 || p.lead_payment_status === 'pagado';
+    liqDone || g.adeudo <= 0 || g.lead_payment_status === 'pagado';
 
   const handleLiqFileChange = (file: File | null) => {
-    // Limpia preview anterior (libera el object URL).
     if (liqPreview) {
       URL.revokeObjectURL(liqPreview);
       setLiqPreview(null);
@@ -703,14 +719,13 @@ function PaymentRowItem({
 
   const handleConfirmLiquidate = () => {
     setLiqError(null);
-    // Foto SIEMPRE obligatoria (2026-05/3). Server revalida.
     const photoCheck = validatePhotoFile(liqFile);
     if (!photoCheck.ok) {
       setLiqError(`Foto del comprobante: ${photoCheck.message}`);
       return;
     }
     const fd = new FormData();
-    fd.set('lead_id', p.lead_id);
+    fd.set('lead_id', g.lead_id);
     fd.set('payment_method', liqMethod);
     if (liqFile) fd.set('evidence', liqFile);
     startLiqTransition(async () => {
@@ -719,8 +734,6 @@ function PaymentRowItem({
         if (result.status === 'success') {
           setLiqDone(true);
           setShowLiqPrompt(false);
-          // Liberar preview tras submit exitoso — el lead ya está
-          // liquidado, el state se va a desmontar pronto.
           if (liqPreview) {
             URL.revokeObjectURL(liqPreview);
             setLiqPreview(null);
@@ -752,33 +765,41 @@ function PaymentRowItem({
       title="Ver todos los pagos de este lead"
     >
       <td data-label="Cliente">
-        <div className="font-medium">{p.client_name}</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="font-medium">{g.client_name}</div>
+          {g.payments_count > 1 && (
+            <span
+              className="text-[10px] font-semibold"
+              style={{
+                padding: '1px 6px',
+                borderRadius: 9999,
+                background: '#DBEAFE',
+                color: '#1E40AF',
+              }}
+              title={`${g.payments_count} pagos registrados — abre para ver el desglose`}
+            >
+              {g.payments_count} pagos
+            </span>
+          )}
+        </div>
         <div
           className="text-xs font-mono"
           style={{ color: 'var(--text-tertiary)' }}
         >
-          #{p.id.slice(0, 8)}
+          #{g.lead_id.slice(0, 8)}
         </div>
       </td>
-      <td data-label="Monto" className="font-semibold">
-        {formatMXN(p.amount)}
+      <td data-label="Monto cobrado" className="font-semibold">
+        {formatMXN(g.monto_cobrado_total)}
       </td>
       <td data-label="Deducibles">
-        {ded === 0 ? (
+        {g.deducibles_total === 0 ? (
           <span className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
             —
           </span>
         ) : (
-          <div>
-            <div style={{ color: 'var(--danger)', fontWeight: 600 }}>
-              -{formatMXN(ded)}
-            </div>
-            <div
-              className="text-xs"
-              style={{ color: 'var(--text-tertiary)' }}
-            >
-              {p.deductibles.map((d) => d.concept).join(', ')}
-            </div>
+          <div style={{ color: 'var(--danger)', fontWeight: 600 }}>
+            -{formatMXN(g.deducibles_total)}
           </div>
         )}
       </td>
@@ -787,13 +808,21 @@ function PaymentRowItem({
         className="font-semibold"
         style={{ color: 'var(--success)' }}
       >
-        {formatMXN(p.net_amount)}
+        {formatMXN(g.neto_total)}
       </td>
       <td data-label="Método">
-        <MethodBadge method={METHOD_TO_BADGE[p.method]} />
+        {g.ultimo_metodo === 'varios' ? (
+          <VariosBadge />
+        ) : (
+          <MethodBadge method={METHOD_TO_BADGE[g.ultimo_metodo]} />
+        )}
       </td>
       <td data-label="Tipo">
-        <TypeBadge type={TYPE_TO_BADGE[p.payment_type]} />
+        {g.ultimo_tipo === 'varios' ? (
+          <VariosBadge />
+        ) : (
+          <TypeBadge type={TYPE_TO_BADGE[g.ultimo_tipo]} />
+        )}
       </td>
       <td
         data-label="Adeudo"
@@ -811,7 +840,7 @@ function PaymentRowItem({
               className="text-xs"
               style={{ color: 'var(--text-secondary)' }}
             >
-              Liquidar <strong>{formatMXN(p.adeudo)}</strong>
+              Liquidar <strong>{formatMXN(g.adeudo)}</strong>
             </div>
             <select
               value={liqMethod}
@@ -944,12 +973,14 @@ function PaymentRowItem({
               className="text-xs"
               style={{ color: 'var(--danger, #B91C1C)', fontWeight: 600 }}
             >
-              {formatMXN(p.adeudo)} pendiente
+              {formatMXN(g.adeudo)} pendiente
             </div>
-            {/* Solo permitimos liquidar desde rows de tipo anticipo —
-                liquidación y contra_entrega no deben volver a generar
-                otra liquidación. */}
-            {p.payment_type === 'anticipo' && (
+            {/* En la vista agrupada permitimos Liquidar siempre que
+                haya adeudo > 0 y el viewer sea admin/admin2. Antes
+                gateábamos por payment_type='anticipo' del row, pero
+                ahora la fila es un lead — no un pago — así que la
+                regla relevante es solo "¿queda adeudo?". */}
+            {isAdmin && (
               <button
                 type="button"
                 onClick={() => {
@@ -968,8 +999,8 @@ function PaymentRowItem({
                   alignItems: 'center',
                   gap: 4,
                 }}
-                aria-label={`Liquidar adeudo de ${p.client_name}`}
-                title={`Liquidar ${formatMXN(p.adeudo)} restantes`}
+                aria-label={`Liquidar adeudo de ${g.client_name}`}
+                title={`Liquidar ${formatMXN(g.adeudo)} restantes`}
               >
                 <CircleCheckBig size={12} /> Liquidar
               </button>
@@ -982,46 +1013,44 @@ function PaymentRowItem({
         className="text-sm"
         style={{ color: 'var(--text-secondary)' }}
       >
-        {formatDate(p.paid_at)}
+        {formatDate(g.ultima_fecha)}
       </td>
       <td data-label="Evidencia" className="text-center">
-        {p.evidence_photo_url ? (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onOpenEvidence();
-            }}
-            className="btn btn-ghost"
-            style={{ padding: 6, color: 'var(--brand-secondary)' }}
-            aria-label={`Ver evidencia del pago de ${p.client_name}`}
-            title="Ver foto del cobro"
-          >
-            <Camera size={16} />
-          </button>
+        {g.tiene_evidencia ? (
+          <Camera
+            size={16}
+            style={{ color: 'var(--brand-secondary)' }}
+            aria-label={`Hay evidencia adjunta en pagos de ${g.client_name}`}
+          />
         ) : (
           <span className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
             —
           </span>
         )}
       </td>
-      {isAdmin && (
-        <td data-label="Acciones">
-          <div className="flex justify-end items-center gap-1">
-            <Link
-              href={`/payments/${p.id}/edit`}
-              className="btn btn-ghost"
-              style={{ padding: '6px' }}
-              aria-label={`Editar pago de ${p.client_name}`}
-              title="Editar pago"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Pencil size={16} />
-            </Link>
-          </div>
-        </td>
-      )}
     </tr>
+  );
+}
+
+/**
+ * Badge gris pill "Varios" para Método/Tipo cuando el lead tiene
+ * mezcla de pagos. Visualmente neutral para no competir con los
+ * `<MethodBadge>` / `<TypeBadge>` cuando sí hay un valor único.
+ */
+function VariosBadge() {
+  return (
+    <span
+      className="text-xs"
+      style={{
+        padding: '2px 8px',
+        borderRadius: 9999,
+        background: 'var(--bg-subtle)',
+        color: 'var(--text-secondary)',
+        fontWeight: 600,
+      }}
+    >
+      Varios
+    </span>
   );
 }
 
