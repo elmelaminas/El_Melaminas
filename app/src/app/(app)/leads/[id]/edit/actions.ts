@@ -561,8 +561,21 @@ export async function updateLeadFullAction(
     const hasCubrecantoManual = data.has_cubrecanto === true;
     const hasCatalogo = data.has_catalogo === true;
 
+    // `sheets_count` SIEMPRE entero ≥ 0 — CHECK constraint en DB es
+    // `sheets_count >= 0` (2026-06 changeover). Defensa contra
+    // quantity null/undefined que produciría NaN.
     const sheets_count = hasHojas
-      ? resolvedColors.reduce((s, c) => s + c.quantity, 0)
+      ? Math.max(
+          0,
+          Math.trunc(
+            Number(
+              resolvedColors.reduce(
+                (s, c) => s + (Number(c.quantity) || 0),
+                0,
+              ),
+            ) || 0,
+          ),
+        )
       : 0;
 
     const sheetsSubtotal = hasHojas

@@ -298,8 +298,23 @@ export async function saveLeadAction(
     const hasCubrecantoManual = data.has_cubrecanto === true;
     const hasCatalogo = data.has_catalogo === true;
 
+    // `sheets_count` SIEMPRE es un entero ≥ 0 — el CHECK constraint en
+    // DB es `sheets_count >= 0` (2026-06: cambió de `> 0` para
+    // permitir pedidos sin hojas — solo cubrecanto o solo catálogo).
+    // Defensiva: coerce a Number y clamp a >= 0 para protegernos de
+    // quantity null/undefined que produciría NaN y violaría el check.
     const sheets_count = hasHojas
-      ? resolvedColors.reduce((s, c) => s + c.quantity, 0)
+      ? Math.max(
+          0,
+          Math.trunc(
+            Number(
+              resolvedColors.reduce(
+                (s, c) => s + (Number(c.quantity) || 0),
+                0,
+              ),
+            ) || 0,
+          ),
+        )
       : 0;
 
     // Subtotal hojas solo si has_hojas. Sumamos pre-dedupe sobre las
