@@ -295,13 +295,41 @@ export function PaymentsClient({
               style={{ color: 'var(--text-tertiary)' }}
             />
             <input
-              placeholder="Buscar por cliente…"
+              placeholder="Buscar por cliente o teléfono…"
               className="input"
-              style={{ paddingLeft: 36 }}
+              style={{
+                paddingLeft: 36,
+                paddingRight: qInput ? 36 : undefined,
+              }}
               value={qInput}
               onChange={(e) => setQInput(e.target.value)}
               aria-label="Buscar pagos"
             />
+            {qInput && (
+              <button
+                type="button"
+                className="absolute top-1/2 -translate-y-1/2"
+                style={{
+                  right: 8,
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 4,
+                  cursor: 'pointer',
+                  color: 'var(--text-tertiary)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+                onClick={() => {
+                  setQInput('');
+                  pushFilters({ q: '', page: 1 });
+                }}
+                aria-label="Limpiar búsqueda"
+                title="Limpiar búsqueda"
+              >
+                <X size={14} />
+              </button>
+            )}
           </div>
           <select
             id="payments-filter-method"

@@ -167,12 +167,17 @@ export default async function PaymentsPage({
       query = query.neq('leads.payment_status', 'pagado');
     }
 
-    // Búsqueda por nombre del cliente — la sintaxis `leads.client_name.ilike`
-    // funciona cuando hay embedding del lead. Si la DB rechaza este filter
-    // (depende de la versión de PostgREST), el banner mostrará el error
-    // exacto y lo cambiamos a un IN sobre lead_ids resueltos en memoria.
+    // Búsqueda por nombre o teléfono del cliente — consistente con
+    // /leads (que ya busca por ambos campos). PostgREST permite
+    // `.or()` sobre una relación embebida cuando pasamos
+    // `referencedTable`: cada fragmento del OR se aplica sobre la
+    // tabla `leads`. `qInput` ya viene normalizado (lowercase + sin
+    // acentos) desde `sanitizeQuery`.
     if (qInput) {
-      query = query.ilike('leads.client_name', `*${qInput}*`);
+      query = query.or(
+        `client_name.ilike.*${qInput}*,phone.ilike.*${qInput}*`,
+        { referencedTable: 'leads' },
+      );
     }
 
     const start = (pageNumber - 1) * PAGE_SIZE;
