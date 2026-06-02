@@ -126,6 +126,10 @@ type Totals = {
   gross: number;
   deductibles: number;
   net: number;
+  /** Suma de adeudos pendientes (`total_amount - SUM(pagos exitosos)`)
+   *  sobre los leads visibles en la vista filtrada actual. Va en la
+   *  4ta card "Por cobrar". */
+  outstanding: number;
 };
 
 const METHOD_OPTS: { value: FiltersState['method']; label: string }[] = [
@@ -315,8 +319,13 @@ export function PaymentsClient({
         </Link>
       </div>
 
-      {/* Totals globales */}
-      <div id="payments-totals" className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* Totals globales — 4 cards. La 4ta "Por cobrar" suma los
+          adeudos pendientes de los leads visibles (no de TODA la BD)
+          para que el contexto del filtro sea consistente. */}
+      <div
+        id="payments-totals"
+        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4"
+      >
         <SummaryCard label="Cobrado bruto" value={formatMXN(totals.gross)} accent="#1E40AF" />
         <SummaryCard
           label="Deducibles"
@@ -324,6 +333,11 @@ export function PaymentsClient({
           accent="#B91C1C"
         />
         <SummaryCard label="Ingreso neto" value={formatMXN(totals.net)} accent="#15803D" />
+        <SummaryCard
+          label="💰 Por cobrar"
+          value={formatMXN(totals.outstanding)}
+          accent="#C2410C"
+        />
       </div>
 
       {/* Filtros */}
@@ -687,9 +701,13 @@ function LeadGroupRowItem({
   );
 
   // `liqDone` = optimismo post-liquidación: pinta "Liquidado" antes
-  // del refresh.
-  const isLiquidated =
-    liqDone || g.adeudo <= 0 || g.lead_payment_status === 'pagado';
+  // del refresh. Importante: NO consultamos `lead_payment_status`
+  // aquí — ese flag se ha visto desactualizado en producción y
+  // contradice el monto real (caso Rosalía: status='pagado' pero
+  // total $11,265 / pagado $8,865 / adeudo $2,400). La verdad
+  // matemática es `adeudo = total - sum(pagos exitosos)`, que ya
+  // viene calculada en `g.adeudo` desde page.tsx.
+  const isLiquidated = liqDone || g.adeudo <= 0;
 
   const handleLiqFileChange = (file: File | null) => {
     if (liqPreview) {
@@ -767,6 +785,20 @@ function LeadGroupRowItem({
       <td data-label="Cliente">
         <div className="flex items-center gap-2 flex-wrap">
           <div className="font-medium">{g.client_name}</div>
+          {!isLiquidated && (
+            <span
+              className="text-[10px] font-semibold"
+              style={{
+                padding: '1px 6px',
+                borderRadius: 9999,
+                background: '#FEE2E2',
+                color: '#991B1B',
+              }}
+              title={`Adeudo pendiente: ${formatMXN(g.adeudo)}`}
+            >
+              ⚠️ Adeudo
+            </span>
+          )}
           {g.payments_count > 1 && (
             <span
               className="text-[10px] font-semibold"

@@ -559,6 +559,16 @@ export default async function PaymentsPage({
     const pageEnd = pageStart + PAGE_SIZE;
     const pagedLeadGroups = leadGroups.slice(pageStart, pageEnd);
 
+    // "Por cobrar" — suma de adeudos pendientes sobre los leads
+    // visibles (no toda la BD), así el número refleja la vista
+    // filtrada que el usuario tiene en pantalla. Cada `adeudo` ya
+    // es `max(0, total - sum(pagos exitosos))`, calculado en el
+    // mapping; aquí solo sumamos.
+    const totalOutstanding = leadGroups.reduce(
+      (s, g) => s + g.adeudo,
+      0,
+    );
+
     // Totales globales (no de la página) — consulta extra rápida sin
     // range. Mismo INNER JOIN + filtro de soft-delete que la query
     // principal: los pagos huérfanos NO deben inflar Cobrado bruto /
@@ -639,6 +649,7 @@ export default async function PaymentsPage({
           gross: totalGross,
           deductibles: totalGross - totalNet,
           net: totalNet,
+          outstanding: totalOutstanding,
         }}
         pendingLeadCount={pendingLeadCount ?? 0}
         contraEntregaLeadIds={contraEntregaLeadIds}
