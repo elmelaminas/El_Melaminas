@@ -252,7 +252,11 @@ export function LeadsClient({
   const pathname = usePathname();
   const [pending, startTransition] = useTransition();
 
-  const [qInput, setQInput] = useState<string>(filters.q);
+  // Lazy init: leemos `filters.q` SOLO al montar. Después no
+  // re-sincronizamos — el input es la única fuente de verdad mientras
+  // el usuario escribe. Ver comentario en payments-client para el
+  // racional (race condition que resucitaba el texto borrado).
+  const [qInput, setQInput] = useState<string>(() => filters.q);
   // `filtersOpen` controla la visibilidad de los selects en mobile.
   // En desktop los selects siempre se muestran (CSS md:flex ignora
   // este state). Auto-abierto si hay filtros activos para que el
@@ -268,15 +272,10 @@ export function LeadsClient({
     ),
   );
 
-  // Sync: si filters.q cambia desde fuera (back, link externo), refleja
-  // en el input local para no mostrar texto stale.
-  useEffect(() => {
-    setQInput(filters.q);
-  }, [filters.q]);
-
   // Debounce automático: 300ms después del último keystroke, push a la
-  // URL. Si `qInput` ya coincide con `filters.q` (sync de arriba) no
-  // dispara — evita doble round-trip al volver a la página.
+  // URL. Si `qInput` ya coincide con `filters.q` (recién llegado desde
+  // el server) no dispara — evita doble round-trip al volver a la
+  // página.
   useEffect(() => {
     if (qInput === filters.q) return;
     const t = setTimeout(() => {
@@ -308,7 +307,11 @@ export function LeadsClient({
     }>,
   ) {
     const merged = {
-      q: next.q ?? filters.q,
+      // `q` defaultea al estado LOCAL del input (no a `filters.q` de la
+      // URL). Sin esto, al cambiar otro filtro mientras el debounce de
+      // q aún no ha disparado, mergeábamos la `q` vieja y resucitaba
+      // el texto borrado en el input.
+      q: next.q ?? qInput,
       channel: next.channel ?? filters.channel,
       delivery: next.delivery ?? filters.delivery,
       payment: next.payment ?? filters.payment,

@@ -190,11 +190,15 @@ export function PaymentsClient({
     return map;
   }, [payments]);
 
-  const [qInput, setQInput] = useState<string>(filters.q);
-
-  useEffect(() => {
-    setQInput(filters.q);
-  }, [filters.q]);
+  // Lazy init: leemos `filters.q` UNA SOLA VEZ al montar para
+  // hidratar el input desde la URL. Después no re-sincronizamos —
+  // el input es la única fuente de verdad mientras el usuario
+  // escribe. Re-sincronizar desde `filters.q` revivía el texto
+  // borrado en una race condition: entre el clear y el push
+  // debounced, si el usuario cambiaba otro filtro (método, tipo,
+  // etc.), `pushFilters` heredaba el viejo `filters.q` y volvía a
+  // pintar el input con el valor previo.
+  const [qInput, setQInput] = useState<string>(() => filters.q);
 
   useEffect(() => {
     if (qInput === filters.q) return;
@@ -217,7 +221,11 @@ export function PaymentsClient({
     }>,
   ) {
     const merged = {
-      q: next.q ?? filters.q,
+      // `q` defaultea al estado LOCAL del input (no a `filters.q` de la
+      // URL). Sin esto, al cambiar otro filtro mientras el debounce
+      // de q aún no ha disparado, mergeábamos la `q` vieja de la URL
+      // y "resucitaba" el texto borrado en el input.
+      q: next.q ?? qInput,
       method: next.method ?? filters.method,
       type: next.type ?? filters.type,
       page: next.page ?? page,
