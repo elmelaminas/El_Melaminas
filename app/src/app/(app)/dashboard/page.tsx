@@ -61,12 +61,16 @@ import {
  *     histórico ir a `/admin/mi-caja` (card "Mi efectivo disponible").
  *   - Hojas / Cubrecantos / Por tipo de compra / Por vendedor
  *     (todos vía `leads.sale_date`)
- *   - Desglose de dinero (5 cards): "Validado por mí" filtra por
- *     `admin_cash_register.created_at` con admin_id=auth.uid();
- *     "Dinero total" / "En efectivo" / "En transferencia" / "En Clip"
- *     se calculan de la misma query #2 de `payments` agrupando
- *     `payment_method` en JS — por construcción, la suma de los tres
- *     métodos = "Dinero total".
+ *   - Desglose de dinero (5 cards):
+ *     · "Recibidos" replica el cálculo del tab homónimo de /contador:
+ *       cobros pago_efectivo del periodo (por fecha del COBRO, no de
+ *       la recepción) cuyo payment_id ya tiene un ingreso
+ *       recibido_contador o recibido_directo_admin (cualquier fecha).
+ *       Global — no filtra por admin_id, igual que el tab.
+ *     · "Dinero total" / "En efectivo" / "En transferencia" / "En
+ *       Clip" se calculan de la misma query #2 de `payments`
+ *       agrupando `payment_method` en JS — por construcción la suma
+ *       de los tres métodos = "Dinero total".
  *
  * Métricas que NO respetan el rango (siempre estado actual):
  *   - Entregas pendientes (operativo: lo que hay AHORA por entregar)
@@ -177,7 +181,7 @@ export default async function DashboardPage({
       cubrecantoMetersResult,
       sellerSummaryResult,
       purchaseTypeResult,
-      cashReceivedByMeResult,
+      cashPaymentsPeriodResult,
     ] = await Promise.all([
       // 1. Leads del periodo (sale_date ∈ [startDate, endDate])
       (() => {
@@ -371,23 +375,23 @@ export default async function DashboardPage({
         if (saleType) q = q.eq('sale_type', saleType);
         return q;
       })(),
-      // 16. Efectivo RECIBIDO por el admin actual en el periodo —
-      //     ingresos en `admin_cash_register` con `source` ∈
-      //     {recibido_contador, recibido_directo_admin}. Alimenta la
-      //     card "Validado por mí" del desglose de dinero. Filtra
-      //     por `created_at` (= fecha en que el cash entró a la caja
-      //     personal del admin). Si la tabla no existe o no hay
-      //     usuario, devolvemos { data: [] } y la card cae a $0.
-      user
-        ? admin
-            .from('admin_cash_register')
-            .select('amount')
-            .eq('admin_id', user.id)
-            .eq('operation_type', 'ingreso')
-            .in('source', ['recibido_contador', 'recibido_directo_admin'])
-            .gte('created_at', startIso)
-            .lt('created_at', endIso)
-        : Promise.resolve({ data: [], error: null }),
+      // 16. Cobros en efectivo del periodo (pago_efectivo ingresos
+      //     creados en la ventana). Por sí solos no alimentan ninguna
+      //     card directamente — necesitamos un lookup posterior para
+      //     saber cuáles ya fueron recibidos (recibido_contador o
+      //     recibido_directo_admin) y así replicar EXACTAMENTE el
+      //     cálculo del tab "Recibidos" de /contador. Criterio: la
+      //     ventana se aplica a la fecha del COBRO original, no a la
+      //     de la recepción (la recepción puede ocurrir días después
+      //     y no debe sacar al cobro del bucket del mes en que se
+      //     hizo).
+      admin
+        .from('admin_cash_register')
+        .select('payment_id, amount')
+        .eq('operation_type', 'ingreso')
+        .eq('source', 'pago_efectivo')
+        .gte('created_at', startIso)
+        .lt('created_at', endIso),
     ]);
 
     if (leadsMonthResult.error) {
@@ -678,18 +682,65 @@ export default async function DashboardPage({
     const domicilioStats = purchaseBucket('domicilio');
     const fabricaStats = purchaseBucket('fabrica');
 
-    // Efectivo recibido por el admin actual en el periodo (ingresos
-    // recibido_contador + recibido_directo_admin). Best-effort.
-    if (cashReceivedByMeResult.error) {
+    // Card "Recibidos" del desglose — debe coincidir EXACTAMENTE con
+    // el total del tab "Recibidos" en /contador. Replicamos su lógica:
+    //   1. Cobros pago_efectivo del periodo (ya cargados en query #16).
+    //   2. Lookup IN(payment_ids) para encontrar cuáles tienen un
+    //      ingreso recibido_contador o recibido_directo_admin
+    //      (cualquier fecha — la recepción puede ser posterior al mes
+    //      del cobro y el bucket sigue siendo del mes del cobro).
+    //   3. SUM(amount) de los cobros cuyo payment_id aparece en el
+    //      conjunto recibido.
+    // No filtramos por admin_id porque el tab de contador es global
+    // (cualquier admin que haya recibido cuenta).
+    if (cashPaymentsPeriodResult.error) {
       console.error(
-        '[DashboardPage] cash received by me select falló (no fatal):',
-        cashReceivedByMeResult.error,
+        '[DashboardPage] cash payments period select falló (no fatal):',
+        cashPaymentsPeriodResult.error,
       );
     }
-    const cashReceivedByMe = (cashReceivedByMeResult.data ?? []).reduce(
-      (s, r) => s + Number(r.amount ?? 0),
-      0,
+    const cashPaymentsRows = cashPaymentsPeriodResult.data ?? [];
+    const cashPaymentIds = Array.from(
+      new Set(
+        cashPaymentsRows
+          .map((r) => (r as { payment_id?: string | null }).payment_id)
+          .filter((x): x is string => !!x),
+      ),
     );
+    const receivedPaymentIdSet = new Set<string>();
+    if (cashPaymentIds.length > 0) {
+      try {
+        const { data: receivedRows, error: receivedErr } = await admin
+          .from('admin_cash_register')
+          .select('payment_id')
+          .eq('operation_type', 'ingreso')
+          .in('source', ['recibido_contador', 'recibido_directo_admin'])
+          .in('payment_id', cashPaymentIds);
+        if (receivedErr) {
+          console.error(
+            '[DashboardPage] received payments lookup falló (no fatal):',
+            receivedErr,
+          );
+        } else {
+          for (const r of receivedRows ?? []) {
+            const pid = (r as { payment_id?: string | null }).payment_id;
+            if (pid) receivedPaymentIdSet.add(pid);
+          }
+        }
+      } catch (e) {
+        console.error(
+          '[DashboardPage] received payments lookup excepción (no fatal):',
+          e,
+        );
+      }
+    }
+    const cashReceivedTotal = cashPaymentsRows.reduce((s, r) => {
+      const pid = (r as { payment_id?: string | null }).payment_id;
+      if (pid && receivedPaymentIdSet.has(pid)) {
+        return s + Number(r.amount ?? 0);
+      }
+      return s;
+    }, 0);
 
     // Sufijo del subtitle cuando hay tipo de venta activo
     //   "Métricas de Mayo 2026 — Recompras"
@@ -867,10 +918,10 @@ export default async function DashboardPage({
               icon={<ShieldCheck size={20} />}
               iconBg="#DCFCE7"
               iconColor="#14532D"
-              label="Validado por mí"
-              value={formatMXN(cashReceivedByMe)}
-              unit="recibido del contador / directo"
-              href={`/admin/mi-caja?${miCajaParams}`}
+              label="Recibidos"
+              value={formatMXN(cashReceivedTotal)}
+              unit="cobros del periodo ya recibidos"
+              href={`/contador?tab=recibidos&${miCajaParams}`}
             />
             <MetricCard
               icon={<Wallet size={20} />}
