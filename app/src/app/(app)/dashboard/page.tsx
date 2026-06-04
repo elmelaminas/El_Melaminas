@@ -12,6 +12,9 @@ import {
   Ruler,
   Factory,
   Home,
+  ShieldCheck,
+  ArrowLeftRight,
+  CreditCard,
 } from 'lucide-react';
 import {
   ChannelBadge,
@@ -58,6 +61,12 @@ import {
  *     histórico ir a `/admin/mi-caja` (card "Mi efectivo disponible").
  *   - Hojas / Cubrecantos / Por tipo de compra / Por vendedor
  *     (todos vía `leads.sale_date`)
+ *   - Desglose de dinero (5 cards): "Validado por mí" filtra por
+ *     `admin_cash_register.created_at` con admin_id=auth.uid();
+ *     "Dinero total" / "En efectivo" / "En transferencia" / "En Clip"
+ *     se calculan de la misma query #2 de `payments` agrupando
+ *     `payment_method` en JS — por construcción, la suma de los tres
+ *     métodos = "Dinero total".
  *
  * Métricas que NO respetan el rango (siempre estado actual):
  *   - Entregas pendientes (operativo: lo que hay AHORA por entregar)
@@ -168,6 +177,7 @@ export default async function DashboardPage({
       cubrecantoMetersResult,
       sellerSummaryResult,
       purchaseTypeResult,
+      cashReceivedByMeResult,
     ] = await Promise.all([
       // 1. Leads del periodo (sale_date ∈ [startDate, endDate])
       (() => {
@@ -180,15 +190,20 @@ export default async function DashboardPage({
         if (saleType) q = q.eq('sale_type', saleType);
         return q;
       })(),
-      // 2. Pagos exitosos del periodo (paid_at ∈ [startIso, endIso))
-      //    Cuando hay filtro de sale_type, hacemos JOIN inner con leads
-      //    y filtramos por la columna del lead asociado al pago.
+      // 2. Pagos exitosos del periodo (paid_at ∈ [startIso, endIso)).
+      //    Trae `amount` + `payment_method` para alimentar tanto
+      //    "Cobrado en el periodo" como el desglose por método de la
+      //    sección "Desglose de dinero" (cards "Dinero total",
+      //    "En efectivo", "En transferencia", "En Clip"). Mantener
+      //    UNA query es lo que garantiza que el desglose por método
+      //    sume exactamente al total. Si hay filtro de sale_type,
+      //    inner-join con leads.
       (() => {
         let q;
         if (saleType) {
           q = admin
             .from('payments')
-            .select('amount, leads!inner(sale_type)')
+            .select('amount, payment_method, leads!inner(sale_type)')
             .eq('status', 'exitoso')
             .eq('leads.sale_type', saleType)
             .gte('paid_at', startIso)
@@ -196,7 +211,7 @@ export default async function DashboardPage({
         } else {
           q = admin
             .from('payments')
-            .select('amount')
+            .select('amount, payment_method')
             .eq('status', 'exitoso')
             .gte('paid_at', startIso)
             .lt('paid_at', endIso);
@@ -356,6 +371,23 @@ export default async function DashboardPage({
         if (saleType) q = q.eq('sale_type', saleType);
         return q;
       })(),
+      // 16. Efectivo RECIBIDO por el admin actual en el periodo —
+      //     ingresos en `admin_cash_register` con `source` ∈
+      //     {recibido_contador, recibido_directo_admin}. Alimenta la
+      //     card "Validado por mí" del desglose de dinero. Filtra
+      //     por `created_at` (= fecha en que el cash entró a la caja
+      //     personal del admin). Si la tabla no existe o no hay
+      //     usuario, devolvemos { data: [] } y la card cae a $0.
+      user
+        ? admin
+            .from('admin_cash_register')
+            .select('amount')
+            .eq('admin_id', user.id)
+            .eq('operation_type', 'ingreso')
+            .in('source', ['recibido_contador', 'recibido_directo_admin'])
+            .gte('created_at', startIso)
+            .lt('created_at', endIso)
+        : Promise.resolve({ data: [], error: null }),
     ]);
 
     if (leadsMonthResult.error) {
@@ -395,6 +427,24 @@ export default async function DashboardPage({
     const paidPeriod = (paymentsMonthResult.data ?? []).reduce(
       (s, p) => s + Number(p.amount ?? 0),
       0,
+    );
+    // Desglose por método: una pasada sobre el mismo array que produjo
+    // `paidPeriod` para garantizar que efectivo + transferencia + clip
+    // = paidPeriod (cualquier `payment_method` desconocido queda
+    // fuera de los tres y NO inflará una categoría incorrecta).
+    type MethodBreakdown = { efectivo: number; transferencia: number; clip: number };
+    const methodBreakdown: MethodBreakdown = (
+      paymentsMonthResult.data ?? []
+    ).reduce<MethodBreakdown>(
+      (acc, p) => {
+        const amt = Number(p.amount ?? 0);
+        const m = (p as { payment_method?: string | null }).payment_method;
+        if (m === 'efectivo') acc.efectivo += amt;
+        else if (m === 'transferencia') acc.transferencia += amt;
+        else if (m === 'clip') acc.clip += amt;
+        return acc;
+      },
+      { efectivo: 0, transferencia: 0, clip: 0 },
     );
     const deliveriesPending = deliveriesPendingResult.count ?? 0;
     const lowStock = (stockResult.data ?? []).reduce((c, r) => {
@@ -628,6 +678,19 @@ export default async function DashboardPage({
     const domicilioStats = purchaseBucket('domicilio');
     const fabricaStats = purchaseBucket('fabrica');
 
+    // Efectivo recibido por el admin actual en el periodo (ingresos
+    // recibido_contador + recibido_directo_admin). Best-effort.
+    if (cashReceivedByMeResult.error) {
+      console.error(
+        '[DashboardPage] cash received by me select falló (no fatal):',
+        cashReceivedByMeResult.error,
+      );
+    }
+    const cashReceivedByMe = (cashReceivedByMeResult.data ?? []).reduce(
+      (s, r) => s + Number(r.amount ?? 0),
+      0,
+    );
+
     // Sufijo del subtitle cuando hay tipo de venta activo
     //   "Métricas de Mayo 2026 — Recompras"
     const saleTypeSuffix = saleType ? ` — ${SALE_TYPE_SUBTITLE[saleType] ?? ''}` : '';
@@ -777,6 +840,75 @@ export default async function DashboardPage({
             unit={`${formatMXN(fabricaStats.monto)} vendido`}
             href={`/leads?${periodParams}&purchase_type=fabrica`}
           />
+        </div>
+
+        {/* Desglose de dinero — 5 cards alineadas: lo recibido por el
+            admin actual + total + 3 métodos. Las 3 cards de método se
+            alimentan de la MISMA query que `paidPeriod` (query #2), así
+            que efectivo + transferencia + clip = total. `periodParams`
+            arrastra el filtro sale_type cuando está activo, lo que
+            mantiene coherencia con el resto del dashboard. */}
+        <div id="dashboard-money-breakdown" className="flex flex-col gap-3">
+          <div>
+            <h3 className="font-semibold text-base">
+              💰 Desglose de dinero — {window.subtitleLabel}
+              {saleTypeSuffix}
+            </h3>
+            <p
+              className="text-xs"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              Cómo entró el efectivo del periodo + lo recibido por ti
+              del contador.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+            <MetricCard
+              icon={<ShieldCheck size={20} />}
+              iconBg="#DCFCE7"
+              iconColor="#14532D"
+              label="Validado por mí"
+              value={formatMXN(cashReceivedByMe)}
+              unit="recibido del contador / directo"
+              href={`/admin/mi-caja?${miCajaParams}`}
+            />
+            <MetricCard
+              icon={<Wallet size={20} />}
+              iconBg="#DBEAFE"
+              iconColor="#1E40AF"
+              label="Dinero total"
+              value={formatMXN(paidPeriod)}
+              unit="todos los métodos del periodo"
+              href={`/payments?${periodParams}`}
+            />
+            <MetricCard
+              icon={<Banknote size={20} />}
+              iconBg="#DCFCE7"
+              iconColor="#15803D"
+              label="En efectivo"
+              value={formatMXN(methodBreakdown.efectivo)}
+              unit="cobrado en efectivo del periodo"
+              href={`/payments?${periodParams}&method=efectivo`}
+            />
+            <MetricCard
+              icon={<ArrowLeftRight size={20} />}
+              iconBg="#DBEAFE"
+              iconColor="#1D4ED8"
+              label="En transferencia"
+              value={formatMXN(methodBreakdown.transferencia)}
+              unit="cobrado por transferencia"
+              href={`/payments?${periodParams}&method=transferencia`}
+            />
+            <MetricCard
+              icon={<CreditCard size={20} />}
+              iconBg="#EDE9FE"
+              iconColor="#6D28D9"
+              label="En Clip"
+              value={formatMXN(methodBreakdown.clip)}
+              unit="cobrado vía Clip"
+              href={`/payments?${periodParams}&method=clip`}
+            />
+          </div>
         </div>
 
         {/* Resumen de ventas por vendedor en el periodo. Ordenado por
