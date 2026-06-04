@@ -540,6 +540,13 @@ function CashPaymentsSection({
     (r) => r.received_by_admin || r.received_directly,
   );
 
+  // Totales monetarios por estado (reflejan el filtro de búsqueda — si
+  // q está activo, ya viene aplicado en filteredCashPayments). Sirven
+  // para los pills de cada tab y el subtítulo de la sección activa.
+  const pendingTotal = pendingRows.reduce((s, r) => s + r.amount, 0);
+  const validatedTotal = validatedRows.reduce((s, r) => s + r.amount, 0);
+  const receivedTotal = receivedRows.reduce((s, r) => s + r.amount, 0);
+
   // "Master checkbox" por sección. Cada uno selecciona/des-selecciona
   // SOLO las filas seleccionables visibles de SU sección, sin tocar
   // las de otras. Esto evita que un admin clickee "todos" en
@@ -826,7 +833,11 @@ function CashPaymentsSection({
           onClick={() => selectCashTab('pendientes')}
         >
           ⏳ Pendientes
-          <CashTabCount count={pendingRows.length} />
+          <CashTabCount
+            count={pendingRows.length}
+            amount={pendingTotal}
+            active={cashTab === 'pendientes'}
+          />
         </CashTabButton>
         <CashTabButton
           id="cash-tab-validados"
@@ -834,7 +845,11 @@ function CashPaymentsSection({
           onClick={() => selectCashTab('validados')}
         >
           ✅ Validados
-          <CashTabCount count={validatedRows.length} />
+          <CashTabCount
+            count={validatedRows.length}
+            amount={validatedTotal}
+            active={cashTab === 'validados'}
+          />
         </CashTabButton>
         <CashTabButton
           id="cash-tab-recibidos"
@@ -842,7 +857,11 @@ function CashPaymentsSection({
           onClick={() => selectCashTab('recibidos')}
         >
           💰 Recibidos
-          <CashTabCount count={receivedRows.length} />
+          <CashTabCount
+            count={receivedRows.length}
+            amount={receivedTotal}
+            active={cashTab === 'recibidos'}
+          />
         </CashTabButton>
       </div>
 
@@ -877,6 +896,9 @@ function CashPaymentsSection({
               <SectionTable
                 title="⏳ Pendientes de validar"
                 count={pendingRows.length}
+                totalAmount={pendingTotal}
+                totalLabel="Total pendiente"
+                totalColor="#B45309"
                 bg="#FFFBEB"
                 border="#FCD34D"
                 showCheckboxCol={isAdminViewer || isContadorViewer}
@@ -904,6 +926,9 @@ function CashPaymentsSection({
               <SectionTable
                 title="✅ Validados por contador"
                 count={validatedRows.length}
+                totalAmount={validatedTotal}
+                totalLabel="Total validado"
+                totalColor="#15803D"
                 bg="#ECFDF5"
                 border="#A7F3D0"
                 showCheckboxCol={isAdminViewer}
@@ -932,6 +957,9 @@ function CashPaymentsSection({
               <SectionTable
                 title="💰 Recibidos"
                 count={receivedRows.length}
+                totalAmount={receivedTotal}
+                totalLabel="Total recibido"
+                totalColor="#1E40AF"
                 bg="#EFF6FF"
                 border="#BFDBFE"
                 showCheckboxCol={false}
@@ -948,15 +976,39 @@ function CashPaymentsSection({
           )}
         </>
       )}
+      {/* Footer del pie: reemplaza el viejo "Total en efectivo este
+          mes" (redundante con la card verde de arriba) por el total
+          del tab activo, así el usuario siempre tiene una referencia
+          numérica sin tener que mirar el header de la sección. */}
       {cashPayments.length > 0 && (
         <div
           className="px-4 py-2 text-xs flex justify-end"
           style={{ color: 'var(--text-secondary)' }}
         >
-          Total en efectivo este mes:{' '}
-          <strong style={{ color: '#15803D', marginLeft: 4 }}>
-            {formatMXN(total)}
-          </strong>
+          {cashTab === 'pendientes' && (
+            <>
+              Total pendiente{q ? ' (filtrado)' : ''}:{' '}
+              <strong style={{ color: '#B45309', marginLeft: 4 }}>
+                {formatMXN(pendingTotal)}
+              </strong>
+            </>
+          )}
+          {cashTab === 'validados' && (
+            <>
+              Total validado{q ? ' (filtrado)' : ''}:{' '}
+              <strong style={{ color: '#15803D', marginLeft: 4 }}>
+                {formatMXN(validatedTotal)}
+              </strong>
+            </>
+          )}
+          {cashTab === 'recibidos' && (
+            <>
+              Total recibido{q ? ' (filtrado)' : ''}:{' '}
+              <strong style={{ color: '#1E40AF', marginLeft: 4 }}>
+                {formatMXN(receivedTotal)}
+              </strong>
+            </>
+          )}
         </div>
       )}
 
@@ -1406,6 +1458,9 @@ function MyContadorBalanceCard({ balance }: { balance: number }) {
 function SectionTable({
   title,
   count,
+  totalAmount,
+  totalLabel,
+  totalColor,
   bg,
   border,
   showCheckboxCol,
@@ -1418,6 +1473,12 @@ function SectionTable({
 }: {
   title: string;
   count: number;
+  /** Suma de `amount` sobre las filas visibles de esta sección. Se
+   *  muestra debajo del título como sub-línea destacada en color
+   *  específico del estado (`totalColor`). */
+  totalAmount: number;
+  totalLabel: string;
+  totalColor: string;
   bg: string;
   border: string;
   showCheckboxCol: boolean;
@@ -1443,7 +1504,7 @@ function SectionTable({
       }}
     >
       <div
-        className="px-4 py-3 flex items-center justify-between"
+        className="px-4 py-3"
         style={{ borderBottom: `1px solid ${border}` }}
       >
         <div
@@ -1457,6 +1518,12 @@ function SectionTable({
           >
             ({count})
           </span>
+        </div>
+        <div
+          className="text-xs font-semibold mt-0.5"
+          style={{ color: totalColor }}
+        >
+          {totalLabel}: {formatMXN(totalAmount)}
         </div>
       </div>
       <div className="overflow-x-auto">
@@ -1673,9 +1740,23 @@ function CashTabButton({
   );
 }
 
-/** Badge contador para los tabs — pill gris con la cantidad de filas
- *  visibles en ese tab tras el filtro de búsqueda. */
-function CashTabCount({ count }: { count: number }) {
+/**
+ * Badge contador para los tabs — pill gris con la cantidad de filas
+ * visibles en ese tab tras el filtro de búsqueda. El monto se muestra
+ * SIEMPRE en el tab activo (para verlo aunque la sección esté
+ * colapsada) y en pantallas anchas (`sm:`) en todos los tabs para
+ * vista de un vistazo. En móvil los tabs inactivos quedan compactos
+ * con solo el conteo, evitando wrap.
+ */
+function CashTabCount({
+  count,
+  amount,
+  active,
+}: {
+  count: number;
+  amount: number;
+  active: boolean;
+}) {
   return (
     <span
       className="text-xs"
@@ -1684,9 +1765,15 @@ function CashTabCount({ count }: { count: number }) {
         borderRadius: 9999,
         background: 'var(--bg-subtle)',
         color: 'var(--text-tertiary)',
+        whiteSpace: 'nowrap',
       }}
     >
       {count}
+      {/* Monto: visible siempre en el tab activo; en inactivos solo
+          en sm+ para no abultar mobile. */}
+      <span className={active ? '' : 'hidden sm:inline'}>
+        {' '}· {formatMXN(amount)}
+      </span>
     </span>
   );
 }
