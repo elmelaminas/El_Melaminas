@@ -52,6 +52,7 @@ const SALE_TYPE_VALUES = [
   'seguimiento',
   'venta_empleado',
 ] as const;
+const PURCHASE_TYPE_VALUES = ['domicilio', 'fabrica'] as const;
 
 // Filtro por color de fila (tabs encima de la tabla). Valores cubren
 // los 4 automáticos + 2 manuales. 'all' / vacío = sin filtro.
@@ -72,6 +73,9 @@ type RawSearchParams = {
   payment?: string | string[];
   /** Tipo de venta — primer_contacto | recompra | seguimiento | venta_empleado. */
   sale_type?: string | string[];
+  /** Tipo de compra — `domicilio` (a domicilio) | `fabrica` (recoge en
+   *  fábrica). Drill-down típico desde las cards del dashboard. */
+  purchase_type?: string | string[];
   /** UUID del vendedor; valor especial 'sin_asignar' = leads con seller_id NULL. */
   seller_id?: string | string[];
   /** Mes 1-12 — si presente filtra `sale_date` por la ventana del mes. */
@@ -137,6 +141,10 @@ export default async function LeadsPage({
     const delivery = whitelist(pickStr(raw.delivery), DELIVERY_VALUES);
     const payment = whitelist(pickStr(raw.payment), PAYMENT_VALUES);
     const saleType = whitelist(pickStr(raw.sale_type), SALE_TYPE_VALUES);
+    const purchaseType = whitelist(
+      pickStr(raw.purchase_type),
+      PURCHASE_TYPE_VALUES,
+    );
     // `seller_id` no tiene whitelist enum: o es un UUID válido, o el valor
     // especial 'sin_asignar' (= leads con seller_id NULL). Validamos
     // forma de UUID con regex liviano; cualquier otra cosa cae a '' (sin filtro)
@@ -279,6 +287,7 @@ export default async function LeadsPage({
     }
     if (payment) query = query.eq('payment_status', payment);
     if (saleType) query = query.eq('sale_type', saleType);
+    if (purchaseType) query = query.eq('purchase_type', purchaseType);
     if (sellerFilter === 'sin_asignar') {
       query = query.is('seller_id', null);
     } else if (sellerFilter) {
@@ -512,6 +521,7 @@ export default async function LeadsPage({
       delivery,
       payment,
       sale_type: saleType,
+      purchase_type: purchaseType,
       seller_id: sellerFilter,
       mes: monthFilterActive ? mes : 0,
       anio: monthFilterActive ? anio : 0,

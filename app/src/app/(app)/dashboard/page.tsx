@@ -10,6 +10,8 @@ import {
   Banknote,
   Layers,
   Ruler,
+  Factory,
+  Home,
 } from 'lucide-react';
 import {
   ChannelBadge,
@@ -152,6 +154,7 @@ export default async function DashboardPage({
       cubrecantoLeadsResult,
       cubrecantoMetersResult,
       sellerSummaryResult,
+      purchaseTypeResult,
     ] = await Promise.all([
       // 1. Leads del periodo (sale_date ∈ [startDate, endDate])
       (() => {
@@ -313,6 +316,22 @@ export default async function DashboardPage({
         let q = admin
           .from('leads')
           .select('seller_id, sheets_count, total_amount')
+          .is('deleted_at', null)
+          .gte('sale_date', startDate)
+          .lte('sale_date', endDate);
+        if (saleType) q = q.eq('sale_type', saleType);
+        return q;
+      })(),
+      // 15. Desglose por tipo de compra (domicilio / fábrica). Mismo
+      //     patrón que seller summary: traemos `purchase_type` +
+      //     `total_amount` por lead del periodo y agrupamos JS-side
+      //     para emitir count y monto vendido por bucket. Respeta el
+      //     filtro sale_type para mantener consistencia con el resto
+      //     de las métricas.
+      (() => {
+        let q = admin
+          .from('leads')
+          .select('purchase_type, total_amount')
           .is('deleted_at', null)
           .gte('sale_date', startDate)
           .lte('sale_date', endDate);
@@ -558,6 +577,30 @@ export default async function DashboardPage({
       { leads: 0, hojas: 0, monto: 0 },
     );
 
+    // Desglose por tipo de compra (domicilio / fábrica). Agrupamos
+    // JS-side desde las filas que ya trajo la query 15. Best-effort:
+    // si la query falló, ambos buckets quedan en 0 y las cards
+    // muestran ese estado en lugar de tirar la página.
+    if (purchaseTypeResult.error) {
+      console.error(
+        '[DashboardPage] purchase type select falló (no fatal):',
+        purchaseTypeResult.error,
+      );
+    }
+    const purchaseBucket = (target: 'domicilio' | 'fabrica') => {
+      let count = 0;
+      let monto = 0;
+      for (const r of purchaseTypeResult.data ?? []) {
+        if ((r.purchase_type as string | null) === target) {
+          count += 1;
+          monto += Number(r.total_amount ?? 0);
+        }
+      }
+      return { count, monto };
+    };
+    const domicilioStats = purchaseBucket('domicilio');
+    const fabricaStats = purchaseBucket('fabrica');
+
     // Sufijo del subtitle cuando hay tipo de venta activo
     //   "Métricas de Mayo 2026 — Recompras"
     const saleTypeSuffix = saleType ? ` — ${SALE_TYPE_SUBTITLE[saleType] ?? ''}` : '';
@@ -676,6 +719,29 @@ export default async function DashboardPage({
                 : 'pedidos con cubrecanto del periodo'
             }
             href={`/leads?${periodParams}`}
+          />
+          {/* Desglose por tipo de compra. Usa el filtro `purchase_type`
+              que `/leads` ya entiende para que el drill-down vea solo
+              los leads del bucket clickeado. Truck ya lo usa "Entregas
+              pendientes" pero su semántica (domicilio = se entrega) es
+              tan literal que vale la pena duplicar. */}
+          <MetricCard
+            icon={<Home size={20} />}
+            iconBg="#DBEAFE"
+            iconColor="#1E40AF"
+            label="A domicilio"
+            value={domicilioStats.count.toString()}
+            unit={`${formatMXN(domicilioStats.monto)} vendido`}
+            href={`/leads?${periodParams}&purchase_type=domicilio`}
+          />
+          <MetricCard
+            icon={<Factory size={20} />}
+            iconBg="#F3F4F6"
+            iconColor="#57534E"
+            label="En fábrica"
+            value={fabricaStats.count.toString()}
+            unit={`${formatMXN(fabricaStats.monto)} vendido`}
+            href={`/leads?${periodParams}&purchase_type=fabrica`}
           />
         </div>
 

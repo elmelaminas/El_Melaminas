@@ -129,6 +129,9 @@ export type FiltersState = {
     | 'recompra'
     | 'seguimiento'
     | 'venta_empleado';
+  /** Tipo de compra del lead. '' = todos. `domicilio` = entrega a
+   *  domicilio; `fabrica` = el cliente recoge en fábrica. */
+  purchase_type: '' | 'domicilio' | 'fabrica';
   /** UUID del vendedor, o 'sin_asignar' (= seller_id IS NULL), o '' (sin filtro). */
   seller_id: string;
   /** Mes 1-12; 0 = sin filtro de mes. Pareja inseparable con `anio`. */
@@ -171,6 +174,15 @@ const SALE_TYPE_OPTS: { value: FiltersState['sale_type']; label: string }[] = [
   { value: 'recompra', label: 'Recompra' },
   { value: 'seguimiento', label: 'Seguimiento' },
   { value: 'venta_empleado', label: 'Venta empleado' },
+];
+
+const PURCHASE_TYPE_OPTS: {
+  value: FiltersState['purchase_type'];
+  label: string;
+}[] = [
+  { value: '', label: 'Todas las compras' },
+  { value: 'domicilio', label: 'A domicilio' },
+  { value: 'fabrica', label: 'En fábrica' },
 ];
 
 
@@ -267,6 +279,7 @@ export function LeadsClient({
         filters.delivery ||
         filters.payment ||
         filters.sale_type ||
+        filters.purchase_type ||
         filters.seller_id ||
         (filters.mes > 0 && filters.anio > 0),
     ),
@@ -299,6 +312,7 @@ export function LeadsClient({
       delivery: string;
       payment: string;
       sale_type: string;
+      purchase_type: string;
       seller_id: string;
       page: number;
       mes: number;
@@ -316,6 +330,7 @@ export function LeadsClient({
       delivery: next.delivery ?? filters.delivery,
       payment: next.payment ?? filters.payment,
       sale_type: next.sale_type ?? filters.sale_type,
+      purchase_type: next.purchase_type ?? filters.purchase_type,
       seller_id: next.seller_id ?? filters.seller_id,
       page: next.page ?? page,
       // `mes`/`anio` se preservan al navegar entre filtros — un usuario
@@ -334,6 +349,9 @@ export function LeadsClient({
     if (merged.delivery) params.set('delivery', merged.delivery);
     if (merged.payment) params.set('payment', merged.payment);
     if (merged.sale_type) params.set('sale_type', merged.sale_type);
+    if (merged.purchase_type) {
+      params.set('purchase_type', merged.purchase_type);
+    }
     if (merged.seller_id) params.set('seller_id', merged.seller_id);
     if (merged.mes > 0 && merged.anio > 0) {
       params.set('mes', String(merged.mes));
@@ -355,6 +373,7 @@ export function LeadsClient({
           filters.delivery ||
           filters.payment ||
           filters.sale_type ||
+          filters.purchase_type ||
           filters.seller_id ||
           (filters.mes > 0 && filters.anio > 0) ||
           filters.color_filter,
@@ -596,6 +615,21 @@ export function LeadsClient({
               ))}
             </select>
             <select
+              id="leads-filter-purchase-type"
+              className="select"
+              value={filters.purchase_type}
+              onChange={(e) =>
+                pushFilters({ purchase_type: e.target.value, page: 1 })
+              }
+              aria-label="Filtrar por tipo de compra"
+            >
+              {PURCHASE_TYPE_OPTS.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <select
               id="leads-filter-seller"
               className="select"
               value={filters.seller_id}
@@ -641,6 +675,7 @@ export function LeadsClient({
                   delivery: '',
                   payment: '',
                   sale_type: '',
+                  purchase_type: '',
                   seller_id: '',
                   mes: 0,
                   anio: 0,
