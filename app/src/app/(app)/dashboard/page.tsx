@@ -1,7 +1,6 @@
 import Link from 'next/link';
 import {
   ClipboardList,
-  DollarSign,
   Truck,
   TriangleAlert,
   TrendingUp,
@@ -46,22 +45,17 @@ import {
  * La ventana real (startDate/endDate/startIso/endIso) se calcula con
  * `getDateWindow()` y se aplica a todas las queries con rango.
  *
- * Métricas que SÍ respetan el rango del periodo:
- *   - Leads del periodo           (`leads.sale_date`)
- *   - Cobrado en el periodo       (`payments.paid_at`)
- *   - Efectivo validado           (`admin_cash_register.created_at`,
- *     egresos source='validado_contador'). CRITERIO: fecha de
- *     VALIDACIÓN — un cobro de mayo validado en junio aparece en junio.
- *     Por eso este valor puede SUPERAR a "Cobrado en el periodo": no
- *     son la misma cohorte de pagos.
- *   - Gasto en materiales         (`inventory_movements.created_at`)
- *   - Mi efectivo                 (`admin_cash_register.created_at`,
- *     ingresos − egresos del admin actual). CRITERIO: delta NETO del
- *     periodo, NO saldo acumulado. Para ver el saldo disponible
- *     histórico ir a `/admin/mi-caja` (card "Mi efectivo disponible").
- *   - Hojas / Cubrecantos / Por tipo de compra / Por vendedor
- *     (todos vía `leads.sale_date`)
- *   - Desglose de dinero (5 cards):
+ * El dashboard divide las métricas en dos bloques:
+ *
+ *   GRID PRINCIPAL — solo CONTEOS operativos del periodo:
+ *     - Leads del periodo / Entregas pendientes / Stock bajo / Hojas
+ *       vendidas / Cubrecantos / A domicilio / En fábrica.
+ *     "Entregas pendientes" y "Stock bajo" son estado actual y
+ *     omiten el filtro intencionalmente; el resto filtra por
+ *     `leads.sale_date` (o equivalente).
+ *
+ *   DESGLOSE DE DINERO — todas las métricas monetarias, en su propia
+ *   sección:
  *     · "Recibidos" replica el cálculo del tab homónimo de /contador:
  *       cobros pago_efectivo del periodo (por fecha del COBRO, no de
  *       la recepción) cuyo payment_id ya tiene un ingreso
@@ -71,6 +65,11 @@ import {
  *       Clip" se calculan de la misma query #2 de `payments`
  *       agrupando `payment_method` en JS — por construcción la suma
  *       de los tres métodos = "Dinero total".
+ *     · "Efectivo validado" (`admin_cash_register.created_at`,
+ *       egresos source='validado_contador'). CRITERIO: fecha de
+ *       VALIDACIÓN, no de cobro — puede superar a "Dinero total" si
+ *       se validan cobros viejos en este periodo.
+ *     · "Gasto en materiales" (`inventory_movements.created_at`).
  *
  * Métricas que NO respetan el rango (siempre estado actual):
  *   - Entregas pendientes (operativo: lo que hay AHORA por entregar)
@@ -175,7 +174,6 @@ export default async function DashboardPage({
       channelChartResult,
       recentLeadsResult,
       profileResult,
-      adminCashResult,
       hojasSoldResult,
       cubrecantoLeadsResult,
       cubrecantoMetersResult,
@@ -284,21 +282,6 @@ export default async function DashboardPage({
             .eq('id', user.id)
             .maybeSingle()
         : Promise.resolve({ data: null, error: null }),
-      // 10. Caja personal del admin: DELTA NETO del periodo en
-      //     `admin_cash_register`. SUM(ingresos) − SUM(egresos+
-      //     validacion) del usuario actual con `created_at` en el
-      //     periodo. NO es el saldo disponible histórico — para eso
-      //     está la card "Mi efectivo disponible" en /admin/mi-caja.
-      //     Si la tabla no existe (migración pendiente), error no
-      //     fatal → $0 en la card.
-      user
-        ? admin
-            .from('admin_cash_register')
-            .select('amount, operation_type')
-            .eq('admin_id', user.id)
-            .gte('created_at', startIso)
-            .lt('created_at', endIso)
-        : Promise.resolve({ data: [], error: null }),
       // 11. Hojas vendidas del periodo — Σ lead_colors.quantity unida
       //     con leads del periodo con has_hojas=true. PostgREST no
       //     soporta SUM en queries con join filtradas (necesitaríamos
@@ -507,29 +490,6 @@ export default async function DashboardPage({
       (s, r) => s + Number(r.quantity ?? 0),
       0,
     );
-
-    // Saldo de la caja personal del admin en el periodo:
-    // SUM(ingresos) - SUM(egresos). 'validacion' contribuye igual que
-    // 'egreso' (movimiento de salida hacia el contador).
-    if (adminCashResult.error) {
-      console.error(
-        '[DashboardPage] admin_cash_register select falló (no fatal):',
-        adminCashResult.error,
-      );
-    }
-    // Tres operation_types válidos en admin_cash_register: 'ingreso',
-    // 'egreso' y 'validacion'. Antes el reduce trataba "todo lo que no
-    // sea ingreso" como egreso — riesgo si llega un valor nuevo o NULL.
-    // Whitelist explícita: desconocidos cuentan como 0 para no inflar
-    // la métrica con basura silenciosa.
-    const adminCashPeriod = (adminCashResult.data ?? []).reduce((s, r) => {
-      const amt = Number(r.amount ?? 0);
-      if (r.operation_type === 'ingreso') return s + amt;
-      if (r.operation_type === 'egreso' || r.operation_type === 'validacion') {
-        return s - amt;
-      }
-      return s;
-    }, 0);
 
     // Chart por canal
     const channelCount = new Map<string, number>();
@@ -778,11 +738,10 @@ export default async function DashboardPage({
           </div>
         </div>
 
-        {/* Metric cards — todas clickeables. Cada href incluye periodo+fecha
-            para que el drill-down respete el filtro del dashboard, EXCEPTO
-            "Stock bajo" que va a /warehouse sin params (el stock es estado
-            actual, no tiene rango). */}
-        <div id="dashboard-metrics" className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4">
+        {/* Metric cards del grid principal — SOLO conteos operativos
+            (sin montos en pesos). Todo el dinero vive en la sección
+            "💰 Desglose de dinero" más abajo. */}
+        <div id="dashboard-metrics" className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
           <MetricCard
             icon={<ClipboardList size={20} />}
             iconBg="#DBEAFE"
@@ -791,33 +750,6 @@ export default async function DashboardPage({
             value={leadsPeriod.toString()}
             unit={leadsPeriod === 1 ? 'lead registrado' : 'leads registrados'}
             href={`/leads?${periodParams}`}
-          />
-          <MetricCard
-            icon={<DollarSign size={20} />}
-            iconBg="#DCFCE7"
-            iconColor="#15803D"
-            label="Cobrado en el periodo"
-            value={formatMXN(paidPeriod)}
-            unit="pagos exitosos del periodo"
-            href={`/payments?${periodParams}`}
-          />
-          <MetricCard
-            icon={<Wallet size={20} />}
-            iconBg="#E0E7FF"
-            iconColor="#1E3A8A"
-            label="Efectivo validado"
-            value={formatMXN(cashValidatedPeriod)}
-            unit="validado por contador en este periodo"
-            href={`/admin/caja?tab=validados&${periodParams}`}
-          />
-          <MetricCard
-            icon={<PackagePlus size={20} />}
-            iconBg="#FFEDD5"
-            iconColor="#C2410C"
-            label="Gasto en materiales"
-            value={formatMXN(materialsSpendPeriod)}
-            unit="invertido en entradas del periodo"
-            href={`/warehouse/movements?type=entrada&${periodParams}`}
           />
           <MetricCard
             icon={<Truck size={20} />}
@@ -838,15 +770,6 @@ export default async function DashboardPage({
             href="/warehouse"
           />
           <MetricCard
-            icon={<Banknote size={20} />}
-            iconBg="#DCFCE7"
-            iconColor="#14532D"
-            label="Mi efectivo (neto del periodo)"
-            value={formatMXN(adminCashPeriod)}
-            unit="ingresos − egresos del periodo · saldo en /admin/mi-caja"
-            href={`/admin/mi-caja?${miCajaParams}`}
-          />
-          <MetricCard
             icon={<Layers size={20} />}
             iconBg="#DBEAFE"
             iconColor="#1D4ED8"
@@ -863,23 +786,21 @@ export default async function DashboardPage({
             value={totalCubrecantoLeads.toString()}
             unit={
               totalMetrosCubrecanto > 0
-                ? `${totalMetrosCubrecanto.toLocaleString('es-MX')} m · ${formatMXN(totalCubrecantoMonto)}`
+                ? `${totalMetrosCubrecanto.toLocaleString('es-MX')} m`
                 : 'pedidos con cubrecanto del periodo'
             }
             href={`/leads?${periodParams}`}
           />
           {/* Desglose por tipo de compra. Usa el filtro `purchase_type`
               que `/leads` ya entiende para que el drill-down vea solo
-              los leads del bucket clickeado. Truck ya lo usa "Entregas
-              pendientes" pero su semántica (domicilio = se entrega) es
-              tan literal que vale la pena duplicar. */}
+              los leads del bucket clickeado. */}
           <MetricCard
             icon={<Home size={20} />}
             iconBg="#DBEAFE"
             iconColor="#1E40AF"
             label="A domicilio"
             value={domicilioStats.count.toString()}
-            unit={`${formatMXN(domicilioStats.monto)} vendido`}
+            unit="pedidos del periodo"
             href={`/leads?${periodParams}&purchase_type=domicilio`}
           />
           <MetricCard
@@ -888,17 +809,17 @@ export default async function DashboardPage({
             iconColor="#57534E"
             label="En fábrica"
             value={fabricaStats.count.toString()}
-            unit={`${formatMXN(fabricaStats.monto)} vendido`}
+            unit="pedidos del periodo"
             href={`/leads?${periodParams}&purchase_type=fabrica`}
           />
         </div>
 
-        {/* Desglose de dinero — 5 cards alineadas: lo recibido por el
-            admin actual + total + 3 métodos. Las 3 cards de método se
-            alimentan de la MISMA query que `paidPeriod` (query #2), así
-            que efectivo + transferencia + clip = total. `periodParams`
-            arrastra el filtro sale_type cuando está activo, lo que
-            mantiene coherencia con el resto del dashboard. */}
+        {/* Desglose de dinero — todas las métricas monetarias del
+            dashboard viven aquí. Las 3 cards de método se alimentan
+            de la MISMA query #2 que `paidPeriod`, así que
+            efectivo + transferencia + clip = "Dinero total" por
+            construcción. `periodParams` arrastra el filtro sale_type
+            cuando está activo. */}
         <div id="dashboard-money-breakdown" className="flex flex-col gap-3">
           <div>
             <h3 className="font-semibold text-base">
@@ -909,11 +830,11 @@ export default async function DashboardPage({
               className="text-xs"
               style={{ color: 'var(--text-tertiary)' }}
             >
-              Cómo entró el efectivo del periodo + lo recibido por ti
-              del contador.
+              Recepciones + cobros por método + validación con
+              contador + gasto en materiales.
             </p>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
             <MetricCard
               icon={<ShieldCheck size={20} />}
               iconBg="#DCFCE7"
@@ -958,6 +879,24 @@ export default async function DashboardPage({
               value={formatMXN(methodBreakdown.clip)}
               unit="cobrado vía Clip"
               href={`/payments?${periodParams}&method=clip`}
+            />
+            <MetricCard
+              icon={<Wallet size={20} />}
+              iconBg="#E0E7FF"
+              iconColor="#1E3A8A"
+              label="Efectivo validado"
+              value={formatMXN(cashValidatedPeriod)}
+              unit="validado por contador en este periodo"
+              href={`/admin/caja?tab=validados&${periodParams}`}
+            />
+            <MetricCard
+              icon={<PackagePlus size={20} />}
+              iconBg="#FFEDD5"
+              iconColor="#C2410C"
+              label="Gasto en materiales"
+              value={formatMXN(materialsSpendPeriod)}
+              unit="invertido en entradas del periodo"
+              href={`/warehouse/movements?type=entrada&${periodParams}`}
             />
           </div>
         </div>
