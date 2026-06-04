@@ -326,6 +326,42 @@ export default async function MiCajaPage({
       if (c.id) contadorNameById.set(c.id, c.full_name ?? '');
     }
 
+    // Consolidación entrada+validación. Antes mostrábamos UNA fila por
+    // cada movimiento (ingreso por el cobro, egreso por la validación)
+    // → dos filas por cada pago en efectivo. Ahora agrupamos: si el
+    // ingreso `pago_efectivo`/`chofer` tiene un egreso
+    // `validado_contador` correlativo (mismo payment_id), los pintamos
+    // como UNA sola fila con fecha de entrada + fecha de validación +
+    // estado. Los movimientos sin payment_id o de sources distintos
+    // (recibido_contador, recibido_directo_admin, transferencias bulk)
+    // siguen apareciendo como filas independientes.
+    type ConsolidatedRow =
+      | {
+          kind: 'grouped';
+          id: string;
+          payment_id: string;
+          client_name: string | null;
+          source: string;
+          amount: number;
+          fecha_entrada: string | null;
+          fecha_validacion: string | null;
+          validado_por: string | null;
+          /** Para ordenar uniformemente con las standalone. */
+          sortAt: string;
+        }
+      | {
+          kind: 'standalone';
+          id: string;
+          operation_type: 'ingreso' | 'egreso' | 'validacion';
+          source: string;
+          client_name: string | null;
+          driver_name: string | null;
+          contador_name: string | null;
+          amount: number;
+          created_at: string | null;
+          sortAt: string;
+        };
+
     const movements: Movement[] = recentRows.map((m) => {
       const leadId = m.payment_id
         ? leadIdByPayment.get(m.payment_id) ?? null
@@ -361,6 +397,76 @@ export default async function MiCajaPage({
           contadorName && contadorName.length > 0 ? contadorName : null,
       };
     });
+
+    // Indexa egresos validados por payment_id para emparejarlos con
+    // sus ingresos. Si un payment_id tiene varios egresos (raro),
+    // usamos el más reciente — el último estado válido.
+    const validadoEgresoByPaymentId = new Map<string, Movement>();
+    for (const m of movements) {
+      if (
+        m.source === 'validado_contador' &&
+        m.operation_type === 'egreso'
+      ) {
+        // Busca en recentRows el payment_id correspondiente (Movement
+        // no lo lleva). Usamos recentRows directamente.
+        const raw = recentRows.find((r) => r.id === m.id);
+        const pid = raw?.payment_id ?? null;
+        if (!pid) continue;
+        const prev = validadoEgresoByPaymentId.get(pid);
+        if (
+          !prev ||
+          (m.created_at ?? '').localeCompare(prev.created_at ?? '') > 0
+        ) {
+          validadoEgresoByPaymentId.set(pid, m);
+        }
+      }
+    }
+    const consumedEgresoIds = new Set<string>();
+    const consolidated: ConsolidatedRow[] = [];
+    for (const m of movements) {
+      const raw = recentRows.find((r) => r.id === m.id);
+      const pid = raw?.payment_id ?? null;
+
+      // INGRESO de cobro directo o chofer con payment_id → consolidar.
+      if (
+        m.operation_type === 'ingreso' &&
+        pid &&
+        (m.source === 'pago_efectivo' || m.source === 'chofer')
+      ) {
+        const validado = validadoEgresoByPaymentId.get(pid) ?? null;
+        if (validado) consumedEgresoIds.add(validado.id);
+        consolidated.push({
+          kind: 'grouped',
+          id: m.id,
+          payment_id: pid,
+          client_name: m.client_name,
+          source: m.source,
+          amount: m.amount,
+          fecha_entrada: m.created_at,
+          fecha_validacion: validado?.created_at ?? null,
+          validado_por: validado?.contador_name ?? null,
+          sortAt: m.created_at ?? '',
+        });
+        continue;
+      }
+      // EGRESO validado_contador que YA fue agrupado con su ingreso.
+      if (consumedEgresoIds.has(m.id)) continue;
+
+      consolidated.push({
+        kind: 'standalone',
+        id: m.id,
+        operation_type: m.operation_type,
+        source: m.source,
+        client_name: m.client_name,
+        driver_name: m.driver_name,
+        contador_name: m.contador_name,
+        amount: m.amount,
+        created_at: m.created_at,
+        sortAt: m.created_at ?? '',
+      });
+    }
+    // Mantener orden cronológico DESC (más reciente arriba).
+    consolidated.sort((a, b) => b.sortAt.localeCompare(a.sortAt));
 
     return (
       <div className="flex flex-col gap-6">
@@ -496,18 +602,19 @@ export default async function MiCajaPage({
             <table className="tbl table-to-cards">
               <thead>
                 <tr>
-                  <th>Fecha</th>
-                  <th>Tipo</th>
+                  <th>Fecha entrada</th>
                   <th>Cliente</th>
                   <th>Origen</th>
+                  <th>Fecha validación</th>
+                  <th>Estado</th>
                   <th className="text-right">Monto</th>
                 </tr>
               </thead>
               <tbody>
-                {movements.length === 0 ? (
+                {consolidated.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={5}
+                      colSpan={6}
                       className="text-center py-8 text-sm"
                       style={{ color: 'var(--text-tertiary)' }}
                     >
@@ -515,55 +622,149 @@ export default async function MiCajaPage({
                     </td>
                   </tr>
                 ) : (
-                  movements.map((m) => (
-                    <tr key={m.id}>
-                      <td
-                        data-label="Fecha"
-                        className="text-sm"
-                        style={{ color: 'var(--text-secondary)' }}
-                      >
-                        {formatDateTimeCDMX(m.created_at)}
-                      </td>
-                      <td data-label="Tipo">
-                        {m.operation_type === 'ingreso' ? (
-                          <span className="badge badge-success">
-                            Entrada
-                          </span>
-                        ) : (
-                          <span className="badge badge-danger">
-                            Salida
-                          </span>
-                        )}
-                      </td>
-                      <td
-                        data-label="Cliente"
-                        className="text-sm"
-                        style={{ color: 'var(--text-secondary)' }}
-                      >
-                        <ClientCell movement={m} />
-                      </td>
-                      <td
-                        data-label="Origen"
-                        className="text-sm"
-                        style={{ color: 'var(--text-secondary)' }}
-                      >
-                        {sourceLabel(m.source)}
-                      </td>
-                      <td
-                        data-label="Monto"
-                        className="text-right font-bold"
-                        style={{
-                          color:
-                            m.operation_type === 'ingreso'
-                              ? '#15803D'
-                              : '#B91C1C',
-                        }}
-                      >
-                        {m.operation_type === 'ingreso' ? '+' : '−'}
-                        {formatMXN(m.amount)}
-                      </td>
-                    </tr>
-                  ))
+                  consolidated.map((row) =>
+                    row.kind === 'grouped' ? (
+                      <tr key={row.id}>
+                        <td
+                          data-label="Fecha entrada"
+                          className="text-sm"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          {formatDateTimeCDMX(row.fecha_entrada)}
+                        </td>
+                        <td
+                          data-label="Cliente"
+                          className="text-sm"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          {row.client_name ?? '—'}
+                        </td>
+                        <td
+                          data-label="Origen"
+                          className="text-sm"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          {sourceLabel(row.source)}
+                        </td>
+                        <td
+                          data-label="Fecha validación"
+                          className="text-sm"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          {row.fecha_validacion ? (
+                            <div className="flex flex-col gap-0.5">
+                              <span>
+                                {formatDateTimeCDMX(row.fecha_validacion)}
+                              </span>
+                              {row.validado_por && (
+                                <span
+                                  className="text-[10px]"
+                                  style={{ color: 'var(--text-tertiary)' }}
+                                >
+                                  Por: {row.validado_por}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span style={{ color: 'var(--text-tertiary)' }}>
+                              —
+                            </span>
+                          )}
+                        </td>
+                        <td data-label="Estado">
+                          {row.fecha_validacion ? (
+                            <span className="badge badge-success">
+                              ✅ Validado con contador
+                            </span>
+                          ) : (
+                            <span
+                              className="badge"
+                              style={{
+                                background: '#DBEAFE',
+                                color: '#1E40AF',
+                              }}
+                            >
+                              💰 En caja
+                            </span>
+                          )}
+                        </td>
+                        <td
+                          data-label="Monto"
+                          className="text-right font-bold"
+                          style={{ color: '#15803D' }}
+                        >
+                          {formatMXN(row.amount)}
+                        </td>
+                      </tr>
+                    ) : (
+                      // Standalone: movimientos sin payment_id o de
+                      // sources que no participan del ciclo
+                      // entrada↔validación (recibido_contador,
+                      // recibido_directo_admin, transferencias bulk,
+                      // ajustes manuales). Conservan el signo del monto.
+                      <tr key={row.id}>
+                        <td
+                          data-label="Fecha entrada"
+                          className="text-sm"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          {formatDateTimeCDMX(row.created_at)}
+                        </td>
+                        <td
+                          data-label="Cliente"
+                          className="text-sm"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          <ClientCell
+                            movement={{
+                              source: row.source,
+                              client_name: row.client_name,
+                              driver_name: row.driver_name,
+                              contador_name: row.contador_name,
+                            }}
+                          />
+                        </td>
+                        <td
+                          data-label="Origen"
+                          className="text-sm"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          {sourceLabel(row.source)}
+                        </td>
+                        <td
+                          data-label="Fecha validación"
+                          className="text-sm"
+                          style={{ color: 'var(--text-tertiary)' }}
+                        >
+                          —
+                        </td>
+                        <td data-label="Estado">
+                          {row.operation_type === 'ingreso' ? (
+                            <span className="badge badge-success">
+                              Entrada
+                            </span>
+                          ) : (
+                            <span className="badge badge-danger">
+                              Salida
+                            </span>
+                          )}
+                        </td>
+                        <td
+                          data-label="Monto"
+                          className="text-right font-bold"
+                          style={{
+                            color:
+                              row.operation_type === 'ingreso'
+                                ? '#15803D'
+                                : '#B91C1C',
+                          }}
+                        >
+                          {row.operation_type === 'ingreso' ? '+' : '−'}
+                          {formatMXN(row.amount)}
+                        </td>
+                      </tr>
+                    ),
+                  )
                 )}
               </tbody>
             </table>
