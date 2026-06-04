@@ -65,10 +65,6 @@ import {
  *       Clip" se calculan de la misma query #2 de `payments`
  *       agrupando `payment_method` en JS — por construcción la suma
  *       de los tres métodos = "Dinero total".
- *     · "Efectivo validado" (`admin_cash_register.created_at`,
- *       egresos source='validado_contador'). CRITERIO: fecha de
- *       VALIDACIÓN, no de cobro — puede superar a "Dinero total" si
- *       se validan cobros viejos en este periodo.
  *     · "Gasto en materiales" (`inventory_movements.created_at`).
  *
  * Métricas que NO respetan el rango (siempre estado actual):
@@ -169,7 +165,6 @@ export default async function DashboardPage({
       paymentsMonthResult,
       deliveriesPendingResult,
       stockResult,
-      cashValidatedResult,
       materialsSpendResult,
       channelChartResult,
       recentLeadsResult,
@@ -230,20 +225,6 @@ export default async function DashboardPage({
       admin
         .from('inventory')
         .select('stock_total, stock_committed, stock_minimum'),
-      // 5. Efectivo validado del periodo — la validación vive en
-      //    `admin_cash_register` con source='validado_contador' (el
-      //    contador valida la caja del admin). Sumamos los egresos
-      //    cuyo `created_at` cae en el periodo. CRITERIO INTENCIONAL:
-      //    fecha de validación, no de cobro — por eso este número
-      //    puede ser mayor que "Cobrado en el periodo" si se validan
-      //    cobros de meses anteriores.
-      admin
-        .from('admin_cash_register')
-        .select('amount')
-        .eq('operation_type', 'egreso')
-        .eq('source', 'validado_contador')
-        .gte('created_at', startIso)
-        .lt('created_at', endIso),
       // 6. Gasto en materiales del periodo — suma de
       //    inventory_movements WHERE movement_type='entrada' AND
       //    unit_cost IS NOT NULL AND created_at ∈ rango.
@@ -389,13 +370,6 @@ export default async function DashboardPage({
     if (stockResult.error) {
       return <ErrorState message={`Error leyendo inventario: ${stockResult.error.message}`} />;
     }
-    // cashValidated: no fatal — si la tabla no existe o falla, mostramos $0.
-    if (cashValidatedResult.error) {
-      console.error(
-        '[DashboardPage] cash validated (admin_cash_register) select falló (no fatal):',
-        cashValidatedResult.error,
-      );
-    }
     // materialsSpend: no fatal igual — si falla, métrica cae a $0.
     if (materialsSpendResult.error) {
       console.error(
@@ -441,10 +415,6 @@ export default async function DashboardPage({
       const available = Math.max(0, total - committed);
       return available <= minimum ? c + 1 : c;
     }, 0);
-    const cashValidatedPeriod = (cashValidatedResult.data ?? []).reduce(
-      (s, t) => s + Number(t.amount ?? 0),
-      0,
-    );
     // Σ (quantity * unit_cost) — entradas con costo registrado en el periodo.
     // Si unit_cost es null la query ya lo filtró; igual usamos `?? 0` por
     // defensa.
@@ -834,7 +804,7 @@ export default async function DashboardPage({
               contador + gasto en materiales.
             </p>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-3 gap-3 sm:gap-4">
             <MetricCard
               icon={<ShieldCheck size={20} />}
               iconBg="#DCFCE7"
@@ -879,15 +849,6 @@ export default async function DashboardPage({
               value={formatMXN(methodBreakdown.clip)}
               unit="cobrado vía Clip"
               href={`/payments?${periodParams}&method=clip`}
-            />
-            <MetricCard
-              icon={<Wallet size={20} />}
-              iconBg="#E0E7FF"
-              iconColor="#1E3A8A"
-              label="Efectivo validado"
-              value={formatMXN(cashValidatedPeriod)}
-              unit="validado por contador en este periodo"
-              href={`/admin/caja?tab=validados&${periodParams}`}
             />
             <MetricCard
               icon={<PackagePlus size={20} />}
