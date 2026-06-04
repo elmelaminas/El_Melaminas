@@ -41,11 +41,23 @@ import {
  *   - `fecha`   ('YYYY-MM-DD', default = hoy en CDMX)
  *
  * La ventana real (startDate/endDate/startIso/endIso) se calcula con
- * `getDateWindow()` y se aplica a todas las queries con rango:
- *   - Leads del periodo           (`leads.sale_date` ∈ [startDate, endDate])
- *   - Cobrado en el periodo       (`payments.paid_at` ∈ [startIso, endIso))
- *   - Efectivo validado del periodo (`admin_cash_register` egresos
- *     con source='validado_contador', `created_at` ∈ [startIso, endIso))
+ * `getDateWindow()` y se aplica a todas las queries con rango.
+ *
+ * Métricas que SÍ respetan el rango del periodo:
+ *   - Leads del periodo           (`leads.sale_date`)
+ *   - Cobrado en el periodo       (`payments.paid_at`)
+ *   - Efectivo validado           (`admin_cash_register.created_at`,
+ *     egresos source='validado_contador'). CRITERIO: fecha de
+ *     VALIDACIÓN — un cobro de mayo validado en junio aparece en junio.
+ *     Por eso este valor puede SUPERAR a "Cobrado en el periodo": no
+ *     son la misma cohorte de pagos.
+ *   - Gasto en materiales         (`inventory_movements.created_at`)
+ *   - Mi efectivo                 (`admin_cash_register.created_at`,
+ *     ingresos − egresos del admin actual). CRITERIO: delta NETO del
+ *     periodo, NO saldo acumulado. Para ver el saldo disponible
+ *     histórico ir a `/admin/mi-caja` (card "Mi efectivo disponible").
+ *   - Hojas / Cubrecantos / Por tipo de compra / Por vendedor
+ *     (todos vía `leads.sale_date`)
  *
  * Métricas que NO respetan el rango (siempre estado actual):
  *   - Entregas pendientes (operativo: lo que hay AHORA por entregar)
@@ -53,6 +65,7 @@ import {
  *
  * Chart de canales: últimos 7 días (independiente del filtro,
  * intencionalmente — es una vista de tendencia corta, no histórica).
+ * Últimos leads: 5 más recientes (idem).
  *
  * Ventanas TZ-aware: las fechas-puras se anclan a medianoche CDMX
  * (UTC-6 fijo desde 2022) para evitar drift de 6h en el filtro por día.
@@ -200,10 +213,13 @@ export default async function DashboardPage({
       admin
         .from('inventory')
         .select('stock_total, stock_committed, stock_minimum'),
-      // 5. Efectivo validado del periodo — refactor 2026-05: la
-      //    validación ahora vive en `admin_cash_register` con
-      //    source='validado_contador' (el contador valida la caja
-      //    del admin). Sumamos los egresos del periodo.
+      // 5. Efectivo validado del periodo — la validación vive en
+      //    `admin_cash_register` con source='validado_contador' (el
+      //    contador valida la caja del admin). Sumamos los egresos
+      //    cuyo `created_at` cae en el periodo. CRITERIO INTENCIONAL:
+      //    fecha de validación, no de cobro — por eso este número
+      //    puede ser mayor que "Cobrado en el periodo" si se validan
+      //    cobros de meses anteriores.
       admin
         .from('admin_cash_register')
         .select('amount')
@@ -249,11 +265,13 @@ export default async function DashboardPage({
             .eq('id', user.id)
             .maybeSingle()
         : Promise.resolve({ data: null, error: null }),
-      // 10. Caja personal del admin: saldo del periodo en
-      //     `admin_cash_register`. SUM(ingresos) - SUM(egresos) del
-      //     usuario actual filtrado por periodo. Si la tabla no existe
-      //     todavía (migración pendiente), tratamos como error
-      //     non-fatal y mostramos $0 en la card.
+      // 10. Caja personal del admin: DELTA NETO del periodo en
+      //     `admin_cash_register`. SUM(ingresos) − SUM(egresos+
+      //     validacion) del usuario actual con `created_at` en el
+      //     periodo. NO es el saldo disponible histórico — para eso
+      //     está la card "Mi efectivo disponible" en /admin/mi-caja.
+      //     Si la tabla no existe (migración pendiente), error no
+      //     fatal → $0 en la card.
       user
         ? admin
             .from('admin_cash_register')
@@ -355,7 +373,7 @@ export default async function DashboardPage({
     // cashValidated: no fatal — si la tabla no existe o falla, mostramos $0.
     if (cashValidatedResult.error) {
       console.error(
-        '[DashboardPage] cash_transfers select falló (no fatal):',
+        '[DashboardPage] cash validated (admin_cash_register) select falló (no fatal):',
         cashValidatedResult.error,
       );
     }
@@ -445,9 +463,18 @@ export default async function DashboardPage({
         adminCashResult.error,
       );
     }
+    // Tres operation_types válidos en admin_cash_register: 'ingreso',
+    // 'egreso' y 'validacion'. Antes el reduce trataba "todo lo que no
+    // sea ingreso" como egreso — riesgo si llega un valor nuevo o NULL.
+    // Whitelist explícita: desconocidos cuentan como 0 para no inflar
+    // la métrica con basura silenciosa.
     const adminCashPeriod = (adminCashResult.data ?? []).reduce((s, r) => {
       const amt = Number(r.amount ?? 0);
-      return r.operation_type === 'ingreso' ? s + amt : s - amt;
+      if (r.operation_type === 'ingreso') return s + amt;
+      if (r.operation_type === 'egreso' || r.operation_type === 'validacion') {
+        return s - amt;
+      }
+      return s;
     }, 0);
 
     // Chart por canal
@@ -609,6 +636,12 @@ export default async function DashboardPage({
     const periodParams = saleType
       ? `periodo=${periodo}&fecha=${fecha}&sale_type=${saleType}`
       : `periodo=${periodo}&fecha=${fecha}`;
+    // /admin/mi-caja usa mes/anio (no periodo/fecha). Derivamos del
+    // startDate: válido también para 'dia' y 'semana' porque mi-caja
+    // muestra el mes que contiene el rango — aproximación suficiente
+    // para drill-down. El periodo mensual coincide exactamente.
+    const [startYearStr, startMonthStr] = startDate.split('-');
+    const miCajaParams = `mes=${Number(startMonthStr)}&anio=${Number(startYearStr)}`;
 
     return (
       <div className="flex flex-col gap-6">
@@ -660,7 +693,7 @@ export default async function DashboardPage({
             iconColor="#1E3A8A"
             label="Efectivo validado"
             value={formatMXN(cashValidatedPeriod)}
-            unit="entregado y conciliado en el periodo"
+            unit="validado por contador en este periodo"
             href={`/admin/caja?tab=validados&${periodParams}`}
           />
           <MetricCard
@@ -694,9 +727,10 @@ export default async function DashboardPage({
             icon={<Banknote size={20} />}
             iconBg="#DCFCE7"
             iconColor="#14532D"
-            label="Mi efectivo"
+            label="Mi efectivo (neto del periodo)"
             value={formatMXN(adminCashPeriod)}
-            unit="cobrado en efectivo directo"
+            unit="ingresos − egresos del periodo · saldo en /admin/mi-caja"
+            href={`/admin/mi-caja?${miCajaParams}`}
           />
           <MetricCard
             icon={<Layers size={20} />}
