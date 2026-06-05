@@ -1269,8 +1269,7 @@ function ContadorAvailableSection({
           💰 Recibir efectivo del contador
         </h2>
         <p className="text-xs" style={{ color: 'var(--text-tertiary)' }}>
-          Saldo físico que cada contador tiene en su caja, listo para
-          transferir al admin.
+          Cobros validados del mes pendientes de recibir.
         </p>
       </div>
 
@@ -1435,7 +1434,7 @@ function MyContadorBalanceCard({ balance }: { balance: number }) {
           className="text-xs mt-1"
           style={{ color: 'var(--text-tertiary)' }}
         >
-          Efectivo físico que has acumulado de validaciones al admin.
+          Cobros validados del mes pendientes de recibir.
         </div>
       </div>
     </div>

@@ -523,27 +523,23 @@ export default async function ContadorPage({
       created_at: r.created_at ?? null,
     }));
 
-    // ── Saldo vivo del/los contadores: cuánto efectivo físico tienen
-    //    en mano = SUM(egresos source='validado_contador' registered_by
-    //    = contadorId) − SUM(contador_to_admin_transfers WHERE
-    //    contador_id = contadorId). Bulk queries para no hacer un
-    //    round-trip por contador.
+    // ── Saldo del/los contadores. Criterio (idéntico al tab "Validados"
+    //    de la sección "Cobros en efectivo registrados"): cobros
+    //    pago_efectivo del mes que TIENEN egreso validado_contador y
+    //    AÚN NO TIENEN un ingreso recibido_contador ni recibido_directo_
+    //    admin. Sumamos `amount` por validador (`registered_by` del
+    //    egreso) usando `cashPayments` que ya trae los flags computados.
     //
-    //    Para el admin: usamos la lista de contadores activos.
-    //    Para el contador autenticado: usamos su propio id.
-    const [validadosBulkRes, transfersBulkRes, contadorsRes, viewerProfileRes] = await Promise.all([
-      admin
-        .from('admin_cash_register')
-        .select('amount, registered_by')
-        .eq('operation_type', 'egreso')
-        .eq('source', 'validado_contador')
-        .gte('created_at', startIso)
-        .lt('created_at', endIso),
-      admin
-        .from('contador_to_admin_transfers')
-        .select('contador_id, amount')
-        .gte('created_at', startIso)
-        .lt('created_at', endIso),
+    //    Antes este número se calculaba como SUM(egresos validado del
+    //    mes) − SUM(contador_to_admin_transfers del mes) lo que
+    //    desincronizaba la card del tab por dos razones: (a) las
+    //    transferencias bulk por monto restaban del saldo sin marcar
+    //    cobros individuales como recibidos; (b) la suma incluía
+    //    validaciones de cobros viejos cuando éstas se hacían en el mes
+    //    seleccionado. La tabla `contador_to_admin_transfers` se sigue
+    //    escribiendo al recibir (auditoría/historial) pero ya NO
+    //    participa en el cálculo del saldo mostrado.
+    const [contadorsRes, viewerProfileRes] = await Promise.all([
       admin
         .from('profiles')
         .select('id, full_name')
@@ -558,50 +554,22 @@ export default async function ContadorPage({
             .maybeSingle()
         : Promise.resolve({ data: null, error: null }),
     ]);
-    if (validadosBulkRes.error) {
-      console.error(
-        '[ContadorPage] validados bulk select falló (no fatal):',
-        validadosBulkRes.error,
-      );
-    }
-    // contador_to_admin_transfers puede no existir aún en DB cuando la
-    // migración manual está pendiente. La tratamos como non-fatal y
-    // asumimos cero transferencias previas (balance = total validado).
-    if (transfersBulkRes.error) {
-      console.error(
-        '[ContadorPage] transfers bulk select falló (no fatal):',
-        transfersBulkRes.error,
-      );
-    }
     if (contadorsRes.error) {
       console.error(
         '[ContadorPage] contadors lookup falló (no fatal):',
         contadorsRes.error,
       );
     }
-    const validatedByContador = new Map<string, number>();
-    for (const r of validadosBulkRes.data ?? []) {
-      const cid = r.registered_by;
-      if (typeof cid !== 'string' || !cid) continue;
-      validatedByContador.set(
-        cid,
-        (validatedByContador.get(cid) ?? 0) + Number(r.amount ?? 0),
-      );
-    }
-    const transferredByContador = new Map<string, number>();
-    for (const r of transfersBulkRes.data ?? []) {
-      const cid = r.contador_id;
-      if (typeof cid !== 'string' || !cid) continue;
-      transferredByContador.set(
-        cid,
-        (transferredByContador.get(cid) ?? 0) + Number(r.amount ?? 0),
-      );
-    }
-    function balanceOf(id: string): number {
-      return Math.max(
-        0,
-        (validatedByContador.get(id) ?? 0) -
-          (transferredByContador.get(id) ?? 0),
+    const contadorBalanceMap = new Map<string, number>();
+    for (const cp of cashPayments) {
+      if (!cp.validated) continue;
+      if (cp.received_by_admin || cp.received_directly) continue;
+      if (!cp.payment_id) continue;
+      const validatorId = validatorByPayment.get(cp.payment_id);
+      if (!validatorId) continue;
+      contadorBalanceMap.set(
+        validatorId,
+        (contadorBalanceMap.get(validatorId) ?? 0) + cp.amount,
       );
     }
     const contadorBalances: ContadorBalanceRow[] = (
@@ -609,7 +577,7 @@ export default async function ContadorPage({
     ).map((c) => ({
       id: c.id,
       name: c.full_name ?? '(sin nombre)',
-      balance: balanceOf(c.id),
+      balance: contadorBalanceMap.get(c.id) ?? 0,
     }));
     const viewerRole = ((viewerProfileRes.data?.role as string) ?? '') as
       | ''
@@ -617,7 +585,9 @@ export default async function ContadorPage({
       | 'admin2'
       | 'contador';
     const myContadorBalance =
-      viewerRole === 'contador' && contadorId ? balanceOf(contadorId) : 0;
+      viewerRole === 'contador' && contadorId
+        ? contadorBalanceMap.get(contadorId) ?? 0
+        : 0;
 
     return (
       <ContadorClient
