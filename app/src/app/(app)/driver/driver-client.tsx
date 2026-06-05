@@ -1219,7 +1219,7 @@ function DeliveryCard({
                         lineHeight: 1.2,
                       }}
                     >
-                      Entregar directamente al jefe
+                      Entregar directamente al admin
                     </span>
                   </button>
                   <button

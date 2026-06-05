@@ -111,7 +111,7 @@ export type CashPaymentRow = {
    *  "Recibí del contador" tras la transferencia. */
   received_by_admin: boolean;
   /** Nombre del admin que recibió del contador; null si aún no
-   *  recibido. Se muestra como "Por jefe: X" en la columna Estado. */
+   *  recibido. Se muestra como "Por: X" en la columna Estado. */
   receiver_name: string | null;
   /** `true` cuando un admin recibió esta fila DIRECTO sin pasar por
    *  el contador (existe un ingreso `source='recibido_directo_admin'`
@@ -1665,7 +1665,7 @@ function CashPaymentStatusBadge({ row }: { row: CashPaymentRow }) {
             style={{ color: 'var(--text-tertiary)' }}
             title={`Recibido por ${row.receiver_name}`}
           >
-            Por jefe: {row.receiver_name}
+            Por: {row.receiver_name}
           </span>
         )}
         {row.validator_name && (
