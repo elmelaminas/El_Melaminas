@@ -7,6 +7,7 @@ import Header from './Header';
 import { useDemo } from '@/context/DemoContext';
 import { useAutoStartTour } from '@/components/ui/AppTour';
 import { usePageTour } from '@/hooks/usePageTour';
+import { supabaseClient } from '@/lib/supabase/client';
 
 /**
  * AppShell — wrapper client component que envuelve la layout privada.
@@ -60,6 +61,28 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       };
     }
   }, [sidebarOpen]);
+
+  // Refresh defensivo al volver a foco. El cliente de @supabase/ssr ya
+  // refresca solo con autoRefreshToken=true, pero en PWA / móvil hay
+  // casos (tab dormida días, throttling agresivo de Safari) en que el
+  // timer interno no se ejecuta a tiempo. Forzamos un getSession() en
+  // cada `visibilitychange → visible` para que, si el access token ya
+  // expiró, se renueve YA con el refresh token antes de que cualquier
+  // request del usuario falle con 401. Solo aplica a la zona
+  // autenticada (este componente envuelve toda la app privada).
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const supabase = supabaseClient();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        supabase.auth.getSession().catch((err) => {
+          console.error('[AppShell] refresh on visibility falló:', err);
+        });
+      }
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
 
   return (
     <div className="min-h-screen" style={{ background: 'var(--bg-app)' }}>

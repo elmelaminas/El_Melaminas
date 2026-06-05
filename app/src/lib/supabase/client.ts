@@ -16,6 +16,14 @@ import type { SupabaseClient } from '@supabase/supabase-js';
  *   y `createBrowserClient` está pensado para `window`. Para SSR usa
  *   `supabaseServer()` (`./server`).
  *
+ * Política de sesión: la sesión SOLO se cierra cuando el usuario presiona
+ * "Cerrar sesión" (o cuando un admin lo desactiva). El access token
+ * expira cada hora pero el refresh token lo renueva automáticamente
+ * mientras el browser esté abierto o se vuelva a abrir. Pasamos las
+ * opciones de `auth` explícitas — son los defaults de `@supabase/ssr`,
+ * pero las dejamos visibles para que un cambio futuro no las pise sin
+ * darnos cuenta.
+ *
  * Para operaciones admin (service_role) usa `supabaseAdmin()` desde el
  * server únicamente — la service_role NUNCA debe llegar al browser.
  */
@@ -35,6 +43,16 @@ export function supabaseClient(): SupabaseClient {
     throw new Error('NEXT_PUBLIC_SUPABASE_ANON_KEY no está definido');
   }
 
-  _client = createBrowserClient(url, anonKey);
+  _client = createBrowserClient(url, anonKey, {
+    auth: {
+      // Refresca el access token automáticamente antes de que expire.
+      autoRefreshToken: true,
+      // Persiste la sesión en cookies (vía createBrowserClient adapter)
+      // para que un reload o cerrar/abrir tab no pierda la sesión.
+      persistSession: true,
+      // Detecta el code en la URL tras OAuth/reset-password redirect.
+      detectSessionInUrl: true,
+    },
+  });
   return _client;
 }
