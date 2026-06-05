@@ -19,7 +19,10 @@ import {
   ChevronUp,
   Factory,
   X,
+  Calendar,
 } from 'lucide-react';
+import { PeriodFilter } from '@/components/ui/PeriodFilter';
+import { todayInCDMX } from '@/app/(app)/dashboard/constants';
 import { isPdfUrl } from './new/schema';
 import {
   ChannelBadge,
@@ -134,10 +137,25 @@ export type FiltersState = {
   purchase_type: '' | 'domicilio' | 'fabrica';
   /** UUID del vendedor, o 'sin_asignar' (= seller_id IS NULL), o '' (sin filtro). */
   seller_id: string;
-  /** Mes 1-12; 0 = sin filtro de mes. Pareja inseparable con `anio`. */
+  /** Mes 1-12; 0 = sin filtro de mes. Pareja inseparable con `anio`.
+   *  Se mantiene por backwards-compat con drill-downs viejos que
+   *  llegan vía ?mes=&anio=. Cuando hay `periodo`+`fecha` activos,
+   *  `mes`/`anio` se completan también si el periodo es 'mes' pero
+   *  el camino que controla la UI/URL es `periodo`+`fecha`. */
   mes: number;
   /** Año 4-dígitos; 0 = sin filtro. */
   anio: number;
+  /** Periodo activo del filtro de fecha. '' = sin filtro de período.
+   *  Cuando viene con `fecha`, toma prioridad sobre `mes`/`anio` y la
+   *  URL se escribe con ?periodo=&fecha=. */
+  periodo: '' | 'dia' | 'semana' | 'mes';
+  /** Fecha ancla del periodo (YYYY-MM-DD). Solo significativo cuando
+   *  `periodo` != ''. */
+  fecha: string;
+  /** Label corto generado server-side por `getDateWindow` para
+   *  mostrar en el chip y el subtítulo del header (ej. "Mayo 2026",
+   *  "Hoy, 4 jun 2026"). Vacío cuando no hay periodo. */
+  period_label: string;
   /** Tab activo de color de fila ('' = "Todos"). Combina las reglas
    *  automáticas + el override manual `row_color`. */
   color_filter: ColorFilterValue;
@@ -281,6 +299,7 @@ export function LeadsClient({
         filters.sale_type ||
         filters.purchase_type ||
         filters.seller_id ||
+        filters.periodo ||
         (filters.mes > 0 && filters.anio > 0),
     ),
   );
@@ -317,6 +336,8 @@ export function LeadsClient({
       page: number;
       mes: number;
       anio: number;
+      periodo: '' | 'dia' | 'semana' | 'mes';
+      fecha: string;
       color_filter: string;
     }>,
   ) {
@@ -333,12 +354,13 @@ export function LeadsClient({
       purchase_type: next.purchase_type ?? filters.purchase_type,
       seller_id: next.seller_id ?? filters.seller_id,
       page: next.page ?? page,
-      // `mes`/`anio` se preservan al navegar entre filtros — un usuario
-      // que entró desde dashboard?mes=4&anio=2026 puede cambiar el
-      // canal sin perder el rango de mes. Para limpiar el rango se
-      // usa el botón "Limpiar filtros".
+      // `mes`/`anio` se preservan por backwards-compat con drill-downs
+      // viejos. Cuando hay `periodo`+`fecha` activos, esos ganan y la
+      // URL los escribe en su lugar. "Limpiar filtros" los limpia.
       mes: next.mes ?? filters.mes,
       anio: next.anio ?? filters.anio,
+      periodo: next.periodo ?? filters.periodo,
+      fecha: next.fecha ?? filters.fecha,
       // Tab de color: se preserva igual que el resto al cambiar otros
       // filtros. Solo el botón "Limpiar filtros" lo regresa a "Todos".
       color_filter: next.color_filter ?? filters.color_filter,
@@ -353,7 +375,14 @@ export function LeadsClient({
       params.set('purchase_type', merged.purchase_type);
     }
     if (merged.seller_id) params.set('seller_id', merged.seller_id);
-    if (merged.mes > 0 && merged.anio > 0) {
+    // Período tiene prioridad: si `periodo`+`fecha` están activos,
+    // escribimos esos params y NO los mes/anio legacy (los chip y la
+    // server-side getDateWindow ya sintetizan mes/anio del periodo
+    // 'mes' cuando aplica).
+    if (merged.periodo && merged.fecha) {
+      params.set('periodo', merged.periodo);
+      params.set('fecha', merged.fecha);
+    } else if (merged.mes > 0 && merged.anio > 0) {
       params.set('mes', String(merged.mes));
       params.set('anio', String(merged.anio));
     }
@@ -375,6 +404,7 @@ export function LeadsClient({
           filters.sale_type ||
           filters.purchase_type ||
           filters.seller_id ||
+          filters.periodo ||
           (filters.mes > 0 && filters.anio > 0) ||
           filters.color_filter,
       ),
@@ -439,8 +469,10 @@ export function LeadsClient({
         <div>
           <h1 className="text-2xl font-bold">Leads</h1>
           <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-            {total} {total === 1 ? 'lead registrado' : 'leads registrados'} —
-            gestiona pedidos, entregas y pagos.
+            {total} {total === 1 ? 'lead' : 'leads'}
+            {filters.periodo && filters.period_label
+              ? ` — ${filters.period_label}`
+              : ' registrados — gestiona pedidos, entregas y pagos.'}
           </p>
         </div>
         <Link href="/leads/new" className="btn btn-primary">
@@ -453,6 +485,59 @@ export function LeadsClient({
           selects siempre se muestran. */}
       <div className="card p-4">
         <div className="flex flex-col gap-3">
+          {/* Filtro de periodo (opcional). Default INACTIVO — el botón
+              "Filtrar por período" lo activa con periodo='mes' + hoy
+              CDMX. Mientras esté activo, mostramos el componente
+              compartido <PeriodFilter> con onClear para poder volver a
+              "sin filtro" en un click (también via X en el chip).
+              Al cambiar tab/fecha, pushFilters preserva los demás
+              filtros (q, channel, etc.) automáticamente. */}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div
+              className="text-xs flex items-center gap-1"
+              style={{ color: 'var(--text-tertiary)' }}
+            >
+              <Calendar size={14} />
+              {filters.periodo && filters.period_label ? (
+                <span>Filtrando: {filters.period_label}</span>
+              ) : (
+                <span>Sin filtro de período</span>
+              )}
+            </div>
+            {filters.periodo ? (
+              <PeriodFilter
+                periodo={filters.periodo}
+                fecha={filters.fecha || todayInCDMX()}
+                pending={pending}
+                onChange={({ periodo, fecha }) =>
+                  pushFilters({ periodo, fecha, mes: 0, anio: 0, page: 1 })
+                }
+                onClear={() =>
+                  pushFilters({ periodo: '', fecha: '', mes: 0, anio: 0, page: 1 })
+                }
+              />
+            ) : (
+              <button
+                type="button"
+                className="btn btn-outline"
+                style={{ padding: '6px 12px', gap: 6, fontSize: '0.75rem' }}
+                onClick={() =>
+                  pushFilters({
+                    periodo: 'mes',
+                    fecha: todayInCDMX(),
+                    mes: 0,
+                    anio: 0,
+                    page: 1,
+                  })
+                }
+                disabled={pending}
+              >
+                <Calendar size={14} />
+                Filtrar por período
+              </button>
+            )}
+          </div>
+
           <div className="flex gap-2 items-stretch">
             {/* Input + botón Buscar pegados como un input-group. El
                 wrapper relativo soporta el ícono de lupa y la X de
@@ -651,9 +736,15 @@ export function LeadsClient({
 
         {hasFilters && (
           <div className="mt-3 flex items-center gap-2 flex-wrap">
-            {filters.mes > 0 && filters.anio > 0 && (
+            {/* Chip de periodo activo. Cuando el filtro viene por
+                `periodo`+`fecha` usamos el label corto generado por
+                getDateWindow server-side ("Hoy, 4 jun 2026", "Mayo
+                2026", "Semana del 2 al 8 jun 2026"). El camino legacy
+                (drill-down con ?mes=&anio= sin periodo) sigue
+                mostrando "Mes: X/Y". */}
+            {filters.periodo && filters.period_label ? (
               <span
-                className="text-xs"
+                className="text-xs flex items-center gap-1"
                 style={{
                   background: 'var(--bg-muted)',
                   color: 'var(--text-secondary)',
@@ -662,8 +753,42 @@ export function LeadsClient({
                   fontWeight: 500,
                 }}
               >
-                Mes: {MES_SHORT[filters.mes] ?? filters.mes}/{filters.anio}
+                Período: {filters.period_label}
+                <button
+                  type="button"
+                  onClick={() =>
+                    pushFilters({ periodo: '', fecha: '', mes: 0, anio: 0, page: 1 })
+                  }
+                  aria-label="Quitar filtro de periodo"
+                  title="Quitar filtro de periodo"
+                  style={{
+                    background: 'transparent',
+                    border: 0,
+                    cursor: 'pointer',
+                    color: 'var(--text-tertiary)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  <X size={12} />
+                </button>
               </span>
+            ) : (
+              filters.mes > 0 &&
+              filters.anio > 0 && (
+                <span
+                  className="text-xs"
+                  style={{
+                    background: 'var(--bg-muted)',
+                    color: 'var(--text-secondary)',
+                    padding: '4px 10px',
+                    borderRadius: 9999,
+                    fontWeight: 500,
+                  }}
+                >
+                  Mes: {MES_SHORT[filters.mes] ?? filters.mes}/{filters.anio}
+                </span>
+              )
             )}
             <button
               type="button"
@@ -679,6 +804,8 @@ export function LeadsClient({
                   seller_id: '',
                   mes: 0,
                   anio: 0,
+                  periodo: '',
+                  fecha: '',
                   color_filter: '',
                   page: 1,
                 });

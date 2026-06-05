@@ -184,11 +184,22 @@ export default async function LeadsPage({
     let anio = 0;
     let rangeStartDate: string | null = null;
     let rangeEndDateInclusive: string | null = null;
+    // Cuando el filtro viene como periodo+fecha, propagamos esos
+    // valores al cliente (junto con un label corto para el chip de
+    // "filtros activos" y el subtítulo del header). Para el camino
+    // mes+anio legacy, dejamos `filterPeriodo` vacío — el cliente
+    // sabe que ahí solo aplica el chip "Mes: X/Y".
+    let filterPeriodo: '' | 'dia' | 'semana' | 'mes' = '';
+    let filterFecha = '';
+    let filterPeriodLabel = '';
 
     if (usePeriodFilter) {
       const window = getDateWindow(periodoRaw, fechaRaw);
       rangeStartDate = window.startDate;
       rangeEndDateInclusive = window.endDate;
+      filterPeriodo = window.periodo;
+      filterFecha = window.fecha;
+      filterPeriodLabel = window.label;
       if (window.periodo === 'mes') {
         const [yStr, mStr] = window.fecha.split('-');
         mes = Number(mStr);
@@ -525,6 +536,9 @@ export default async function LeadsPage({
       seller_id: sellerFilter,
       mes: monthFilterActive ? mes : 0,
       anio: monthFilterActive ? anio : 0,
+      periodo: filterPeriodo,
+      fecha: filterFecha,
+      period_label: filterPeriodLabel,
       color_filter: colorFilter,
     };
 
